@@ -1,0 +1,22 @@
+[
+  {
+    "RuleID": "aws-access-token",
+    "Description": "Identified a pattern that may indicate AWS credentials.",
+    "StartLine": 12,
+    "EndLine": 12,
+    "StartColumn": 19,
+    "EndColumn": 38,
+    "Match": "aws_access_key = AKIAIOSFODNN7EXAMPLE",
+    "Secret": "AKIAIOSFODNN7EXAMPLE",
+    "File": "config/prod.ts",
+    "SymlinkFile": "",
+    "Commit": "cd5226711335c68be1e720b318b7bc3135a30eb2",
+    "Entropy": 3.0841837,
+    "Author": "Jane Dev",
+    "Email": "jane@example.com",
+    "Date": "2022-08-03T12:31:40Z",
+    "Message": "add aws creds",
+    "Tags": [],
+    "Fingerprint": "cd5226711335c68be1e720b318b7bc3135a30eb2:config/prod.ts:aws-access-token:12"
+  }
+]

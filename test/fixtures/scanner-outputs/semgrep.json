@@ -1,0 +1,47 @@
+{
+  "version": "1.78.0",
+  "results": [
+    {
+      "check_id": "typescript.express.security.injection.tainted-sql-string",
+      "path": "src/api/users.ts",
+      "start": { "line": 14, "col": 5, "offset": 312 },
+      "end": { "line": 14, "col": 58, "offset": 365 },
+      "extra": {
+        "message": "Detected user input flowing into a raw SQL query (SQL injection).",
+        "severity": "ERROR",
+        "fingerprint": "8f3c2a1b:0",
+        "lines": "    db.query(\"SELECT * FROM users WHERE id = \" + uid)",
+        "metadata": {
+          "category": "security",
+          "cwe": ["CWE-89: SQL Injection"],
+          "owasp": ["A03:2021 - Injection"],
+          "references": ["https://owasp.org/Top10/A03_2021-Injection/"]
+        },
+        "dataflow_trace": {
+          "taint_source": [
+            "CliLoc",
+            [
+              { "path": "src/api/users.ts", "start": { "line": 11, "col": 11, "offset": 240 }, "end": { "line": 11, "col": 31, "offset": 260 } },
+              "req.query.id"
+            ]
+          ],
+          "intermediate_vars": [
+            {
+              "location": { "path": "src/api/users.ts", "start": { "line": 11, "col": 5, "offset": 234 }, "end": { "line": 11, "col": 8, "offset": 237 } },
+              "content": "uid"
+            }
+          ],
+          "taint_sink": [
+            "CliLoc",
+            [
+              { "path": "src/api/users.ts", "start": { "line": 14, "col": 5, "offset": 312 }, "end": { "line": 14, "col": 58, "offset": 365 } },
+              "db.query(\"SELECT * FROM users WHERE id = \" + uid)"
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "errors": [],
+  "paths": { "scanned": ["src/api/users.ts"] }
+}

@@ -1,0 +1,64 @@
+import { describe, expect, it } from "vitest";
+import { makeFinding } from "../../test/helpers/make-finding.js";
+import { ReportBuilder } from "./builder.js";
+import { ReportSchema } from "./schema.js";
+
+describe("ReportBuilder", () => {
+  it("T-094: builder accumulates per-finding outcomes over the run", () => {
+    const builder = new ReportBuilder();
+    const f = makeFinding({ file: "src/a.ts" });
+
+    builder.recordOutcome({ ...f, status: "pending" });
+    builder.recordOutcome({ ...f, status: "fixed" }); // later loop updates same finding
+
+    const report = builder.build({ loops: 2, durationMs: 1000, exitStatus: 0 });
+    expect(report.findings).toHaveLength(1);
+    expect(report.findings[0]?.status).toBe("fixed");
+  });
+
+  it("T-095: built report.json validates against the zod schema", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome(makeFinding({ file: "src/a.ts" }));
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 0 });
+
+    expect(() => ReportSchema.parse(report)).not.toThrow();
+  });
+
+  it("T-096: report includes secrets, dep bumps, flagged behavior changes, timings, exit status", () => {
+    const builder = new ReportBuilder();
+    const secret = makeFinding({ tool: "gitleaks", rule: "aws-key", category: "secret", file: "config/prod.ts" });
+    const dep = makeFinding({ tool: "osv", rule: "CVE-1", category: "vuln-dep", file: "package.json" });
+    builder.recordOutcome(secret);
+    builder.recordOutcome({ ...dep, remediation: "Bump lodash from 4.17.15 to 4.17.19" });
+    builder.flagBehaviorChange({ findingId: "x", file: "src/api.ts", note: "assertion changed" });
+
+    const report = builder.build({ loops: 3, durationMs: 1234, exitStatus: 1 });
+
+    expect(report.secrets).toHaveLength(1);
+    expect(report.depBumps[0]?.remediation).toContain("4.17.19");
+    expect(report.flaggedBehaviorChanges).toHaveLength(1);
+    expect(report.durationMs).toBe(1234);
+    expect(report.exitStatus).toBe(1);
+  });
+
+  it("assigns unique human retry ids to report findings", () => {
+    const ids = ["kx7p2q", "kx7p2q", "m8n4sa"];
+    const builder = new ReportBuilder(() => ids.shift() ?? "z9z9z9");
+    builder.recordOutcome(makeFinding({ file: "src/a.ts" }));
+    builder.recordOutcome(makeFinding({ file: "src/b.ts" }));
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 0 });
+
+    expect(report.findings.map((f) => f.retryId)).toStrictEqual(["kx7p2q", "m8n4sa"]);
+    expect(new Set(report.findings.map((f) => f.retryId)).size).toBe(report.findings.length);
+  });
+
+  it("preserves an existing unique retry id when rebuilding a report", () => {
+    const builder = new ReportBuilder(() => "m8n4sa");
+    builder.recordOutcome({ ...makeFinding({ file: "src/a.ts" }), retryId: "kx7p2q" });
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 0 });
+
+    expect(report.findings[0]?.retryId).toBe("kx7p2q");
+  });
+});

@@ -1,0 +1,25 @@
+{
+  "statistics": { "total": { "clones": 1, "duplicatedLines": 14 } },
+  "duplicates": [
+    {
+      "format": "typescript",
+      "lines": 14,
+      "tokens": 0,
+      "fragment": "function calculateTotal(items) {\n  return items.reduce((a, b) => a + b.price, 0);\n}",
+      "firstFile": {
+        "name": "src/a.ts",
+        "start": 10,
+        "end": 23,
+        "startLoc": { "line": 10, "column": 1, "position": 250 },
+        "endLoc": { "line": 23, "column": 2, "position": 410 }
+      },
+      "secondFile": {
+        "name": "src/b.ts",
+        "start": 45,
+        "end": 58,
+        "startLoc": { "line": 45, "column": 1, "position": 980 },
+        "endLoc": { "line": 58, "column": 2, "position": 1140 }
+      }
+    }
+  ]
+}

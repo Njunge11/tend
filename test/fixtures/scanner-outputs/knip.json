@@ -1,0 +1,23 @@
+{
+  "files": ["src/unused-file.ts"],
+  "issues": [
+    {
+      "file": "package.json",
+      "dependencies": [{ "name": "jquery", "line": 5, "col": 6, "pos": 71 }],
+      "devDependencies": [],
+      "unlisted": [],
+      "exports": [],
+      "types": [],
+      "duplicates": []
+    },
+    {
+      "file": "src/widget.ts",
+      "dependencies": [],
+      "devDependencies": [],
+      "unlisted": [],
+      "exports": [{ "name": "unusedHelper", "line": 8, "col": 14, "pos": 120 }],
+      "types": [],
+      "duplicates": []
+    }
+  ]
+}

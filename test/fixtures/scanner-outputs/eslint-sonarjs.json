@@ -1,0 +1,36 @@
+[
+  {
+    "filePath": "/repo/src/calc.ts",
+    "messages": [
+      {
+        "ruleId": "sonarjs/no-identical-expressions",
+        "severity": 2,
+        "message": "Correct one of the identical sub-expressions on both sides of operator \"&&\".",
+        "line": 14,
+        "column": 7,
+        "nodeType": "LogicalExpression",
+        "messageId": "correctIdenticalSubExpressions",
+        "endLine": 14,
+        "endColumn": 27
+      },
+      {
+        "ruleId": "sonarjs/cognitive-complexity",
+        "severity": 1,
+        "message": "Refactor this function to reduce its Cognitive Complexity from 18 to the 15 allowed.",
+        "line": 30,
+        "column": 1,
+        "endLine": 30,
+        "endColumn": 9
+      },
+      {
+        "ruleId": null,
+        "severity": 2,
+        "message": "Parsing error: Unexpected token",
+        "line": 1,
+        "column": 1
+      }
+    ],
+    "errorCount": 2,
+    "warningCount": 1
+  }
+]
