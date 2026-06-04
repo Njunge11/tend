@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.2.1...tend-cli-v0.3.0) (2026-06-04)
+
+
+### Features
+
+* **fix:** externalize prompt template and support multi-file fix scope ([bc1cca6](https://github.com/Njunge11/tend/commit/bc1cca60315ace16d40a7c510d3379acff748883))
+
 ## [0.2.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.2.0...tend-cli-v0.2.1) (2026-06-04)
 
 
