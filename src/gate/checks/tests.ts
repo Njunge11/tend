@@ -2,7 +2,7 @@ import { pass, reject, type CheckResult } from "../check.js";
 
 export type TestStatus = "pass" | "fail";
 export type TestOutcome = { name: string; status: TestStatus };
-export type RunTests = () => Promise<TestOutcome[]>;
+type RunTests = () => Promise<TestOutcome[]>;
 
 /** Run the suite once and record the names of tests that are green. */
 export async function captureBaseline(run: RunTests): Promise<Set<string>> {
@@ -10,7 +10,7 @@ export async function captureBaseline(run: RunTests): Promise<Set<string>> {
   return new Set(outcomes.filter((o) => o.status === "pass").map((o) => o.name));
 }
 
-export type TestEditKind = "structural" | "semantic";
+type TestEditKind = "structural" | "semantic";
 
 const ASSERTION_RE = /\bexpect\s*\(|\.to(Be|Equal|StrictEqual|Match|Contain|Throw)|\bassert\b|\.should\b/;
 
@@ -34,7 +34,7 @@ export function classifyTestEdit(before: string, after: string): TestEditKind {
 }
 
 /** Run a test against arbitrary code, reporting whether it went green or red. */
-export type RunTestAgainst = (code: string, test: string) => Promise<TestStatus>;
+type RunTestAgainst = (code: string, test: string) => Promise<TestStatus>;
 
 /**
  * Anti oracle-corruption: an edited test must FAIL against the old (pre-fix) code.
@@ -50,9 +50,9 @@ export async function teethCheck(
   return reject("suppression", "Edited test passes on the old code — it has no teeth (rubber stamp)");
 }
 
-export type TestPhaseResult = CheckResult & { warning?: string };
+type TestPhaseResult = CheckResult & { warning?: string };
 
-export type RunTestPhaseDeps = {
+type RunTestPhaseDeps = {
   /** Tests green at the start of the run; only these count as regressions. */
   baseline: Set<string>;
   /** Run the related test(s) against the current working tree. */

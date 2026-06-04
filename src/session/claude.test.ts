@@ -21,8 +21,25 @@ const streamWithWrite = [
       ],
     },
   }),
-  JSON.stringify({ type: "result", subtype: "success", is_error: false }),
+  JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    total_cost_usd: 0.0123,
+    usage: {
+      input_tokens: 100,
+      output_tokens: 200,
+      cache_creation_input_tokens: 30,
+      cache_read_input_tokens: 40,
+    },
+  }),
 ].join("\n");
+
+async function runStream(stream: string, exitCode = 1) {
+  const spawn = vi.fn().mockResolvedValue({ stdout: stream, exitCode });
+  const session = new ClaudeSession({ spawn });
+  return session.run(req);
+}
 
 describe("ClaudeSession", () => {
   it("T-070: claude impl parses stream-json → edits", async () => {
@@ -34,10 +51,18 @@ describe("ClaudeSession", () => {
     expect(result).toStrictEqual({
       ok: true,
       edits: [{ path: "/repo/src/a.ts", contents: "export const a = 2;\n" }],
+      usage: {
+        estimatedCostUsd: 0.0123,
+        inputTokens: 100,
+        outputTokens: 200,
+        cacheCreationInputTokens: 30,
+        cacheReadInputTokens: 40,
+        sessions: 1,
+      },
     });
   });
 
-  it("T-071: session crash/error → failed-attempt result (no throw)", async () => {
+  it("T-071: session crash/error → failed-attempt result (no throw), zero usage, sessions=0", async () => {
     const spawn = vi.fn().mockRejectedValue(new Error("spawn ENOENT claude"));
     const session = new ClaudeSession({ spawn });
 
@@ -48,6 +73,36 @@ describe("ClaudeSession", () => {
       expect(result.error).toContain("ENOENT");
       expect(result.rateLimited).toBe(false);
     }
+    expect(result.usage).toStrictEqual({
+      estimatedCostUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      sessions: 0,
+    });
+  });
+
+  it("parses estimated cost/usage from an error result message (sessions=1)", async () => {
+    const stream = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      error: "model crashed mid-run",
+      total_cost_usd: 0.5,
+      usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 1, cache_read_input_tokens: 2 },
+    });
+    const result = await runStream(stream);
+
+    expect(result.ok).toBe(false);
+    expect(result.usage).toStrictEqual({
+      estimatedCostUsd: 0.5,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationInputTokens: 1,
+      cacheReadInputTokens: 2,
+      sessions: 1,
+    });
   });
 
   it("T-072: rate-limit signal surfaced for backoff", async () => {
@@ -57,10 +112,7 @@ describe("ClaudeSession", () => {
       is_error: true,
       error: "API rate limit exceeded (429)",
     });
-    const spawn = vi.fn().mockResolvedValue({ stdout: stream, exitCode: 1 });
-    const session = new ClaudeSession({ spawn });
-
-    const result = await session.run(req);
+    const result = await runStream(stream);
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.rateLimited).toBe(true);

@@ -1,6 +1,6 @@
 import type { Finding } from "../findings/finding.js";
 
-export type FindingResolution = Finding | { error: string };
+type FindingResolution = Finding | { error: string };
 
 function displayId(finding: Finding): string {
   return finding.retryId ?? finding.id;

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-export type TestRunner = "vitest" | "jest";
+type TestRunner = "vitest" | "jest";
 
 const CONFIG_GLOBS: Record<TestRunner, string[]> = {
   vitest: ["vitest.config.ts", "vitest.config.js", "vitest.config.mjs", "vitest.config.mts"],

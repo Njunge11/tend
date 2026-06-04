@@ -5,6 +5,7 @@ import type { ScannerStatus } from "./scanners/scanner.js";
 import type { RevertReason } from "./gate/check.js";
 import { dispatch, isTestFile, planWork, type WorkUnit } from "./fixing/dispatch.js";
 import { EventBus } from "./output/events.js";
+import { addUsage, zeroUsage, type AiUsage } from "./session/types.js";
 
 export type AuditResult = {
   findings: Finding[];
@@ -12,7 +13,7 @@ export type AuditResult = {
   scanned?: number;
   scannerStatuses?: ScannerStatus[];
 };
-export type FixOutcome = { kept: boolean; reason?: RevertReason };
+export type FixOutcome = { kept: boolean; reason?: RevertReason; usage?: AiUsage };
 
 export type OrchestrateDeps = {
   /** Run the scanners for a loop and return normalized findings. */
@@ -35,6 +36,8 @@ export type OrchestrateResult = {
   secrets: Finding[];
   depBumps: Finding[];
   scannerStatuses: ScannerStatus[];
+  /** Estimated AI cost/usage summed across every fix attempt (including reverted ones). */
+  usage: AiUsage;
 };
 
 /** AI-fixable findings still pending and under their retry budget. */
@@ -86,6 +89,8 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
   let fixingLoops = 0;
   let termination: Termination = "converged";
   let scannerStatuses: ScannerStatus[] = [];
+  // Estimated AI cost/usage accumulates across every fix outcome, including reverted ones.
+  let usage = zeroUsage();
 
   while (true) {
     loop++;
@@ -95,7 +100,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
 
     if (loop === 1 && audited.allScannersMissing) {
       bus.emit({ type: "done", exitStatus: 1 });
-      return result("no-scanners", fixingLoops, 1, store, secrets, depBumps, scannerStatuses);
+      return result("no-scanners", fixingLoops, 1, store, secrets, depBumps, scannerStatuses, usage);
     }
 
     store.reconcile(audited.findings, loop);
@@ -105,6 +110,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
     const scopedIds = new Set(inScope(store.all()).map((f) => f.id));
     for (const f of store.all()) f.inScope = scopedIds.has(f.id);
 
+    const scopedFindings = inScope(audited.findings);
     const routed = route(audited.findings);
     for (const s of routed.reportOnly) secrets.set(s.id, s);
     for (const d of routed.deterministic) depBumps.set(d.id, d);
@@ -112,8 +118,8 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
     bus.emit({
       type: "audit",
       loop,
-      findings: audited.findings.length,
-      files: new Set(audited.findings.map((f) => f.file)).size,
+      findings: scopedFindings.length,
+      files: new Set(scopedFindings.map((f) => f.file)).size,
       scanned: audited.scanned,
     });
 
@@ -165,7 +171,10 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
       },
       { concurrency: config.maxSessions },
     );
-    for (const { unit, outcome } of outcomes) applyOutcome(store, unit, outcome, config.perIssueBudget);
+    for (const { unit, outcome } of outcomes) {
+      applyOutcome(store, unit, outcome, config.perIssueBudget);
+      if (outcome.usage) usage = addUsage(usage, outcome.usage);
+    }
 
     bus.emit({ type: "loop-complete", loop, fixed: outcomes.filter((o) => o.outcome.kept).length });
 
@@ -177,7 +186,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
 
   const exitStatus = secrets.size > 0 ? 1 : 0;
   bus.emit({ type: "done", exitStatus });
-  return result(termination, fixingLoops, exitStatus, store, secrets, depBumps, scannerStatuses);
+  return result(termination, fixingLoops, exitStatus, store, secrets, depBumps, scannerStatuses, usage);
 }
 
 function result(
@@ -188,6 +197,7 @@ function result(
   secrets: Map<string, Finding>,
   depBumps: Map<string, Finding>,
   scannerStatuses: ScannerStatus[],
+  usage: AiUsage,
 ): OrchestrateResult {
   return {
     termination,
@@ -197,5 +207,6 @@ function result(
     secrets: [...secrets.values()],
     depBumps: [...depBumps.values()],
     scannerStatuses,
+    usage,
   };
 }

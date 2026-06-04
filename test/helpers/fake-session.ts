@@ -1,6 +1,6 @@
 import type { SessionRequest, SessionResult, SessionRunner } from "../../src/session/types.js";
 
-export type FakeSession = SessionRunner & { calls: SessionRequest[] };
+type FakeSession = SessionRunner & { calls: SessionRequest[] };
 
 type Responder = (req: SessionRequest) => SessionResult | Promise<SessionResult>;
 

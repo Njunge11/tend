@@ -1,6 +1,4 @@
-import type { SimpleGit } from "simple-git";
 import type { Finding } from "../findings/finding.js";
-import { changedVsHead } from "../git/repo.js";
 import type { AuditResult } from "../orchestrator.js";
 import { filterToChanged } from "./scope.js";
 import { runEslintSonarjs } from "./eslint-sonarjs.js";
@@ -20,7 +18,7 @@ import {
 import { semgrepScanner } from "./semgrep.js";
 
 /** Spawn-based scanners. eslint+sonarjs runs separately via the Node API (see runEslintSonarjs). */
-export const SPAWN_SCANNERS: Scanner[] = [
+const SPAWN_SCANNERS: Scanner[] = [
   knipScanner,
   jscpdScanner,
   semgrepScanner,
@@ -29,24 +27,27 @@ export const SPAWN_SCANNERS: Scanner[] = [
 ];
 
 /** Bundled scanners that do not require an external binary on PATH. */
-export const BUNDLED_SCANNERS = ["sonarjs"];
+const BUNDLED_SCANNERS = ["sonarjs"];
 
 /** External scanner binary names, for the preflight availability hint. */
-export const EXTERNAL_SCANNER_BINARIES = SPAWN_SCANNERS.map(
+const EXTERNAL_SCANNER_BINARIES = SPAWN_SCANNERS.map(
   (scanner) => scanner.binary,
 );
 
-export type AuditDeps = {
+type AuditDeps = {
   cwd: string;
-  git: SimpleGit;
   which: Which;
   spawn: Spawn;
-  /** Fix the whole backlog rather than just changed files. */
-  all: boolean;
+  /**
+   * Files the diff-aware scanners (eslint+sonarjs, semgrep) target this run. `null` scans
+   * the whole repo (the `--all` backlog). The caller resolves this list once — from changed
+   * files, explicit path arguments, or `null` for `--all` — rather than re-deriving it here.
+   */
+  scope: string[] | null;
   timeoutMs?: number;
 };
 
-export type ScanFilesDeps = {
+type ScanFilesDeps = {
   cwd: string;
   which: Which;
   spawn: Spawn;
@@ -106,16 +107,15 @@ export function buildAudit(
   deps: AuditDeps,
 ): (loop: number) => Promise<AuditResult> {
   return async (loop) => {
-    const changed = await changedVsHead(deps.git);
-    const files = deps.all ? ["."] : changed;
+    const files = deps.scope ?? ["."];
     const { results, scannerStatuses } = await runScanners(deps, files, loop);
 
     const attempted = results.filter((r) => !r.skipped);
     const findings: Finding[] = results.flatMap((r) => r.findings);
 
-    // Files the scanners looked at this loop. Known precisely for the changed-file path
-    // (`--all` scans the whole tree, so leave it for the renderer to phrase generically).
-    const scanned = deps.all ? undefined : changed.length;
+    // Resolved fix-scope file count. Some scanners still scan wide for correctness, so this
+    // is a scope label for the renderer, not a promise that every scanner only read these files.
+    const scanned = deps.scope ? deps.scope.length : undefined;
 
     return {
       findings,

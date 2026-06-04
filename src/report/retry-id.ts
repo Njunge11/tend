@@ -1,8 +1,8 @@
 import { customAlphabet } from "nanoid";
 import type { Finding } from "../findings/finding.js";
 
-export const RETRY_ID_LENGTH = 6;
-export const RETRY_ID_ALPHABET = "23456789abcdefghijkmnpqrstuvwxyz";
+const RETRY_ID_LENGTH = 6;
+const RETRY_ID_ALPHABET = "23456789abcdefghijkmnpqrstuvwxyz";
 
 const makeRetryId = customAlphabet(RETRY_ID_ALPHABET, RETRY_ID_LENGTH);
 

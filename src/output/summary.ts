@@ -1,5 +1,6 @@
 import Table from "cli-table3";
 import { TOOLS, type Finding, type Tool } from "../findings/finding.js";
+import { isTestFile } from "../fixing/dispatch.js";
 import type { Report } from "../report/schema.js";
 import { formatDuration, reasonLabel } from "./format.js";
 import { makeTheme, type Theme } from "./theme.js";
@@ -21,7 +22,8 @@ export type SummaryOptions = {
 type Buckets = {
   fixed: Finding[];
   couldntFix: Finding[]; // reverted or unfixable (not a secret)
-  left: Finding[]; // in the report but never resolved (pending / skipped), not a secret
+  skippedTests: Finding[]; // excluded by default unless --include-tests is passed
+  left: Finding[]; // unresolved for reasons other than the default test-file exclusion
   secrets: Finding[];
 };
 
@@ -33,6 +35,7 @@ function isOutOfScope(f: Finding): boolean {
 function bucket(findings: Finding[]): Buckets {
   const fixed: Finding[] = [];
   const couldntFix: Finding[] = [];
+  const skippedTests: Finding[] = [];
   const left: Finding[] = [];
   const secrets: Finding[] = [];
   for (const f of findings) {
@@ -43,9 +46,10 @@ function bucket(findings: Finding[]): Buckets {
     else if (f.status === "fixed") fixed.push(f);
     else if (f.status === "reverted" || f.status === "unfixable")
       couldntFix.push(f);
+    else if (isTestFile(f.file)) skippedTests.push(f);
     else left.push(f);
   }
-  return { fixed, couldntFix, left, secrets };
+  return { fixed, couldntFix, skippedTests, left, secrets };
 }
 
 /**
@@ -66,7 +70,7 @@ export function renderSummary(
   const lines: string[] = [];
   lines.push(theme.dim(glyph.rule.repeat(RULE_WIDTH)));
   lines.push(
-    `done ${theme.dim(`${glyph.bullet} ${report.loops} loops ${glyph.bullet} ${formatDuration(report.durationMs)}`)}`,
+    `done ${theme.dim(`${glyph.bullet} ${report.loops} fix passes ${glyph.bullet} ${formatDuration(report.durationMs)}`)}`,
   );
   lines.push("");
   lines.push(theme.bold("run summary"));
@@ -88,13 +92,6 @@ export function renderSummary(
     lines.push(renderSecretsTable(b.secrets, theme));
   }
 
-  const repoWide = renderRepoWideTable(report, theme);
-  if (repoWide) {
-    lines.push("");
-    lines.push(theme.bold("repo-wide backlog"));
-    lines.push(repoWide);
-  }
-
   if (opts.verbose) lines.push("", renderVerbose(report, theme));
 
   lines.push("");
@@ -111,13 +108,23 @@ function renderPlainSummary(
   verbose: boolean,
 ): string {
   const lines = [
-    `done ${theme.glyph.bullet} ${report.loops} loops ${theme.glyph.bullet} ${formatDuration(report.durationMs)}`,
+    `done ${theme.glyph.bullet} ${report.loops} fix passes ${theme.glyph.bullet} ${formatDuration(report.durationMs)}`,
     [
       "summary",
       `fixed=${b.fixed.length}`,
       `couldntFix=${b.couldntFix.length}`,
+      `skippedTests=${b.skippedTests.length}`,
       `left=${b.left.length}`,
       `secrets=${b.secrets.length}`,
+    ].join(" "),
+    [
+      "aiUsage",
+      `estimatedCostUsd=${report.aiUsage.estimatedCostUsd.toFixed(2)}`,
+      `sessions=${report.aiUsage.sessions}`,
+      `inputTokens=${report.aiUsage.inputTokens}`,
+      `outputTokens=${report.aiUsage.outputTokens}`,
+      `cacheReadInputTokens=${report.aiUsage.cacheReadInputTokens}`,
+      `cacheCreationInputTokens=${report.aiUsage.cacheCreationInputTokens}`,
     ].join(" "),
   ];
 
@@ -156,11 +163,11 @@ function renderPlainSummary(
     );
   }
 
-  const repoWide = repoWideBacklog(report, theme);
-  if (repoWide)
+  if (b.skippedTests.length > 0) {
     lines.push(
-      `repo-wide findings=${JSON.stringify(repoWide)} command="tend --all"`,
+      `skipped-tests count=${b.skippedTests.length} reason="test files are excluded by default" command="tend run --include-tests <path...>"`,
     );
+  }
 
   if (verbose) {
     for (const f of report.findings) {
@@ -190,30 +197,54 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
   const clean =
     b.fixed.length === 0 &&
     b.couldntFix.length === 0 &&
+    b.skippedTests.length === 0 &&
     b.left.length === 0 &&
     b.secrets.length === 0;
   const rows = [
     ["status", clean ? theme.fixed("nothing to fix") : "completed"],
-    ["loops", String(report.loops)],
+    ["fix passes", String(report.loops)],
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
     [
       "couldn't fix",
       `${theme.reverted(theme.glyph.reverted)} ${b.couldntFix.length}`,
     ],
+    [
+      "skipped tests",
+      `${theme.dim(theme.glyph.left)} ${b.skippedTests.length} (pass --include-tests)`,
+    ],
     ["left", `${theme.dim(theme.glyph.left)} ${b.left.length}`],
     [
       "secrets",
       b.secrets.length > 0 ? theme.error(String(b.secrets.length)) : "0",
     ],
+    ["estimated AI cost", formatCost(report.aiUsage.estimatedCostUsd)],
+    ["AI sessions", String(report.aiUsage.sessions)],
+    ["tokens", formatTokens(report.aiUsage)],
   ];
   return renderTable(["metric", "value"], rows);
+}
+
+/** Estimated AI cost as `$X.XX` — always two decimals, never called a "bill". */
+function formatCost(usd: number): string {
+  return `$${usd.toFixed(2)}`;
+}
+
+/** `<input> in · <output> out · <cache read> cache read · <cache write> cache write`. */
+function formatTokens(u: Report["aiUsage"]): string {
+  return [
+    `${u.inputTokens} in`,
+    `${u.outputTokens} out`,
+    `${u.cacheReadInputTokens} cache read`,
+    `${u.cacheCreationInputTokens} cache write`,
+  ].join(" · ");
 }
 
 type ScopeCounts = {
   total: number;
   fixed: number;
   couldntFix: number;
+  skippedTests: number;
   left: number;
 };
 
@@ -226,12 +257,14 @@ function inScopeByTool(findings: Finding[]): Map<Tool, ScopeCounts> {
       total: 0,
       fixed: 0,
       couldntFix: 0,
+      skippedTests: 0,
       left: 0,
     };
     row.total += 1;
     if (f.status === "fixed") row.fixed += 1;
     else if (f.status === "reverted" || f.status === "unfixable")
       row.couldntFix += 1;
+    else if (isTestFile(f.file)) row.skippedTests += 1;
     else row.left += 1;
     counts.set(f.tool, row);
   }
@@ -251,10 +284,11 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
         "total",
         "fixed",
         "couldn't fix",
+        "skipped tests",
         "left",
         "reason",
       ],
-      [["(none)", "not recorded", "in your changes", "0", "0", "0", "0", ""]],
+      [["(none)", "not recorded", "in your changes", "0", "0", "0", "0", "0", ""]],
     );
   }
 
@@ -264,6 +298,7 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
       total: 0,
       fixed: 0,
       couldntFix: 0,
+      skippedTests: 0,
       left: 0,
     };
     const label = scannerLabel(tool);
@@ -288,6 +323,7 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
       String(c.total),
       String(c.fixed),
       String(c.couldntFix),
+      String(c.skippedTests),
       String(c.left),
       reason,
     ];
@@ -300,6 +336,7 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
       "total",
       "fixed",
       "couldn't fix",
+      "skipped tests",
       "left",
       "reason",
     ],
@@ -321,11 +358,16 @@ function renderCouldntFixTable(findings: Finding[], theme: Theme): string {
   const rows = findings.map((f) => [
     f.retryId ?? "(none)",
     f.file,
+    String(f.range.startLine),
     f.rule,
+    f.message,
     findingReason(f),
     `${theme.glyph.arrow} tend retry ${retryTarget(f)}`,
   ]);
-  return renderTable(["retryId", "file", "rule", "reason", "command"], rows);
+  return renderTable(
+    ["retryId", "file", "line", "rule", "message", "reason", "command"],
+    rows,
+  );
 }
 
 function renderSecretsTable(findings: Finding[], theme: Theme): string {
@@ -336,27 +378,6 @@ function renderSecretsTable(findings: Finding[], theme: Theme): string {
     theme.error("rotate + scrub history"),
   ]);
   return renderTable(["retryId", "file", "rule", "action"], rows);
-}
-
-function renderRepoWideTable(report: Report, theme: Theme): string | null {
-  const backlog = repoWideBacklog(report, theme);
-  if (!backlog) return null;
-
-  return renderTable(
-    ["scope", "findings", "command"],
-    [["outside your changes", backlog, "tend --all"]],
-  );
-}
-
-function repoWideBacklog(report: Report, theme: Theme): string | null {
-  const out = report.findings.filter(isOutOfScope);
-  if (out.length === 0) return null;
-
-  const byTool = new Map<Tool, number>();
-  for (const f of out) byTool.set(f.tool, (byTool.get(f.tool) ?? 0) + 1);
-  return TOOLS.filter((t) => byTool.has(t))
-    .map((t) => `${t} ${byTool.get(t)}`)
-    .join(` ${theme.glyph.bullet} `);
 }
 
 function renderNextCommandsTable(): string {

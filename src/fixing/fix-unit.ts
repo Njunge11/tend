@@ -6,7 +6,7 @@ import { antiSuppression } from "../gate/checks/anti-suppression.js";
 import { typecheck } from "../gate/checks/typecheck.js";
 import { runTestPhase, type TestOutcome } from "../gate/checks/tests.js";
 import type { FixOutcome } from "../orchestrator.js";
-import type { SessionRunner } from "../session/types.js";
+import { addUsage, zeroUsage, type SessionRunner } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
 
 export type FixUnitDeps = {
@@ -78,28 +78,33 @@ export function makeFixUnit(deps: FixUnitDeps) {
     const diskNow = () => new Map(unit.files.map((f) => [f, snapshotFile(abs(f))] as const));
     const changedOnDisk = () => unit.files.some((f) => snapshotFile(abs(f)) !== before.get(f));
 
+    // Estimated AI cost/usage accumulates across the initial session and any repair
+    // sessions — even when the unit ends up reverted or unfixable, the tokens were spent.
+    let usage = zeroUsage();
+
     const res = await deps.session.run({ file: unit.file, findings: unit.findings, prompt: renderPrompt(unit) });
+    if (res.usage) usage = addUsage(usage, res.usage);
 
     // The session left the files untouched → nothing to gate or revert.
-    if (!changedOnDisk()) return { kept: false, reason: "session-error" };
+    if (!changedOnDisk()) return { kept: false, reason: "session-error", usage };
 
     // Files changed but the session errored/crashed → never leave a half-applied edit
     // for the re-scan to call "fixed"; revert to the snapshot.
     if (!res.ok) {
       restore();
-      return { kept: false, reason: "session-error" };
+      return { kept: false, reason: "session-error", usage };
     }
 
     const supp = antiSuppression(buildDiff(before, diskNow()));
     if (!supp.ok) {
       restore();
-      return { kept: false, reason: supp.reason };
+      return { kept: false, reason: supp.reason, usage };
     }
 
     const tc = await typecheck({ hasTsconfig: () => deps.typescript, runTsc: deps.runTsc });
     if (!tc.ok) {
       restore();
-      return { kept: false, reason: tc.reason };
+      return { kept: false, reason: tc.reason, usage };
     }
 
     const phase = await runTestPhase({
@@ -107,27 +112,28 @@ export function makeFixUnit(deps: FixUnitDeps) {
       runRelated: () => deps.runRelated(unit.files),
       // The repair session also edits the disk directly — just re-run it.
       repair: async () => {
-        await deps.session.run({
+        const repair = await deps.session.run({
           file: unit.file,
           findings: unit.findings,
           prompt: `${renderPrompt(unit)}\n\nThe previous edit left a test red — diagnose and fix.`,
         });
+        if (repair.usage) usage = addUsage(usage, repair.usage);
       },
       maxRepairs: deps.maxRepairs,
       hasTestRunner: deps.hasTestRunner,
     });
     if (!phase.ok) {
       restore();
-      return { kept: false, reason: phase.reason };
+      return { kept: false, reason: phase.reason, usage };
     }
 
     const afterFindings = await deps.scanFindings(unit.files);
     const regression = antiRegression(unit.findings, afterFindings);
     if (!regression.ok) {
       restore();
-      return { kept: false, reason: regression.reason };
+      return { kept: false, reason: regression.reason, usage };
     }
 
-    return { kept: true };
+    return { kept: true, usage };
   };
 }

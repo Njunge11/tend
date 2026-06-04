@@ -4,13 +4,13 @@ import {
   ListrDefaultRendererLogLevels as Level,
   type PresetTimer,
 } from "listr2";
+import { BaseReporter } from "./base-reporter.js";
 import type { TendEvent } from "./events.js";
 import { formatClock } from "./format.js";
 import type { Reporter, ReporterDeps } from "./reporter.js";
-import type { Theme } from "./theme.js";
 
-type AuditData = { findings: number; files: number; scanned?: number };
-type FixInfo = { files: string[]; concurrency: number };
+type AuditData = { loop: number; findings: number; files: number; scanned?: number };
+type FixInfo = { loop: number; files: string[]; concurrency: number };
 type Phase = { kind: "fix"; info: FixInfo } | { kind: "done" };
 
 /** A one-shot value channel: take() resolves now if buffered, else when the next push lands. */
@@ -41,10 +41,10 @@ const CLOSED = Symbol("closed");
  * them into channels and drives a sequence of listr instances (scan → fix → scan → …) from
  * `run()`, which the caller awaits concurrently with the orchestration.
  */
-export class LiveReporter implements Reporter {
-  private readonly theme: Theme;
-  private readonly write: (line: string) => void;
+export class LiveReporter extends BaseReporter implements Reporter {
+  private readonly env: ReporterDeps["env"];
 
+  private readonly scanStarts = new Channel<number>();
   private readonly audits = new Channel<AuditData>();
   private readonly phases = new Channel<Phase>();
   private readonly fixTicks = new Channel<void>();
@@ -62,6 +62,7 @@ export class LiveReporter implements Reporter {
   private fixed = 0;
   private reverted = 0;
   private left = 0;
+  private currentLoop = 0;
   private currentFile?: string;
   private currentConcurrency?: number;
   private readonly rules = new Map<string, string>();
@@ -69,22 +70,15 @@ export class LiveReporter implements Reporter {
   private labelWidth = 0;
 
   constructor(deps: ReporterDeps) {
-    this.theme = deps.theme;
-    this.write = deps.write;
-  }
-
-  start(): void {
-    this.write(this.theme.wordmark());
-  }
-
-  note(line: string): void {
-    this.write(this.theme.dim(line));
+    super(deps);
+    this.env = deps.env;
   }
 
   onEvent(event: TendEvent): void {
     switch (event.type) {
       case "audit":
         this.audits.push({
+          loop: event.loop,
           findings: event.findings,
           files: event.files,
           scanned: event.scanned,
@@ -93,6 +87,7 @@ export class LiveReporter implements Reporter {
       case "loop-start":
         // Reset counters here (synchronously, before any file-start for this loop) so the
         // header counts stay correct no matter how events interleave with rendering.
+        this.currentLoop = event.loop;
         this.fixTotal = event.files.length;
         this.started = 0;
         this.finished = 0;
@@ -108,7 +103,7 @@ export class LiveReporter implements Reporter {
         );
         this.phases.push({
           kind: "fix",
-          info: { files: event.files, concurrency: event.concurrency },
+          info: { loop: event.loop, files: event.files, concurrency: event.concurrency },
         });
         break;
       case "file-start":
@@ -129,9 +124,11 @@ export class LiveReporter implements Reporter {
       case "done":
         this.phases.push({ kind: "done" });
         break;
+      case "scan-start":
+        this.scanStarts.push(event.loop);
+        break;
       case "snapshot":
       case "detected":
-      case "scan-start":
       case "loop-complete":
         break;
     }
@@ -168,6 +165,12 @@ export class LiveReporter implements Reporter {
         {
           title: this.theme.dim("scanning…"),
           task: async (_ctx, task) => {
+            const loop = await this.race(this.scanStarts.take());
+            if (loop === CLOSED) {
+              live = false;
+              return;
+            }
+            task.title = this.scanTitle(loop);
             const audit = await this.race(this.audits.take());
             if (audit === CLOSED) {
               live = false;
@@ -191,6 +194,7 @@ export class LiveReporter implements Reporter {
           title: this.headerTitle(),
           task: async (_ctx, task) => {
             this.header = task;
+            this.currentLoop = info.loop;
             this.currentConcurrency = info.concurrency;
             task.title = this.headerTitle();
             while (this.finished < this.fixTotal) {
@@ -209,6 +213,11 @@ export class LiveReporter implements Reporter {
 
   private listrOptions() {
     const accent = this.theme.accent;
+    const icon = {
+      [Level.COMPLETED]: this.theme.fixed(this.theme.glyph.fixed),
+      [Level.FAILED]: this.theme.reverted(this.theme.glyph.reverted),
+    };
+    const color = { [Level.PENDING]: (message?: string) => accent(message ?? "") };
     const timer: PresetTimer = {
       field: (duration: number) => formatClock(duration),
       format: () => (message?: string) => this.theme.dim(message ?? ""),
@@ -220,25 +229,33 @@ export class LiveReporter implements Reporter {
       registerSignalListeners: false,
       rendererOptions: {
         collapseSubtasks: true,
-        lazy: true,
+        // In a real TTY, let Listr animate its spinner. In captured/fallback output, stay lazy
+        // so redraws do not turn into duplicate persisted lines.
+        lazy: !this.env.interactive,
         showErrorMessage: false,
         timer,
-        icon: {
-          [Level.COMPLETED]: this.theme.fixed(this.theme.glyph.fixed),
-          [Level.FAILED]: this.theme.reverted(this.theme.glyph.reverted),
-        },
+        icon,
         // The single accent: the active spinner.
-        color: { [Level.PENDING]: (message?: string) => accent(message ?? "") },
+        color,
       },
     };
   }
 
   private scannedTitle(a: AuditData): string {
-    const scanned = a.scanned != null ? `${a.scanned} files ` : "";
+    const scope = a.scanned != null ? `${a.scanned} files eligible for fixes` : "whole repo";
+    const label = a.loop === 1 ? "initial audit" : `re-audit after fix pass ${a.loop - 1}`;
     const meta = this.theme.dim(
-      `${this.theme.glyph.bullet} ${a.findings} findings ${this.theme.glyph.bullet} ${a.files} files`,
+      `${label}: fix scope ${scope} ${this.theme.glyph.bullet} in-scope findings ${a.findings} across ${a.files} files`,
     );
-    return `scanned ${scanned}${meta}`;
+    return meta;
+  }
+
+  private scanTitle(loop: number): string {
+    return this.theme.dim(
+      loop === 1
+        ? "initial audit: scanning…"
+        : `re-audit after fix pass ${loop - 1}: scanning…`,
+    );
   }
 
   private headerTitle(): string {
@@ -252,7 +269,8 @@ export class LiveReporter implements Reporter {
     const current = this.currentFile
       ? `${bullet} ${this.fileTitle(this.currentFile)}`
       : "";
-    return `fixing ${this.finished}/${this.fixTotal} ${this.theme.dim(`${bullet} ${running} running ${bullet} ${queued} queued ${bullet} ${outcomes} ${parallel}${current}`)}`;
+    const detail = `${bullet} ${running} running ${bullet} ${queued} queued ${bullet} ${outcomes} ${parallel}${current}`;
+    return `fix pass ${this.currentLoop} ${this.finished}/${this.fixTotal} ${this.theme.dim(detail)}`;
   }
 
   private refreshHeader(): void {

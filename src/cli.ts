@@ -2,6 +2,7 @@ import { Command } from "commander";
 
 export type CliHandlers = {
   run: (opts: {
+    paths?: string[];
     all?: boolean;
     maxLoops?: number;
     maxSessions?: number;
@@ -27,6 +28,7 @@ export function buildProgram(handlers: CliHandlers): Command {
   program
     .command("run")
     .description("snapshot → audit → fix loop → report (changed files)")
+    .argument("[paths...]", "fix only findings under these files/dirs (committed or not)")
     .option("--all", "fix the entire backlog, not just changed files")
     .option("--max-loops <n>", "cap on fix loops", (v) => parseInt(v, 10))
     .option("--max-sessions <n>", "concurrent AI sessions", (v) => parseInt(v, 10))
@@ -36,7 +38,7 @@ export function buildProgram(handlers: CliHandlers): Command {
     .option("--plain", "plain one-line-per-event output for pipes/CI (no color, no spinners)")
     .option("--no-color", "disable color output")
     .option("--verbose", "show the full per-tool / per-finding breakdown in the summary")
-    .action((opts) => handlers.run(opts));
+    .action((paths: string[], opts) => handlers.run({ ...opts, paths }));
 
   program.command("diff").description("show only the tool's edits").action(() => handlers.diff());
   program.command("undo").description("restore the pre-run snapshot").action(() => handlers.undo());

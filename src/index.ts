@@ -21,10 +21,12 @@ export { runGate, type Check, type GateOutcome } from "./gate/gate.js";
 export { ChangeSet, type FileEdit } from "./fixing/change-set.js";
 export { planWork, dispatch, type WorkUnit } from "./fixing/dispatch.js";
 export { ClaudeSession } from "./session/claude.js";
-export type { SessionRunner, SessionRequest, SessionResult } from "./session/types.js";
+export type { SessionRunner, SessionRequest, SessionResult, AiUsage } from "./session/types.js";
+export { zeroUsage, addUsage } from "./session/types.js";
 
 export { Snapshot } from "./git/snapshot.js";
 export { assertGitRepo, changedVsHead, revertFile } from "./git/repo.js";
+export { detectPackageManager, type PackageManager } from "./detect/package-manager.js";
 
 export { loadConfig, applyCliOverrides, ConfigSchema, type TendConfig } from "./config/config.js";
 export { ReportBuilder } from "./report/builder.js";
@@ -42,8 +44,8 @@ export {
 } from "./orchestrator.js";
 
 export { buildProgram, type CliHandlers } from "./cli.js";
-export { runCommand } from "./commands/run.js";
+export { runCommand, type RunDeps } from "./commands/run.js";
 export { diffCommand } from "./commands/diff.js";
 export { undoCommand } from "./commands/undo.js";
 export { showCommand } from "./commands/show.js";
-export { retryCommand } from "./commands/retry.js";
+export { retryCommand, type RetryDeps, type RetryResult } from "./commands/retry.js";

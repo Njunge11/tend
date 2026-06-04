@@ -36,6 +36,8 @@ describe("renderSummary", () => {
     const out = renderSummary(report);
 
     expect(out).toContain("run summary");
+    expect(out).toContain("fix passes");
+    expect(out).not.toContain("│ loops");
     expect(out).toContain("fixed");
     expect(out).toContain("│ ✔ 1");
     expect(out).toContain("couldn't fix");
@@ -43,12 +45,14 @@ describe("renderSummary", () => {
     expect(out).toContain("3m 12s"); // 192_000ms
   });
 
-  it("surfaces each reverted finding per-file with its revert reason", () => {
+  it("surfaces each reverted finding per-file with its line, message, and revert reason", () => {
     const builder = reportWith({
       ...makeFinding({
         tool: "sonarjs",
         rule: "cognitive-complexity",
         file: "src/legacy/parse.ts",
+        range: { startLine: 142, startCol: 0, endLine: 142, endCol: 10 },
+        message: "Refactor this function to reduce its cognitive complexity",
       }),
       retryId: "kx7p2q",
       status: "reverted",
@@ -60,12 +64,51 @@ describe("renderSummary", () => {
 
     expect(out).toContain("couldn't fix");
     expect(out).toContain("retryId");
+    expect(out).toContain("line");
+    expect(out).toContain("message");
     expect(out).toContain("command");
     expect(out).toContain("src/legacy/parse.ts");
+    expect(out).toContain("142");
+    expect(out).toContain("Refactor this function to reduce its cognitive complexity");
     expect(out).toContain("kx7p2q");
     expect(out).toContain("cognitive-complexity");
     expect(out).toContain("broke tests");
     expect(out).toContain("tend retry kx7p2q");
+  });
+
+  it("distinguishes same-rule findings in one file by line and message", () => {
+    const builder = reportWith(
+      {
+        ...makeFinding({
+          tool: "sonarjs",
+          rule: "no-unused-vars",
+          file: "src/signup.service.ts",
+          range: { startLine: 12, startCol: 0, endLine: 12, endCol: 10 },
+          message: "'token' is assigned a value but never used",
+        }),
+        retryId: "aaa111",
+        status: "unfixable",
+      },
+      {
+        ...makeFinding({
+          tool: "sonarjs",
+          rule: "no-unused-vars",
+          file: "src/signup.service.ts",
+          range: { startLine: 47, startCol: 0, endLine: 47, endCol: 10 },
+          message: "'session' is assigned a value but never used",
+        }),
+        retryId: "bbb222",
+        status: "unfixable",
+      },
+    );
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
+
+    const out = renderSummary(report);
+
+    expect(out).toContain("12");
+    expect(out).toContain("47");
+    expect(out).toContain("'token' is assigned a value but never used");
+    expect(out).toContain("'session' is assigned a value but never used");
   });
 
   it("ends with the next-step affordances", () => {
@@ -103,13 +146,69 @@ describe("renderSummary", () => {
 
     const out = renderSummary(report, { plain: true });
 
-    expect(out).toContain("summary fixed=0 couldntFix=1 left=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=1 skippedTests=0 left=0 secrets=0");
     expect(out).toContain("scanner tool=knip status=ran");
     expect(out).toContain('couldnt-fix retryId=kx7p2q file="src/b.ts"');
     expect(out).toContain('command="tend retry kx7p2q"');
     expect(out).toContain('next command="tend diff"');
     expect(out).not.toContain("┌");
     expect(out).not.toContain("│");
+  });
+
+  it("renders estimated AI cost, sessions, and token rows", () => {
+    const builder = reportWith({ ...makeFinding({ file: "src/a.ts" }), status: "fixed" });
+    const report = builder.build({
+      loops: 1,
+      durationMs: 1000,
+      exitStatus: 0,
+      aiUsage: {
+        estimatedCostUsd: 1.5,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationInputTokens: 100,
+        cacheReadInputTokens: 200,
+        sessions: 4,
+      },
+    });
+
+    const out = renderSummary(report);
+    expect(out).toContain("estimated AI cost");
+    expect(out).toContain("$1.50");
+    expect(out).toContain("AI sessions");
+    expect(out).toMatch(/AI sessions\s+│ 4/);
+    expect(out).toContain("1000 in · 500 out · 200 cache read · 100 cache write");
+  });
+
+  it("shows $0.00 and 0 for a run with zero AI usage", () => {
+    const report = reportWith({ ...makeFinding({ file: "src/a.ts" }), status: "fixed" }).build({
+      loops: 1,
+      durationMs: 1000,
+      exitStatus: 0,
+    });
+
+    const out = renderSummary(report);
+    expect(out).toContain("$0.00");
+    expect(out).toMatch(/AI sessions\s+│ 0/);
+  });
+
+  it("renders estimated AI usage in the plain summary", () => {
+    const report = reportWith({ ...makeFinding({ file: "src/a.ts" }), status: "fixed" }).build({
+      loops: 1,
+      durationMs: 1000,
+      exitStatus: 0,
+      aiUsage: {
+        estimatedCostUsd: 1.23,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationInputTokens: 100,
+        cacheReadInputTokens: 200,
+        sessions: 4,
+      },
+    });
+
+    const out = renderSummary(report, { plain: true });
+    expect(out).toContain("aiUsage estimatedCostUsd=1.23 sessions=4 inputTokens=1000 outputTokens=500");
+    expect(out).toContain("cacheReadInputTokens=200 cacheCreationInputTokens=100");
   });
 
   it("celebrates when there is nothing to fix", () => {
@@ -187,12 +286,12 @@ describe("renderSummary", () => {
       /sonarjs \(bundled\)\s+│ ✔ ran\s+│ in your changes\s+│ 2\s+│ 2/,
     );
     expect(out).toMatch(
-      /jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 1/,
+      /jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 1/,
     );
     expect(out).toMatch(/knip\s+│ ✔ ran\s+│ in your changes\s+│ 0/); // clean scanner is explicit, never a vanished 0
   });
 
-  it("T-136: a separate repo-wide line lists out-of-scope findings with the --all hint", () => {
+  it("T-136: out-of-scope findings stay out of the default summary", () => {
     const builder = reportWith(
       {
         ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
@@ -227,23 +326,57 @@ describe("renderSummary", () => {
     const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
 
     const out = renderSummary(report);
-    expect(out).toContain("repo-wide backlog");
-    expect(out).toContain("knip 2"); // 2 knip findings outside the changed set
-    expect(out).toContain("tend --all");
+    expect(out).not.toContain("repo-wide backlog");
+    expect(out).not.toContain("outside your changes");
+    expect(out).not.toContain("tend --all");
+    expect(out).not.toContain("knip 2");
     // out-of-scope findings are NOT folded into the headline "left"
     expect(out).not.toMatch(/left 2/);
   });
 
-  it("T-137: omits the repo-wide line when everything is in scope", () => {
+  it("T-137: plain summary also omits out-of-scope backlog hints", () => {
     const builder = reportWith({
-      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
-      status: "fixed",
-      inScope: true,
+      ...makeFinding({
+        tool: "knip",
+        rule: "unused-export",
+        category: "dead-code",
+        file: "src/legacy.ts",
+      }),
+      status: "pending",
+      inScope: false,
     });
-    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
+    builder.recordScannerStatuses([{ tool: "knip", status: "ran" }]);
     const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
 
-    expect(renderSummary(report)).not.toContain("repo-wide");
+    const out = renderSummary(report, { plain: true });
+    expect(out).not.toContain("repo-wide");
+    expect(out).not.toContain("tend --all");
+    expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 left=0 secrets=0");
+  });
+
+  it("labels pending test-file findings as skipped by default, not left", () => {
+    const builder = reportWith({
+      ...makeFinding({
+        tool: "jscpd",
+        rule: "duplicate-code",
+        category: "duplication",
+        file: "src/foo.test.ts",
+      }),
+      status: "pending",
+      inScope: true,
+    });
+    builder.recordScannerStatuses([{ tool: "jscpd", status: "ran" }]);
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
+
+    const out = renderSummary(report);
+    expect(out).toContain("skipped tests");
+    expect(out).toContain("1 (pass --include-tests)");
+    expect(out).toMatch(/left\s+│ – 0/);
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain("skippedTests=1 left=0");
+    expect(plain).toContain('reason="test files are excluded by default"');
+    expect(plain).toContain('command="tend run --include-tests <path...>"');
   });
 
   it("T-138: scanner-status line distinguishes ran / skipped / failed (with reason)", () => {

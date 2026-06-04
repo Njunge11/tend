@@ -26,7 +26,7 @@ export const ConfigSchema = z.object({
 export type TendConfig = z.infer<typeof ConfigSchema>;
 
 /** CLI flags that can override config; only defined keys take effect. */
-export type CliOverrides = Partial<
+type CliOverrides = Partial<
   Pick<
     TendConfig,
     | "maxSessions"

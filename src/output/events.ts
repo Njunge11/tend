@@ -5,7 +5,7 @@ export type TendEvent =
   | { type: "snapshot" }
   | { type: "detected"; packageManager: string; typescript: boolean; testRunner?: string }
   | { type: "scan-start"; loop: number }
-  // `scanned` = files the scanners looked at (changed-file count); `files` = files with findings.
+  // `scanned` = resolved fix-scope file count when known; `findings`/`files` = in-scope findings.
   | { type: "audit"; loop: number; findings: number; files: number; scanned?: number }
   // Announces the batch about to be fixed this loop, so the live view can show queued work.
   | { type: "loop-start"; loop: number; files: string[]; concurrency: number }
@@ -14,7 +14,7 @@ export type TendEvent =
   | { type: "loop-complete"; loop: number; fixed: number }
   | { type: "done"; exitStatus: number };
 
-export type Listener = (event: TendEvent) => void;
+type Listener = (event: TendEvent) => void;
 
 /** Minimal synchronous event bus. With no listener, emit is a no-op (silent mode). */
 export class EventBus {

@@ -135,6 +135,22 @@ The failure mode tend exists to prevent is gradual: skip the cleanup now, and th
 
 ---
 
+## 14. Why monorepo gating resolves a single "owner root" (and the cross-package limitation)
+
+**The problem.** In a monorepo, the files you scope a run to often belong to a *nested* package, not the repo you invoked tend from. Run `tend run packages/tend` from the workspace root and the stack lives one level down: `packages/tend/tsconfig.json`, `packages/tend/vitest.config.mts`, `packages/tend/package.json`. If detection and the gate run from the repo root, you get the wrong context — `JavaScript · no test runner` — and worse, kept fixes are gated against a tsconfig/test-runner that isn't the one that actually governs the code.
+
+**What we chose.** For a path-scoped run, take the **common ancestor directory** of the scoped files and walk *up* from there to the nearest package/project root (a `package.json`, or failing that a `tsconfig.json` / `vitest.config.*` / `jest.config.*` / `eslint.config.*`), bounded by the repo cwd. That "owner root" is what we use for TypeScript detection, the `tsc` gate, test-runner detection, related-test execution, and the status line. The repo cwd still owns git operations, the snapshot/report, scope resolution, and package-manager detection (the lockfile lives at the workspace root). Findings stay repo-relative throughout; only the *command execution* (cwd + file arguments for typecheck/tests) shifts to the owner root.
+
+Why the common ancestor rather than resolving each file independently: a package can contain *nested* `package.json`s below it (e.g. `packages/tend/test/fixtures/monorepo/package.json`). Resolving per-file and then demanding agreement fragments the result — most files say `packages/tend`, the fixture files say the fixture dir — and you fall back to the repo root for no good reason. Walking up from the common ancestor ignores packages *below* the scope, which is what you want.
+
+**The limitation, worth knowing.** **Cross-package scopes fall back to the repo root.** If a single run touches files in two *different* packages (e.g. `apps/web` **and** `apps/api`), their common ancestor sits above any one package, so there's no single owning package and the gate runs from the repo root — which may itself report "no test runner." It won't crash or do the wrong thing; it just won't pick the ideal per-package context. This was a deliberate, conservative choice over the alternative (fail loudly on multi-package scopes), so the common case keeps working.
+
+**The future enhancement (not a rewrite).** Group the scoped files by owner root and run the gate **per group** — each package typechecked and tested in its own context within one run. The owner-root resolver (`src/detect/project-root.ts`) already produces exactly the grouping key needed; the work is in the orchestrator/fix-unit layer, which currently bakes one `(typescript, runner, baseline, tsc-cwd)` context per run rather than per unit. For the common case (a scoped run within one package, or a single-package repo) the current behavior is already correct — single-package repos resolve the owner root *to* the repo cwd, so nothing changes for them.
+
+So: not rigid — there's no repo-specific anything in the resolver, it's all standard `package.json`/lockfile/config-file conventions — but the cross-package path is "safe fallback" rather than "fully optimized." Good to revisit if multi-package runs become common.
+
+---
+
 ## Appendix — Research that proves the point
 
 **The point:** an LLM told to "fix the code" alone is unreliable and never reliably converges; bracketing it with deterministic detection and deterministic verification is what makes automated fixing work and provably terminate. Only three findings prove that directly — everything else (first-try gaps, industry adoption, framing pieces) is context, not proof, and is deliberately left out.

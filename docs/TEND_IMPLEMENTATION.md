@@ -234,6 +234,12 @@ packages/tend/
 - [ ] **T-120** secret in fixture → surfaced/halted, code fixes still proceed
 - [ ] **T-121** `undo` restores the fixture repo exactly to pre-run state
 
+### 24. Path-scoped fixing — `tend run <path...>`
+- [x] **T-122** `filesUnder(git, paths)` expands a dir to its files, a single file to itself, includes untracked, and yields `[]` for a no-match path — all repo-cwd-relative
+- [x] **T-123** `cli.ts` parses `run <path...>` positionals into `opts.paths`
+- [x] **T-124** `buildAudit` scans an injected scope list (`null` = whole repo) instead of re-deriving `changedVsHead`
+- [x] **T-125** with a path scope, a finding outside the path is reported but not fixed; one inside is fixed
+
 ---
 
 ## Definition of done

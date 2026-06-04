@@ -36,20 +36,20 @@ describe("PlainReporter", () => {
 
     // No ANSI escape codes anywhere.
     expect(lines.join("\n")).not.toMatch(new RegExp(String.fromCharCode(27)));
-    expect(lines).toContain("scanning…");
-    expect(lines.some((l) => l.includes("scanned 159 files") && l.includes("13 findings") && l.includes("10 files"))).toBe(true);
-    expect(lines.some((l) => l.includes("fixing loop 1") && l.includes("2 files") && l.includes("4 concurrent"))).toBe(true);
+    expect(lines).toContain("initial audit: scanning…");
+    expect(lines.some((l) => l.includes("initial audit: fix scope 159 files eligible for fixes") && l.includes("in-scope findings 13 across 10 files"))).toBe(true);
+    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("2 files") && l.includes("4 concurrent"))).toBe(true);
     expect(lines.some((l) => l.includes("fixed a.ts"))).toBe(true);
     expect(lines.some((l) => l.includes("reverted b.ts") && l.includes("broke tests"))).toBe(true);
     // file-start, loop-complete, done produce no standalone lines.
     expect(lines.some((l) => l.includes("a.ts") && l.includes("cognitive-complexity"))).toBe(false);
   });
 
-  it("omits the scanned-file count when it is unknown (whole-repo / --all)", () => {
+  it("labels an unknown scanned-file count as a repo audit (whole-repo / --all)", () => {
     const { reporter, lines } = harness();
     reporter.onEvent({ type: "audit", loop: 1, findings: 3, files: 2 });
-    expect(lines[0]).toContain("3 findings");
-    expect(lines[0]).not.toContain("files ·"); // no "N files ·" scanned prefix
+    expect(lines[0]).toContain("initial audit: fix scope whole repo");
+    expect(lines[0]).toContain("in-scope findings 3 across 2 files");
   });
 
   it("run() resolves immediately (no async rendering in plain mode)", async () => {

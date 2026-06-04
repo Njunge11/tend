@@ -18,6 +18,7 @@ export async function runCommand(deps: RunDeps): Promise<{ report: Report; exitS
     loops: result.loops,
     durationMs: now() - start,
     exitStatus: result.exitStatus,
+    aiUsage: result.usage,
   });
 
   return { report, exitStatus: result.exitStatus };

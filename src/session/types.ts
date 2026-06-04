@@ -10,9 +10,50 @@ export type SessionRequest = {
   prompt: string;
 };
 
+/**
+ * Estimated AI cost/usage for a unit of work. `total_cost_usd` from Claude's
+ * stream-json `result` message is a **client-side estimate**, never authoritative
+ * billing — always surface it as "estimated AI cost".
+ */
+export type AiUsage = {
+  /** Claude's `total_cost_usd` estimate (USD). A client-side estimate, not a bill. */
+  estimatedCostUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  /** Number of Claude sessions (result messages) observed. */
+  sessions: number;
+};
+
+/** Cost/token portion of usage parsed from a single stream (sessions tracked separately). */
+export type TokenCost = Omit<AiUsage, "sessions">;
+
+/** A usage record with everything zeroed. */
+export const zeroUsage = (): AiUsage => ({
+  estimatedCostUsd: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
+  sessions: 0,
+});
+
+/** Sum two usage records field-by-field (used to roll usage up through the run). */
+export function addUsage(a: AiUsage, b: AiUsage): AiUsage {
+  return {
+    estimatedCostUsd: a.estimatedCostUsd + b.estimatedCostUsd,
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    sessions: a.sessions + b.sessions,
+  };
+}
+
 export type SessionResult =
-  | { ok: true; edits: FileEdit[] }
-  | { ok: false; error: string; rateLimited: boolean };
+  | { ok: true; edits: FileEdit[]; usage?: AiUsage }
+  | { ok: false; error: string; rateLimited: boolean; usage?: AiUsage };
 
 /** One of the two interfaces in tend: drives an AI fix session. */
 export interface SessionRunner {

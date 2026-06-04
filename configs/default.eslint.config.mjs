@@ -20,11 +20,28 @@ export default [
     },
   },
   {
-    // On TypeScript, `no-undef` is redundant (the compiler already detects undefined
-    // symbols) and—run without type info—false-positives on lib/global types like
-    // `AbortSignal`. typescript-eslint's own guidance is to disable it for TS files.
     files: ["**/*.{ts,mts,cts,tsx}"],
-    rules: { "no-undef": "off" },
+    plugins: { "@typescript-eslint": tseslint.plugin },
+    rules: {
+      // On TypeScript, `no-undef` is redundant (the compiler already detects undefined
+      // symbols) and—run without type info—false-positives on lib/global types like
+      // `AbortSignal`. typescript-eslint's own guidance is to disable it for TS files.
+      "no-undef": "off",
+      // The core `no-unused-vars` rule reports incorrect errors on TS-only constructs
+      // (type-only imports, overload signatures, etc.), so typescript-eslint documents
+      // disabling it in favor of its TS-aware replacement. Underscore-prefixed names are
+      // the conventional "intentionally unused" signal.
+      "no-unused-vars": "off",
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        {
+          argsIgnorePattern: "^_",
+          varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
+    },
   },
   sonarjs.configs.recommended,
 ];

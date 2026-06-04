@@ -1,6 +1,15 @@
 import type { Finding } from "../findings/finding.js";
 import { assignRetryIds, type RetryIdGenerator } from "./retry-id.js";
-import { ReportSchema, type BehaviorChange, type Report, type ScannerStatus } from "./schema.js";
+import { ReportSchema, type AiUsage, type BehaviorChange, type Report, type ScannerStatus } from "./schema.js";
+
+const ZERO_AI_USAGE: AiUsage = {
+  estimatedCostUsd: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheCreationInputTokens: 0,
+  cacheReadInputTokens: 0,
+  sessions: 0,
+};
 
 /** Accumulates per-finding outcomes and run metadata into a validated report.json. */
 export class ReportBuilder {
@@ -29,7 +38,7 @@ export class ReportBuilder {
     this.scannerStatuses = statuses;
   }
 
-  build(meta: { loops: number; durationMs: number; exitStatus: number }): Report {
+  build(meta: { loops: number; durationMs: number; exitStatus: number; aiUsage?: AiUsage }): Report {
     const findings = assignRetryIds([...this.outcomes.values()], this.generateRetryId);
 
     const report: Report = {
@@ -40,6 +49,7 @@ export class ReportBuilder {
         .map((f) => ({ findingId: f.id, remediation: f.remediation! })),
       flaggedBehaviorChanges: this.flagged,
       scannerStatuses: this.scannerStatuses,
+      aiUsage: meta.aiUsage ?? ZERO_AI_USAGE,
       loops: meta.loops,
       durationMs: meta.durationMs,
       exitStatus: meta.exitStatus,

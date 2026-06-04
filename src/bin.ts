@@ -2,16 +2,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execa } from "execa";
-import { buildProgram } from "./cli.js";
+import { buildProgram, type CliHandlers } from "./cli.js";
 import { buildAudit, scanFiles, scannerAvailability } from "./scanners/all.js";
 import { realSpawn, realWhich } from "./scanners/exec.js";
 import { filterToChanged } from "./scanners/scope.js";
-import { changedVsHead, assertGitRepo } from "./git/repo.js";
+import { changedVsHead, filesUnder, assertGitRepo } from "./git/repo.js";
 import { createGit } from "./git/client.js";
 import { Snapshot } from "./git/snapshot.js";
 import { detectPackageManager } from "./detect/package-manager.js";
 import { detectTestRunner } from "./detect/test-runner.js";
 import { detectTypeScript } from "./detect/typescript.js";
+import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
 import { makeFixUnit } from "./fixing/fix-unit.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
 import { planWork } from "./fixing/dispatch.js";
@@ -47,7 +48,7 @@ const TEST_TIMEOUT_MS = 5 * 60_000;
 const out = (s: string) => process.stdout.write(`${s}\n`);
 const err = (s: string) => process.stderr.write(`${s}\n`);
 
-const plural = (n: number, one: string) => `${n} ${n === 1 ? one : `${one}s`}`;
+const plural = (n: number, one: string) => `${n} ${n === 1 ? one : one + "s"}`;
 
 function persist(path: string, value: unknown): void {
   mkdirSync(TEND_DIR, { recursive: true });
@@ -64,17 +65,24 @@ function loadReport(): Report {
   return ReportSchema.parse(loadJson<unknown>(REPORT_PATH));
 }
 
-/** Run the detected test runner over the given files and parse pass/fail per test. */
+/**
+ * Run the detected test runner over the given files and parse pass/fail per test.
+ * `files` are repo-relative; `root` is the package that owns them (the cwd the runner
+ * executes in). Files are re-based onto `root` so `vitest related` / `jest
+ * --findRelatedTests` resolve them inside the owning package, not the repo root.
+ */
 async function runTests(
   runner: "vitest" | "jest",
   files: string[],
+  root: string,
 ): Promise<TestOutcome[]> {
+  const targets = toOwnerRelative(files, cwd, root);
   const args =
     runner === "vitest"
-      ? ["vitest", "related", ...files, "--run", "--reporter=json"]
-      : ["jest", "--findRelatedTests", ...files, "--json"];
+      ? ["vitest", "related", ...targets, "--run", "--reporter=json"]
+      : ["jest", "--findRelatedTests", ...targets, "--json"];
   const res = await execa("npx", args, {
-    cwd,
+    cwd: root,
     reject: false,
     timeout: TEST_TIMEOUT_MS,
   });
@@ -106,6 +114,11 @@ async function runTests(
 async function makeProductionFixUnit(
   config: { model: string; effort?: Effort },
   baselineTargets: string[],
+  // The package root that owns the scoped files. Detection (TypeScript/test runner),
+  // the test baseline, typecheck, and related-test runs all execute here so a
+  // path-scoped run inside a monorepo gates against the owning package, not the repo
+  // root. Defaults to the repo cwd for whole-repo / root-package runs.
+  ownerRoot: string = cwd,
 ): Promise<{
   fixUnit: (
     unit: WorkUnit,
@@ -117,11 +130,11 @@ async function makeProductionFixUnit(
   typescript: boolean;
   runner: "vitest" | "jest" | null;
 }> {
-  const typescript = detectTypeScript(cwd);
-  const runner = detectTestRunner(cwd) ?? null;
+  const typescript = detectTypeScript(ownerRoot);
+  const runner = detectTestRunner(ownerRoot) ?? null;
   const baseline = new Set<string>(
     runner && baselineTargets.length > 0
-      ? (await runTests(runner, baselineTargets))
+      ? (await runTests(runner, baselineTargets, ownerRoot))
           .filter((t) => t.status === "pass")
           .map((t) => t.name)
       : [],
@@ -160,7 +173,8 @@ async function makeProductionFixUnit(
       typescript,
       runTsc: async () => {
         const r = await execa("npx", ["tsc", "--noEmit"], {
-          cwd,
+          // tsc picks up the owning package's tsconfig from its cwd.
+          cwd: ownerRoot,
           reject: false,
           timeout: TSC_TIMEOUT_MS,
         });
@@ -172,7 +186,7 @@ async function makeProductionFixUnit(
       },
       hasTestRunner: Boolean(runner),
       runRelated: (files) =>
-        runner ? runTests(runner, files) : Promise.resolve([]),
+        runner ? runTests(runner, files, ownerRoot) : Promise.resolve([]),
       scanFindings: async (files) =>
         (
           await scanFiles(
@@ -192,17 +206,18 @@ async function makeProductionFixUnit(
   };
 }
 
-async function runRun(opts: {
-  all?: boolean;
-  maxLoops?: number;
-  maxSessions?: number;
-  model?: string;
-  effort?: string;
-  includeTests?: boolean;
-  plain?: boolean;
-  color?: boolean;
-  verbose?: boolean;
-}): Promise<void> {
+function describeScopeNote(
+  all: boolean | undefined,
+  paths: string[],
+  scope: string[] | null,
+): string {
+  if (all) return "whole repo";
+  if (paths.length > 0)
+    return `${plural(scope?.length ?? 0, "file")} under ${paths.join(", ")}`;
+  return `${plural(scope?.length ?? 0, "changed file")}`;
+}
+
+async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // Resolve color/interactivity once, then paint the header immediately so the screen is
   // never blank while we take the snapshot. (`--no-color` arrives from commander as color:false.)
   const env = detectOutputEnv({
@@ -254,23 +269,44 @@ async function runRun(opts: {
   if (missing.length > 0)
     reporter.note(`skipping missing external scanners: ${missing.join(", ")}`);
 
+  // Resolve the fix scope once and feed it to everything downstream (test baseline, audit,
+  // fix filter). `null` means the whole repo (`--all`); otherwise it's the concrete file list
+  // to fix — explicit path arguments expanded to files, or the files changed vs HEAD.
+  const paths = opts.paths ?? [];
+  let scope: string[] | null;
+  if (opts.all) {
+    scope = null;
+  } else if (paths.length > 0) {
+    scope = await filesUnder(git, paths);
+    if (scope.length === 0) {
+      err(`✖ no files under ${paths.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    scope = await changedVsHead(git);
+  }
+
   // Capture the pristine test baseline (which tests are green before any fix), scoped to the
   // files we'll touch. Relating against "." runs the whole suite and can take many minutes.
-  const changed = opts.all ? null : await changedVsHead(git);
-  const baselineTargets = changed ?? ["."];
+  const baselineTargets = scope ?? ["."];
+  // For a path-scoped run, resolve the package that owns the scoped files and gate against
+  // it. Whole-repo runs (`--all`, scope === null) stay rooted at the repo cwd.
+  const ownerRoot = scope ? resolveOwnerRoot(cwd, scope) : cwd;
   const { fixUnit, runner, typescript } = await makeProductionFixUnit(
     config,
     baselineTargets,
+    ownerRoot,
   );
+  // Package manager stays repo-rooted: the lockfile lives at the workspace root, not the
+  // owning package.
   const pm = detectPackageManager(cwd);
   reporter.note(
     `${pm} · ${typescript ? "TypeScript" : "JavaScript"} · ${runner ?? "no test runner"} · ${modelLabel}`,
   );
 
-  const scope = opts.all
-    ? "whole repo"
-    : `${plural(changed?.length ?? 0, "changed file")}`;
-  reporter.note(`${scope} · ${plural(available.length, "scanner")}`);
+  const scopeNote = describeScopeNote(opts.all, paths, scope);
+  reporter.note(`${scopeNote} · ${plural(available.length, "scanner")}`);
 
   const bus = new EventBus();
   bus.on((e) => reporter.onEvent(e));
@@ -283,15 +319,14 @@ async function runRun(opts: {
     result = await orchestrate({
       audit: buildAudit({
         cwd,
-        git,
         which: realWhich,
         spawn: realSpawn,
-        all: Boolean(opts.all),
+        scope,
         timeoutMs: 120_000,
       }),
       fixUnit,
       config,
-      inScope: changed ? (fs) => filterToChanged(fs, changed) : undefined,
+      inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
       bus,
     });
   } finally {
@@ -307,6 +342,7 @@ async function runRun(opts: {
     loops: result.loops,
     durationMs,
     exitStatus: result.exitStatus,
+    aiUsage: result.usage,
   });
   persist(REPORT_PATH, report);
 
@@ -347,7 +383,13 @@ async function runRetry(id: string): Promise<void> {
         persist(SNAPSHOT_PATH, snapshot.toJSON());
         snapshotSaved = true;
       }
-      const { fixUnit } = await makeProductionFixUnit(config, unit.files);
+      // Gate the retry against the package that owns the target's files, same as `run`.
+      const ownerRoot = resolveOwnerRoot(cwd, unit.files);
+      const { fixUnit } = await makeProductionFixUnit(
+        config,
+        unit.files,
+        ownerRoot,
+      );
       return fixUnit(unit, 1);
     },
   });

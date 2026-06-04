@@ -86,6 +86,7 @@ describe("LiveReporter", () => {
     try {
       reporter.start();
       const drawing = reporter.run();
+      reporter.onEvent({ type: "scan-start", loop: 1 });
       reporter.onEvent({
         type: "audit",
         loop: 1,
@@ -117,7 +118,9 @@ describe("LiveReporter", () => {
     }
 
     const output = chunks.join("");
-    expect(output).toContain("fixing 150/150");
+    expect(output).toContain("initial audit: fix scope 150 files eligible for fixes");
+    expect(output).toContain("in-scope findings 150 across 150 files");
+    expect(output).toContain("fix pass 1 150/150");
     expect(output).toContain("150 fixed");
     // Regression guard for captured terminals: fixed files should not be emitted as
     // persistent completed Listr rows, one per file, across redraws.

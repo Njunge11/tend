@@ -37,6 +37,27 @@ export async function changedVsHead(git: SimpleGit): Promise<string[]> {
   return [...files];
 }
 
+/**
+ * Concrete files under the given path(s) — tracked plus untracked (so newly-added files
+ * are scoped too, mirroring `changedVsHead`). `git ls-files` reports paths relative to
+ * `git`'s working directory and interprets the pathspecs the same way, so the result is
+ * already in the coordinate system the scanners and `filterToChanged` expect. Expanding to
+ * concrete files (not bare directories) matters: `filterToChanged` matches exact paths.
+ */
+export async function filesUnder(git: SimpleGit, paths: string[]): Promise<string[]> {
+  if (paths.length === 0) return [];
+  const list = async (args: string[]): Promise<string[]> =>
+    (await git.raw(["ls-files", ...args, "--", ...paths]))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  const files = new Set<string>([
+    ...(await list([])), // tracked
+    ...(await list(["-o", "--exclude-standard"])), // untracked, honoring .gitignore
+  ]);
+  return [...files];
+}
+
 /** Revert a single file to its snapshot state. */
 export function revertFile(snapshot: Snapshot, file: string): Promise<void> {
   return snapshot.restoreFile(file);

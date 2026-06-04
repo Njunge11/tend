@@ -1,6 +1,6 @@
 import { pass, reject, type CheckResult } from "../check.js";
 
-export type TypecheckDeps = {
+type TypecheckDeps = {
   /** Whether the project has a tsconfig (TS mode). */
   hasTsconfig: () => boolean | Promise<boolean>;
   /** Run `tsc --noEmit` and return its exit code + combined output. */

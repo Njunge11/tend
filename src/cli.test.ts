@@ -42,6 +42,27 @@ describe("buildProgram", () => {
     expect(h.run).toHaveBeenCalledWith(expect.objectContaining({ includeTests: true }));
   });
 
+  it("T-123: parses run <path...> positionals into opts.paths", async () => {
+    const h = handlers();
+    await buildProgram(h).parseAsync(
+      ["run", "apps/dashboard/lib/whatsapp", "src/a.ts"],
+      { from: "user" },
+    );
+    expect(h.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paths: ["apps/dashboard/lib/whatsapp", "src/a.ts"],
+      }),
+    );
+  });
+
+  it("run with no positionals leaves paths empty", async () => {
+    const h = handlers();
+    await buildProgram(h).parseAsync(["run"], { from: "user" });
+    expect(h.run).toHaveBeenCalledWith(
+      expect.objectContaining({ paths: [] }),
+    );
+  });
+
   it("T-116: show <id> passes the id through", async () => {
     const h = handlers();
     await buildProgram(h).parseAsync(["show", "abc123"], { from: "user" });

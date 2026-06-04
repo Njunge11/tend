@@ -1,15 +1,12 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ScanContext, SpawnResult } from "./scanner.js";
+import type { SpawnResult } from "./scanner.js";
+import { ctx, fixture } from "./_test-helpers.js";
 import { eslintSonarjsScanner, runEslintSonarjs } from "./eslint-sonarjs.js";
 
-const fixture = (name: string) =>
-  readFileSync(fileURLToPath(new URL(`../../test/fixtures/scanner-outputs/${name}`, import.meta.url)), "utf8");
-
-const ctx: ScanContext = { cwd: "/repo", files: [], loop: 1 };
 const raw = (stdout: string, exitCode = 1): SpawnResult => ({ stdout, stderr: "", exitCode });
 
 describe("eslintSonarjsScanner.parse", () => {
@@ -45,6 +42,13 @@ describe("runEslintSonarjs (Node API, bundled eslint)", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const DUP_BRANCHES = "export function pick(c) {\n  if (c) { return 42; } else { return 42; }\n}\n";
+  const UNUSED_AND_DUP = "export function pick(c) {\n  const unused = 1;\n  if (c) { return 42; } else { return 42; }\n}\n";
+
+  async function lintCodeJs(content: string) {
+    writeFileSync(join(dir, "code.js"), content);
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 });
+    return { res, rules: res.findings.map((f) => f.rule) };
+  }
 
   it("default mode (no project config) → sonarjs findings via tend's config", async () => {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
@@ -59,12 +63,76 @@ describe("runEslintSonarjs (Node API, bundled eslint)", () => {
   it("layer mode → project's own rules AND sonarjs in one pass", async () => {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
     writeFileSync(join(dir, "eslint.config.mjs"), 'export default [{ rules: { "no-unused-vars": "error" } }];\n');
-    writeFileSync(join(dir, "code.js"), "export function pick(c) {\n  const unused = 1;\n  if (c) { return 42; } else { return 42; }\n}\n");
 
-    const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 });
+    const { rules } = await lintCodeJs(UNUSED_AND_DUP);
 
-    const rules = res.findings.map((f) => f.rule);
     expect(rules).toContain("no-unused-vars"); // their rule
     expect(rules.some((r) => r.startsWith("sonarjs/"))).toBe(true); // our layer
+  });
+
+  it("defer mode → project that already configures sonarjs is used as-is (no extra layer)", async () => {
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "x", devDependencies: { "eslint-plugin-sonarjs": "^3.0.1" } }),
+    );
+    // Config references sonarjs (here in a comment) and the plugin is a declared dep → tend
+    // treats this project as already configuring sonarjs and defers, layering nothing.
+    writeFileSync(
+      join(dir, "eslint.config.mjs"),
+      '// sonarjs is wired up by this project itself\nexport default [{ rules: { "no-unused-vars": "error" } }];\n',
+    );
+
+    const { res, rules } = await lintCodeJs(UNUSED_AND_DUP);
+
+    expect(res.error).toBeUndefined();
+    expect(rules).toContain("no-unused-vars"); // their rule still runs
+    expect(rules.some((r) => r.startsWith("sonarjs/"))).toBe(false); // tend did NOT layer sonarjs
+  });
+
+  it("default mode lints TS via the TS-aware unused-vars rule, not the bogus core rule", async () => {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(
+      join(dir, "code.ts"),
+      "export interface Greeter {\n  greet(name: string): void;\n}\nconst _ok = 1;\nexport function f(): number {\n  const dead = 3;\n  return 1;\n}\n",
+    );
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+
+    const rules = res.findings.map((f) => f.rule);
+    expect(res.error).toBeUndefined();
+    expect(rules).not.toContain("no-unused-vars"); // core rule disabled for TS
+    expect(rules).toContain("@typescript-eslint/no-unused-vars"); // `dead` caught by the TS-aware rule
+  });
+});
+
+// A real monorepo layout: repo root has no eslint config, apps/dashboard has its own.
+describe("runEslintSonarjs (per-file config resolution in a monorepo)", () => {
+  const monorepoRoot = fileURLToPath(new URL("../../test/fixtures/monorepo", import.meta.url));
+  const dashboardConfig = fileURLToPath(
+    new URL("../../test/fixtures/monorepo/apps/dashboard/eslint.config.mjs", import.meta.url),
+  );
+
+  it("uses apps/dashboard/eslint.config.mjs when run from the repo root", async () => {
+    expect(existsSync(dashboardConfig)).toBe(true);
+
+    const res = await runEslintSonarjs({
+      cwd: monorepoRoot,
+      files: ["apps/dashboard/sample.ts"],
+      loop: 1,
+    });
+
+    expect(res.error).toBeUndefined();
+    const rules = res.findings.map((f) => f.rule);
+
+    // `eqeqeq` exists only in apps/dashboard's config — proves tend resolved THAT config and
+    // not its bundled fallback (which never enables eqeqeq).
+    expect(rules).toContain("eqeqeq");
+    // The package config disables core no-unused-vars for TS, so the interface method param
+    // and the underscore-prefixed local must NOT surface as bogus core findings.
+    expect(rules).not.toContain("no-unused-vars");
+    // The package config doesn't configure sonarjs → tend layers it on top.
+    expect(rules.some((r) => r.startsWith("sonarjs/"))).toBe(true);
+    // Output paths stay relative to the original ctx.cwd (repo root), preserving finding IDs.
+    expect(res.findings.every((f) => f.file === "apps/dashboard/sample.ts")).toBe(true);
   });
 });

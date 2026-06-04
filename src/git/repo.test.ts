@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tmpRepo, type TmpRepo } from "../../test/helpers/tmp-repo.js";
 import { createGit } from "./client.js";
-import { assertGitRepo, changedVsHead, revertFile } from "./repo.js";
+import { assertGitRepo, changedVsHead, filesUnder, revertFile } from "./repo.js";
 import { Snapshot } from "./snapshot.js";
 
 describe("assertGitRepo", () => {
@@ -47,6 +47,42 @@ describe("repo ops", () => {
     const fromDashboard = createGit(join(repo.dir, "apps/dashboard"));
     // only the dashboard change, pathed relative to the dashboard dir (no apps/dashboard/ prefix)
     expect(new Set(await changedVsHead(fromDashboard))).toStrictEqual(new Set(["a.ts"]));
+  });
+
+  it("T-122: expands a directory to its files, repo-relative", async () => {
+    repo.write("src/a.ts", "A\n");
+    repo.write("src/nested/b.ts", "B\n");
+    repo.write("other/c.ts", "C\n"); // outside the requested dir
+    await repo.commit("init");
+
+    expect(new Set(await filesUnder(repo.git, ["src"]))).toStrictEqual(
+      new Set(["src/a.ts", "src/nested/b.ts"]),
+    );
+  });
+
+  it("T-122: a single file path expands to just that file", async () => {
+    repo.write("src/a.ts", "A\n");
+    repo.write("src/b.ts", "B\n");
+    await repo.commit("init");
+
+    expect(await filesUnder(repo.git, ["src/a.ts"])).toStrictEqual(["src/a.ts"]);
+  });
+
+  it("T-122: includes untracked files under the path (mirrors changedVsHead)", async () => {
+    repo.write("src/a.ts", "A\n");
+    await repo.commit("init");
+    repo.write("src/new.ts", "NEW\n"); // untracked, never committed
+
+    expect(new Set(await filesUnder(repo.git, ["src"]))).toStrictEqual(
+      new Set(["src/a.ts", "src/new.ts"]),
+    );
+  });
+
+  it("T-122: a path matching no files yields an empty list", async () => {
+    repo.write("src/a.ts", "A\n");
+    await repo.commit("init");
+
+    expect(await filesUnder(repo.git, ["does/not/exist"])).toStrictEqual([]);
   });
 
   it("T-084: revert a single file to snapshot", async () => {

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /** Walk up from this module to tend's own package root (dir of its package.json named tend-cli). */
 function tendPackageRoot(): string {
@@ -57,6 +57,24 @@ function readPackageJson(cwd: string): Record<string, unknown> | null {
 export function projectHasEslintConfig(cwd: string): boolean {
   if (ESLINT_CONFIG_FILES.some((name) => existsSync(join(cwd, name)))) return true;
   return Boolean(readPackageJson(cwd)?.["eslintConfig"]);
+}
+
+/**
+ * Nearest directory at or above `startDir`, up to and including `boundaryDir`, that holds an
+ * eslint config — or null if none. Lets tend resolve each scoped file's governing config by
+ * walking upward from the file, so a monorepo package keeps its own config even when tend is
+ * invoked from the repo root (where there may be no config at all).
+ */
+export function findEslintConfigDir(startDir: string, boundaryDir: string): string | null {
+  const boundary = resolve(boundaryDir);
+  let dir = resolve(startDir);
+  for (;;) {
+    if (projectHasEslintConfig(dir)) return dir;
+    if (dir === boundary) return null;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 function dependsOnSonarjs(cwd: string): boolean {

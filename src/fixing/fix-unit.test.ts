@@ -109,6 +109,74 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
+  it("sums estimated AI usage across the initial session and every repair session", async () => {
+    write("src/a.ts", "const x = a == b;\n");
+    // Each session run writes the same clean fix to disk and reports one session's usage.
+    const perRun = {
+      estimatedCostUsd: 0.01,
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationInputTokens: 2,
+      cacheReadInputTokens: 3,
+      sessions: 1,
+    };
+    const session: SessionRunner = {
+      async run() {
+        write("src/a.ts", "const x = a === b;\n");
+        return { ok: true, edits: [], usage: perRun };
+      },
+    };
+    // A previously-green test is red on the first check, then green after one repair —
+    // so the unit makes two session.run calls (initial + one repair).
+    const outcomes: ("fail" | "pass")[] = ["fail", "pass"];
+    const runRelated = vi.fn(async () => [
+      { name: "t1", status: outcomes.shift() ?? "pass" } as const,
+    ]);
+
+    const outcome = await makeFixUnit(
+      deps(session, { hasTestRunner: true, baseline: new Set(["t1"]), runRelated }),
+    )(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(true);
+    // initial + one repair = two sessions, usage summed field-by-field
+    expect(outcome.usage).toStrictEqual({
+      estimatedCostUsd: 0.02,
+      inputTokens: 20,
+      outputTokens: 10,
+      cacheCreationInputTokens: 4,
+      cacheReadInputTokens: 6,
+      sessions: 2,
+    });
+  });
+
+  it("attributes usage even when the attempt is reverted (suppression caught)", async () => {
+    write("src/a.ts", "const x = a == b;\n");
+    const session: SessionRunner = {
+      async run() {
+        write("src/a.ts", "// eslint-disable-next-line\nconst x = a == b;\n");
+        return {
+          ok: true,
+          edits: [],
+          usage: {
+            estimatedCostUsd: 0.05,
+            inputTokens: 7,
+            outputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            sessions: 1,
+          },
+        };
+      },
+    };
+
+    const outcome = await makeFixUnit(deps(session))(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("suppression");
+    expect(outcome.usage?.estimatedCostUsd).toBe(0.05);
+    expect(outcome.usage?.sessions).toBe(1);
+  });
+
   it("reverts when a fix removes its finding but introduces a new one", async () => {
     write("src/a.ts", "const x = a == b;\n");
     const before = makeFinding({
@@ -132,7 +200,8 @@ describe("makeFixUnit — disk is the source of truth", () => {
 
     const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
 
-    expect(outcome).toStrictEqual({ kept: false, reason: "regression" });
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("regression");
     expect(scanFindings).toHaveBeenCalledWith(["src/a.ts"]);
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });

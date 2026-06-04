@@ -9,7 +9,7 @@ export type WorkUnit = {
   findings: Finding[];
 };
 
-export const TEST_FILE_RE = /^(.*)\.(test|spec)\.([cm]?[jt]sx?)$/;
+const TEST_FILE_RE = /^(.*)\.(test|spec)\.([cm]?[jt]sx?)$/;
 
 /** Whether a repo-relative path is a test file (`*.test.*` / `*.spec.*`). */
 export const isTestFile = (file: string): boolean => TEST_FILE_RE.test(file);

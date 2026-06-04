@@ -41,6 +41,71 @@ describe("ReportBuilder", () => {
     expect(report.exitStatus).toBe(1);
   });
 
+  it("includes the run's estimated AI usage when provided to build()", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome(makeFinding({ file: "src/a.ts" }));
+
+    const report = builder.build({
+      loops: 1,
+      durationMs: 42,
+      exitStatus: 0,
+      aiUsage: {
+        estimatedCostUsd: 1.84,
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationInputTokens: 100,
+        cacheReadInputTokens: 200,
+        sessions: 4,
+      },
+    });
+
+    expect(report.aiUsage).toStrictEqual({
+      estimatedCostUsd: 1.84,
+      inputTokens: 1000,
+      outputTokens: 500,
+      cacheCreationInputTokens: 100,
+      cacheReadInputTokens: 200,
+      sessions: 4,
+    });
+  });
+
+  it("defaults aiUsage to zero when build() is given none", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome(makeFinding({ file: "src/a.ts" }));
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 0 });
+    expect(report.aiUsage).toStrictEqual({
+      estimatedCostUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      sessions: 0,
+    });
+  });
+
+  it("defaults missing aiUsage to zero when parsing an old report.json", () => {
+    // A report written before usage tracking has no aiUsage field.
+    const oldReport = {
+      findings: [],
+      secrets: [],
+      depBumps: [],
+      flaggedBehaviorChanges: [],
+      scannerStatuses: [],
+      loops: 1,
+      durationMs: 100,
+      exitStatus: 0,
+    };
+    const parsed = ReportSchema.parse(oldReport);
+    expect(parsed.aiUsage).toStrictEqual({
+      estimatedCostUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      sessions: 0,
+    });
+  });
+
   it("assigns unique human retry ids to report findings", () => {
     const ids = ["kx7p2q", "kx7p2q", "m8n4sa"];
     const builder = new ReportBuilder(() => ids.shift() ?? "z9z9z9");

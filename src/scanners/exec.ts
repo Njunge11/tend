@@ -11,22 +11,34 @@ const BUNDLED_PACKAGE: Record<string, string> = {
   jscpd: "jscpd",
 };
 
+/**
+ * Resolve a bin script from a package.json at `pkgDir`.
+ * When `expectedName` is supplied, skips the directory if the package name does not match —
+ * used by resolveBinFrom when walking up from an entry-point to find the owning package root.
+ */
+function binScriptIn(pkgDir: string, binary: string, expectedName?: string): string | null {
+  const pkgJson = join(pkgDir, "package.json");
+  if (!existsSync(pkgJson)) return null;
+  try {
+    const json = JSON.parse(readFileSync(pkgJson, "utf8")) as { name?: string; bin?: string | Record<string, string> };
+    if (expectedName && json.name !== expectedName) return null;
+    const rel = typeof json.bin === "string" ? json.bin : json.bin?.[binary];
+    if (!rel) return null;
+    const script = join(pkgDir, rel);
+    return existsSync(script) ? script : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Find a package's bin script via a given resolver base, robust to `exports` hiding package.json. */
 function resolveBinFrom(base: string, pkg: string, binary: string): string | null {
   try {
     const req = createRequire(base);
-    let dir = dirname(req.resolve(pkg)); // resolves the main entry, then walk up
+    let dir = dirname(req.resolve(pkg));
     for (let i = 0; i < 8; i++) {
-      const pkgJsonPath = join(dir, "package.json");
-      if (existsSync(pkgJsonPath)) {
-        const json = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as { name?: string; bin?: string | Record<string, string> };
-        if (json.name === pkg) {
-          const rel = typeof json.bin === "string" ? json.bin : json.bin?.[binary];
-          if (!rel) return null;
-          const script = join(dir, rel);
-          return existsSync(script) ? script : null;
-        }
-      }
+      const found = binScriptIn(dir, binary, pkg);
+      if (found) return found;
       const parent = dirname(dir);
       if (parent === dir) break;
       dir = parent;
@@ -41,20 +53,6 @@ function resolveBinFrom(base: string, pkg: string, binary: string): string | nul
 export function resolveBundledScanner(binary: string): string | null {
   const pkg = BUNDLED_PACKAGE[binary];
   return pkg ? resolveBinFrom(import.meta.url, pkg, binary) : null;
-}
-
-function binScriptIn(pkgDir: string, binary: string): string | null {
-  const pkgJson = join(pkgDir, "package.json");
-  if (!existsSync(pkgJson)) return null;
-  try {
-    const bin = (JSON.parse(readFileSync(pkgJson, "utf8")) as { bin?: string | Record<string, string> }).bin;
-    const rel = typeof bin === "string" ? bin : bin?.[binary];
-    if (!rel) return null;
-    const script = join(pkgDir, rel);
-    return existsSync(script) ? script : null;
-  } catch {
-    return null;
-  }
 }
 
 /**

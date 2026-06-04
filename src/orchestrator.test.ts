@@ -4,6 +4,9 @@ import type { Finding } from "./findings/finding.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
 import { EventBus, type TendEvent } from "./output/events.js";
 import { orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
+import { filesUnder } from "./git/repo.js";
+import { filterToChanged } from "./scanners/scope.js";
+import { tmpRepo } from "../test/helpers/tmp-repo.js";
 
 const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4 };
 
@@ -92,6 +95,44 @@ describe("orchestrate", () => {
     expect(events.filter((event) => event.type === "file-result")).toHaveLength(config.perIssueBudget);
   });
 
+  it("aggregates estimated AI usage across fix outcomes, including reverted ones", async () => {
+    const usage = (costUsd: number, inTok: number) => ({
+      estimatedCostUsd: costUsd,
+      inputTokens: inTok,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      sessions: 1,
+    });
+    // a.ts is kept; b.ts reverts once and (budget 1) becomes unfixable — both spend tokens.
+    const audit = vi.fn(scriptedAudit([[ai("a.ts"), ai("b.ts")], [ai("b.ts")]]));
+    const fixUnit = vi.fn(async (unit: WorkUnit): Promise<FixOutcome> =>
+      unit.file === "a.ts"
+        ? { kept: true, usage: usage(0.1, 100) }
+        : { kept: false, reason: "broke-test", usage: usage(0.05, 50) },
+    );
+
+    const res = await orchestrate({ audit, fixUnit, config: { ...config, perIssueBudget: 1 } });
+
+    expect(fixUnit).toHaveBeenCalledTimes(2);
+    expect(res.usage.estimatedCostUsd).toBeCloseTo(0.15, 10);
+    expect(res.usage.inputTokens).toBe(150);
+    expect(res.usage.sessions).toBe(2);
+  });
+
+  it("reports zero usage for a no-fix run", async () => {
+    const audit = vi.fn(scriptedAudit([[]]));
+    const res = await orchestrate({ audit, fixUnit: vi.fn(keep), config });
+    expect(res.usage).toStrictEqual({
+      estimatedCostUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      sessions: 0,
+    });
+  });
+
   it("T-108: oscillation is bounded by max loops", async () => {
     const audit = vi.fn(async (loop: number) => ({ findings: [loop % 2 === 1 ? ai("a.ts") : ai("b.ts")] }));
     const res = await orchestrate({ audit, fixUnit: vi.fn(keep), config: { ...config, maxLoops: 3 } });
@@ -169,6 +210,50 @@ describe("orchestrate", () => {
     expect(fixUnit).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledTimes(1);
     expect(res.findings.find((f) => f.file === "src/outside.ts")?.inScope).toBe(false);
+  });
+
+  it("T-125: with a path scope, an out-of-scope finding is reported but not fixed", async () => {
+    // Real path-scope pipeline: expand a directory to its files, then fix only findings under it.
+    const repo = await tmpRepo();
+    try {
+      repo.write("apps/whatsapp/inbound.ts", "A\n");
+      repo.write("apps/other/util.ts", "B\n");
+      await repo.commit("init");
+
+      const scope = await filesUnder(repo.git, ["apps/whatsapp"]);
+
+      const inside = ai("apps/whatsapp/inbound.ts");
+      const outside = ai("apps/other/util.ts");
+      // Scanners report both files every loop; only the in-scope one should be dispatched.
+      const audit = vi.fn(async (loop: number) => ({
+        findings: [[inside, outside], [outside]][loop - 1] ?? [],
+        scanned: scope.length,
+      }));
+      const fixUnit = vi.fn(keep);
+      const events: TendEvent[] = [];
+      const bus = new EventBus();
+      bus.on((event) => events.push(event));
+
+      const res = await orchestrate({
+        audit,
+        fixUnit,
+        config,
+        inScope: (fs) => filterToChanged(fs, scope),
+        bus,
+      });
+
+      expect(fixUnit).toHaveBeenCalledTimes(1);
+      expect(fixUnit.mock.calls[0]?.[0].file).toBe("apps/whatsapp/inbound.ts");
+      expect(events.filter((event) => event.type === "audit")).toEqual([
+        { type: "audit", loop: 1, findings: 1, files: 1, scanned: 1 },
+        { type: "audit", loop: 2, findings: 0, files: 0, scanned: 1 },
+      ]);
+      expect(res.findings.find((f) => f.file === "apps/whatsapp/inbound.ts")?.inScope).toBe(true);
+      // The out-of-scope finding is still reported in the store, just tagged out of scope.
+      expect(res.findings.find((f) => f.file === "apps/other/util.ts")?.inScope).toBe(false);
+    } finally {
+      repo.cleanup();
+    }
   });
 
   it("T-127: --include-tests opts test files back in as fix targets", async () => {

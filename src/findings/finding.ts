@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export const TOOLS = ["sonarjs", "knip", "jscpd", "semgrep", "osv", "gitleaks"] as const;
 
-export const RangeSchema = z.object({
+const RangeSchema = z.object({
   startLine: z.number(),
   startCol: z.number(),
   endLine: z.number(),
@@ -50,7 +50,7 @@ export type Tool = (typeof TOOLS)[number];
 export type Track = Finding["track"];
 
 /** The components that give a finding its stable identity. */
-export type FingerprintInput = {
+type FingerprintInput = {
   tool: string;
   rule: string;
   file: string;

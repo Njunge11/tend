@@ -13,7 +13,7 @@ export type OutputEnv = {
   unicode: boolean;
 };
 
-export type DetectInput = {
+type DetectInput = {
   /** The stream we render to (defaults are derived from `process.stdout` by callers). */
   stream?: { isTTY?: boolean };
   env?: NodeJS.ProcessEnv;
