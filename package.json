@@ -11,6 +11,14 @@
     "static-analysis"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Njunge11/tend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Njunge11/tend/issues"
+  },
+  "homepage": "https://github.com/Njunge11/tend#readme",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "engines": {
