@@ -53,4 +53,8 @@ jobs:
       - name: SonarQube Scan
         # Run once (not per Node version) and only when the token is available.
         if: ${{ matrix.node == '20' && env.SONAR_TOKEN != '' }}
+        # Don't fail CI on SonarSource's intermittent CDN 403s when downloading the
+        # scanner — analysis is supplementary; tests/build are the real gate. The
+        # next push re-analyzes. See community.sonarsource.com/t/.../183214
+        continue-on-error: true
         uses: SonarSource/sonarqube-scan-action@v8
