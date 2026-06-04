@@ -1,95 +1,85 @@
 # tend
 
-> Tend your code now so it never becomes an overgrown mess.
+![status: alpha](https://img.shields.io/badge/status-alpha-yellow)
 
-An open-source CLI that audits a JS/TS repo with established scanners, then fixes the
-findings with parallel AI sessions in a safe **scan → fix → re-scan** loop. It never
-commits — fixes are left as uncommitted edits for you to review.
+*Tend your code now so it never becomes an overgrown mess.*
+
+> [!NOTE]
+> **Early days (v0.x).** tend works, but it's young — flags and config may still
+> change before 1.0. As with any tool that edits code, run it on a committed repo
+> and review the changes. Feedback and issues are very welcome.
+
+An open-source CLI that audits a JS/TS repo with standard scanners, then fixes the findings
+with parallel AI sessions in a safe **scan → fix → re-scan** loop. It never commits — fixes
+land as uncommitted edits for you to review.
+
+## Quick start
 
 ```bash
-npx tend-cli          # snapshot → audit → fix loop → report (changed files)
-npx tend-cli --all    # fix the entire backlog, not just changed files
+npx tend-cli                 # changed files vs HEAD (the default)
+npx tend-cli src/app lib/    # only findings under these paths
+npx tend-cli --all           # the entire backlog, repo-wide
 ```
 
-## Why
+Requires **Node ≥ 20** and a git repo. Review the edits with `tend diff`; undo the whole run
+with `tend undo`.
 
-Every team already has scanners. What they don't have is the time to act on 200
-findings. tend closes the loop: **deterministic detection → AI fix → deterministic
-verification**. Machines find and check; the model only does the edit. The worst case
-is "tend changed nothing," never "tend broke your code."
+## What it does
 
-## What it runs
+Scanners find problems; acting on them is the work. tend closes the loop —
+**deterministic detection → AI fix → deterministic verification**. The scanners detect what's
+wrong and confirm when it's fixed; the model only makes the edit in between. The worst case is
+"tend changed nothing," never "tend broke your code."
 
-| Category | Tools | Action |
-|----------|-------|--------|
-| AI fix loop | `eslint`+`sonarjs`, `knip`, `jscpd`, `semgrep` | findings fed to AI sessions |
-| Deterministic | `osv-scanner` | dependency version bumps, no AI |
-| Report-and-halt | `gitleaks` | secrets surfaced loudly, never AI-touched; exit non-zero |
+Six scanners run on one of three tracks:
 
-**`eslint`+`sonarjs`, `knip`, and `jscpd` ship with tend** (bundled deps, resolved from tend's
-own install) — they work with zero setup. eslint+sonarjs runs via the ESLint Node API in one of
-three modes, picked automatically:
+| Track | Tools | What tend does |
+|-------|-------|----------------|
+| **AI fix** | `eslint`+`sonarjs`, `knip`, `jscpd`, `semgrep` | each finding fixed by an AI session, then gated — kept only if it passes |
+| **Report only** | `osv-scanner` | vulnerable deps surfaced with a suggested version bump (not applied) |
+| **Report + fail** | `gitleaks` | secrets reported, never AI-touched; the run exits non-zero |
 
-| Your project | tend runs |
-|--------------|-----------|
-| no eslint config | **tend's config** — eslint recommended + sonarjs recommended (TS/JSX parsed, no tsconfig needed) |
-| eslint config, no sonarjs | **your config + sonarjs layered on top** — your rules *and* sonarjs in one pass |
-| eslint config with sonarjs | **your config, untouched** |
-
-For `knip` and `jscpd`: tend uses **your project's installed version if you have one** (and that
-tool auto-loads your `knip.json` / `.jscpd.json` from the repo root), otherwise it falls back to
-tend's bundled copy. So if you already use them, tend runs *your* setup; if not, it just works.
-
-The native tools — `semgrep`, `osv-scanner`, `gitleaks` — can't be npm deps; install those
-yourself (`brew install …`). tend skips any missing scanner with a hint and errors only if none
-of the six are present.
+`eslint`+`sonarjs`, `knip`, and `jscpd` are **bundled and need zero setup**; the native tools
+(`semgrep`, `osv-scanner`, `gitleaks`) you install yourself. See [docs/USAGE.md](docs/USAGE.md)
+for full scanner behavior, flags, and config.
 
 ## Safety
 
-- **In-place edits** on your actual files — no worktrees, no branches.
-- A **silent snapshot** (tracked + untracked) is taken first as an invisible restore point.
-- Every fix passes a gate — **anti-suppression · anti-regression · `tsc` · tests** — or it's
+- **In-place edits** to your working tree — no worktrees, no branches, no commits.
+- A **silent snapshot** (tracked + untracked) is taken before any edit, so `tend undo` restores
+  the pre-run state exactly.
+- Every fix must pass a gate — **anti-suppression · anti-regression · `tsc` · tests** — or it's
   reverted atomically (code + its sibling test together).
-- Tests are the behavior oracle: a fix may edit a test, but a **teeth check** rejects any
-  edit that no longer fails on the old code.
+- Tests are the behavior oracle: a fix may edit a test, but a **teeth check** rejects any edit
+  that no longer fails on the old code.
 
-## Commands
+## Configuration
 
-| Command | What it does |
-|---------|--------------|
-| `tend` / `tend run` | snapshot → audit → fix loop → report |
-| `tend diff` | show only the tool's edits (your own changes filtered out) |
-| `tend undo` | restore the pre-run snapshot exactly |
-| `tend show <id>` | full detail on one finding (attempts, flow path, docs) |
-| `tend retry <id>` | re-attempt a stubborn finding with a larger budget |
-
-## Config (zero-config by default)
-
-`cosmiconfig` discovery (`.tendrc`, `tend.config.js`, a `tend` key in `package.json`, …):
+Zero-config by default. Drop a `.tendrc` (or a `tend` key in `package.json`) to tune it:
 
 ```jsonc
 {
   "maxSessions": 4,
   "maxLoops": 5,
-  "perIssueBudget": 3,
-  "teethCheck": true,
-  "includeTests": false,
   "model": "sonnet",
   "effort": "high"
 }
 ```
 
-CLI flags (`--max-loops`, `--max-sessions`, `--model`, `--effort`, `--all`) override the config
-file. `model` is an alias (`sonnet` default, `opus`, `haiku`) or a full model id (e.g.
-`claude-opus-4-8`); `effort` is the reasoning effort (`low | medium | high | xhigh | max`,
-unset → claude's default). Both are passed straight to `claude -p`.
+Full flags and config reference: **[docs/USAGE.md](docs/USAGE.md)**.
 
 ## Output
 
-A live `listr2` task tree while running, a machine-readable `.tend/report.json`, and a
-final summary that groups remaining issues by **why** tend couldn't fix them, ordered by
-urgency: secrets → security → couldn't-fix → needs-review.
+While it runs, a live task tree; when it finishes, a summary (fixed / couldn't-fix / left /
+secrets, elapsed time, estimated AI cost & tokens) and a machine-readable `.tend/report.json`.
+Pass `--plain` for line-per-event output in CI.
+
+## Status & contributing
+
+tend is **pre-1.0 (v0.x)** — interfaces may change between releases, so pin a version if you
+need stability. Bug reports, ideas, and PRs are very welcome via
+[GitHub issues](../../issues).
 
 ## License
 
-MIT
+[MIT](LICENSE)
