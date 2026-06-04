@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.4.0...tend-cli-v0.4.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **git:** strip EDITOR/VISUAL and route git through the hardened env ([6ab2b43](https://github.com/Njunge11/tend/commit/6ab2b43601a3f0dea4c2adf477560f3c5b3ebdbc))
+
 ## [0.4.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.3.0...tend-cli-v0.4.0) (2026-06-04)
 
 
