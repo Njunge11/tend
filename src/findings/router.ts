@@ -1,5 +1,4 @@
 import { TOOLS, type Finding, type Tool } from "./finding.js";
-import { trackForTool } from "./normalize.js";
 
 export type RouteResult = {
   aiFix: Finding[];
@@ -12,7 +11,7 @@ function isKnownTool(tool: string): tool is Tool {
   return (TOOLS as readonly string[]).includes(tool);
 }
 
-/** Split findings into fix tracks by tool; unknown tools are skipped with a warning. */
+/** Split findings into their assigned fix tracks; unknown tools are skipped with a warning. */
 export function route(
   findings: Finding[],
   opts: { warn?: (message: string) => void } = {},
@@ -26,7 +25,7 @@ export function route(
       continue;
     }
 
-    switch (trackForTool(finding.tool)) {
+    switch (finding.track) {
       case "ai-fix":
         result.aiFix.push(finding);
         break;

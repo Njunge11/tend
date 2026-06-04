@@ -15,6 +15,19 @@ type JscpdDuplicate = {
 };
 export type JscpdReport = { duplicates: JscpdDuplicate[] };
 
+export const DEFAULT_JSCPD_IGNORE_PATTERNS = [
+  "**/node_modules/**",
+  "**/.git/**",
+  "**/.next/**",
+  "**/.turbo/**",
+  "**/.vercel/**",
+  "**/coverage/**",
+  "**/dist/**",
+  "**/build/**",
+  "**/out/**",
+  "**/report/**",
+];
+
 /**
  * Where jscpd's JSON report lives for this loop: a throwaway dir OUTSIDE the repo, so the
  * `--reporters json` file never dirties the user's working tree. Deterministic in (pid, loop)
@@ -65,8 +78,19 @@ export const jscpdScanner: Scanner = {
     mkdirSync(dir, { recursive: true });
     // --absolute: emit absolute paths (otherwise they'd be relative to --output, outside the repo).
     // --output <tmpdir>: keep the report file out of the user's working tree.
-    // ctx.cwd: scan the whole repo — clone detection needs the unchanged files too.
-    return ["--absolute", "--reporters", "json", "--silent", "--output", dir, ctx.cwd];
+    // --ignore: keep scan-wide focused on source, not generated artifacts.
+    // ctx.cwd: scan the whole source corpus — clone detection needs the unchanged files too.
+    return [
+      "--absolute",
+      "--reporters",
+      "json",
+      "--silent",
+      "--output",
+      dir,
+      "--ignore",
+      DEFAULT_JSCPD_IGNORE_PATTERNS.join(","),
+      ctx.cwd,
+    ];
   },
 
   parse(_raw: SpawnResult, ctx: ScanContext): RawFinding[] {

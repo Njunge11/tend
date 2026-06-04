@@ -1,6 +1,6 @@
 {
   "name": "tend-cli",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Audit a JS/TS repo with established scanners, then fix the findings with parallel AI sessions in a safe scan-fix-rescan loop.",
   "keywords": [
     "lint",
@@ -30,6 +30,7 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "prepublishOnly": "tsdown",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

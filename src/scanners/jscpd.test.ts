@@ -3,7 +3,13 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ScanContext, SpawnResult } from "./scanner.js";
-import { jscpdReportPath, jscpdScanner, mapJscpdReport, type JscpdReport } from "./jscpd.js";
+import {
+  DEFAULT_JSCPD_IGNORE_PATTERNS,
+  jscpdReportPath,
+  jscpdScanner,
+  mapJscpdReport,
+  type JscpdReport,
+} from "./jscpd.js";
 
 const fixture = (name: string) =>
   readFileSync(fileURLToPath(new URL(`../../test/fixtures/scanner-outputs/${name}`, import.meta.url)), "utf8");
@@ -49,6 +55,10 @@ describe("jscpdScanner.buildArgs", () => {
     expect(outDir.startsWith(ctx.cwd)).toBe(false);
     // absolute paths in the report so they survive being relative-to-the-output-dir otherwise
     expect(args).toContain("--absolute");
+    expect(args.slice(args.indexOf("--ignore"), args.indexOf("--ignore") + 2)).toStrictEqual([
+      "--ignore",
+      DEFAULT_JSCPD_IGNORE_PATTERNS.join(","),
+    ]);
     // it still scans the whole repo (clone detection needs unchanged files too)
     expect(args).toContain(ctx.cwd);
   });

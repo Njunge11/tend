@@ -20,6 +20,63 @@ describe("route", () => {
     expect(r.skipped).toHaveLength(0);
   });
 
+  it("keeps same-file jscpd duplicate-code findings on ai-fix", () => {
+    const sameFileDuplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 10 },
+        { file: "src/a.ts", line: 40 },
+      ],
+    });
+
+    const r = route([sameFileDuplicate]);
+
+    expect(sameFileDuplicate.track).toBe("ai-fix");
+    expect(r.aiFix).toStrictEqual([sameFileDuplicate]);
+    expect(r.reportOnly).toHaveLength(0);
+  });
+
+  it("routes cross-file jscpd duplicate-code findings to report-only with remediation", () => {
+    const crossFileDuplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 10 },
+        { file: "src/b.ts", line: 40 },
+      ],
+    });
+
+    const r = route([crossFileDuplicate]);
+
+    expect(crossFileDuplicate.track).toBe("report-only");
+    expect(crossFileDuplicate.remediation).toContain("multi-file refactor");
+    expect(r.reportOnly).toStrictEqual([crossFileDuplicate]);
+    expect(r.aiFix).toHaveLength(0);
+  });
+
+  it("considers the second jscpd flowPath file when detecting cross-file duplication", () => {
+    const duplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 10 },
+        { file: "src/clone.ts", line: 40 },
+      ],
+    });
+
+    const r = route([duplicate]);
+
+    expect(r.reportOnly.map((f) => f.file)).toStrictEqual(["src/a.ts"]);
+    expect(r.reportOnly[0]?.flowPath?.[1]).toStrictEqual({ file: "src/clone.ts", line: 40 });
+  });
+
   it("T-016: osv → deterministic", () => {
     const osv = makeFinding(
       { tool: "osv", rule: "CVE-1", category: "vuln-dep", file: "package.json" },
