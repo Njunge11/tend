@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.2.0...tend-cli-v0.2.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* add repository metadata required for npm provenance ([23a350f](https://github.com/Njunge11/tend/commit/23a350fc905450116b98164ff7dda554aca55edb))
+* add repository metadata required for npm provenance ([c015ae2](https://github.com/Njunge11/tend/commit/c015ae260d3bbde89601372420b36cce38a441c3))
+
 ## [0.2.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.1.2...tend-cli-v0.2.0) (2026-06-04)
 
 
