@@ -83,6 +83,21 @@ describe("FindingStore", () => {
     expect(store.isBudgetExhausted(f.id, 3)).toBe(true);
   });
 
+  it("stores failed attempt detail and clears stale failure diagnostics when fixed", () => {
+    const store = new FindingStore();
+    const f = makeFinding({ file: "src/a.ts" }, 1);
+    store.add(f);
+
+    store.recordFailedAttempt(f.id, "session-error", "spawn failed");
+    expect(store.get(f.id)?.revertDetail).toBe("spawn failed");
+
+    store.reconcile([], 2);
+
+    expect(store.get(f.id)?.status).toBe("fixed");
+    expect(store.get(f.id)?.revertReason).toBeUndefined();
+    expect(store.get(f.id)?.revertDetail).toBeUndefined();
+  });
+
   it("T-012: query by track / status / file", () => {
     const store = new FindingStore();
     const sonar = makeFinding({ tool: "sonarjs", file: "src/a.ts" }, 1);

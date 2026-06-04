@@ -95,11 +95,13 @@ describe("show", () => {
     });
     finding.attempts = 3;
     finding.revertReason = "broke-test";
+    finding.revertDetail = "Fix left previously-green test(s) red: api test";
 
     const out = showCommand(finding.id, [finding]);
 
     expect(out).toContain("attempts: 3");
     expect(out).toContain("broke-test");
+    expect(out).toContain("last revert detail: Fix left previously-green test(s) red: api test");
     expect(out).toContain("src/api.ts:11");
     expect(out).toContain("src/api.ts:14");
   });
@@ -161,6 +163,7 @@ describe("retry", () => {
     finding.status = "unfixable";
     finding.attempts = 3;
     finding.revertReason = "broke-test";
+    finding.revertDetail = "Fix left a test red";
     const report = reportWith([finding]);
 
     const result = await retryCommand(finding.id, {
@@ -172,6 +175,7 @@ describe("retry", () => {
     expect(result).toMatchObject({ outcome: "fixed" });
     expect(report.findings[0]?.status).toBe("fixed");
     expect(report.findings[0]?.revertReason).toBeUndefined();
+    expect(report.findings[0]?.revertDetail).toBeUndefined();
   });
 
   it("persists a reverted retry reason and increments attempts", async () => {
@@ -190,6 +194,26 @@ describe("retry", () => {
     expect(report.findings[0]?.status).toBe("reverted");
     expect(report.findings[0]?.attempts).toBe(3);
     expect(report.findings[0]?.revertReason).toBe("typecheck");
+  });
+
+  it("persists reverted retry detail", async () => {
+    const finding = makeFinding({ file: "src/a.ts" });
+    finding.status = "reverted";
+    finding.attempts = 2;
+    const report = reportWith([finding]);
+
+    await retryCommand(finding.id, {
+      report,
+      baseBudget: 3,
+      runFix: async (): Promise<FixOutcome> => ({
+        kept: false,
+        reason: "session-error",
+        detail: "rate limited",
+      }),
+    });
+
+    expect(report.findings[0]?.revertReason).toBe("session-error");
+    expect(report.findings[0]?.revertDetail).toBe("rate limited");
   });
 
   it("returns an explicit ambiguity error for matching fingerprint prefixes", async () => {

@@ -13,7 +13,7 @@ export type AuditResult = {
   scanned?: number;
   scannerStatuses?: ScannerStatus[];
 };
-export type FixOutcome = { kept: boolean; reason?: RevertReason; usage?: AiUsage };
+export type FixOutcome = { kept: boolean; reason?: RevertReason; detail?: string; usage?: AiUsage };
 
 export type OrchestrateDeps = {
   /** Run the scanners for a loop and return normalized findings. */
@@ -64,8 +64,10 @@ function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, 
   for (const finding of unit.findings) {
     if (outcome.kept) {
       finding.status = "fixed";
+      delete finding.revertReason;
+      delete finding.revertDetail;
     } else {
-      store.recordFailedAttempt(finding.id, outcome.reason ?? "session-error");
+      store.recordFailedAttempt(finding.id, outcome.reason ?? "session-error", outcome.detail);
       if (store.isBudgetExhausted(finding.id, budget)) finding.status = "unfixable";
     }
   }

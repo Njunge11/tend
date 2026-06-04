@@ -1,4 +1,5 @@
 import type { Finding } from "../findings/finding.js";
+import { normalizeRevertDetail } from "../findings/revert-detail.js";
 import type { RevertReason } from "../gate/check.js";
 import type { FixOutcome } from "../orchestrator.js";
 import type { Report } from "../report/schema.js";
@@ -53,6 +54,7 @@ export async function retryCommand(
   if (outcome.kept) {
     finding.status = "fixed";
     delete finding.revertReason;
+    delete finding.revertDetail;
     if (deps.report) syncDerivedReportFields(deps.report);
     return { outcome: "fixed", finding, budget: largerBudget };
   }
@@ -60,6 +62,9 @@ export async function retryCommand(
   const reason = outcome.reason ?? "session-error";
   finding.attempts += 1;
   finding.revertReason = reason;
+  const detail = normalizeRevertDetail(outcome.detail);
+  if (detail) finding.revertDetail = detail;
+  else delete finding.revertDetail;
   finding.status = finding.attempts >= largerBudget ? "unfixable" : "reverted";
   if (deps.report) syncDerivedReportFields(deps.report);
   return { outcome: "reverted", finding, budget: largerBudget, reason };

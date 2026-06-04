@@ -37,6 +37,7 @@ export const FindingSchema = z.object({
   revertReason: z
     .enum(["broke-test", "suppression", "regression", "typecheck", "session-error"])
     .optional(),
+  revertDetail: z.string().optional(),
   firstSeenLoop: z.number(),
   lastSeenLoop: z.number(),
   // Whether this finding is in the developer's fix scope (changed files). Absent means

@@ -16,6 +16,7 @@ export function showCommand(id: string, findings: Finding[]): string {
     `attempts: ${finding.attempts}`,
   ];
   if (finding.revertReason) lines.push(`last revert reason: ${finding.revertReason}`);
+  if (finding.revertDetail) lines.push(`last revert detail: ${finding.revertDetail}`);
   if (finding.flowPath?.length) {
     lines.push("flow path:");
     for (const step of finding.flowPath) lines.push(`  → ${step.file}:${step.line}`);

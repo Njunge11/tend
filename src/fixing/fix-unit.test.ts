@@ -67,6 +67,7 @@ describe("makeFixUnit — disk is the source of truth", () => {
     const outcome = await makeFixUnit(deps(session))(unit("src/a.ts"));
 
     expect(outcome.kept).toBe(false);
+    expect(outcome.detail).toBe("boom");
     // the on-disk edit must be reverted — never left applied for a later re-scan to call "fixed"
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
@@ -106,7 +107,35 @@ describe("makeFixUnit — disk is the source of truth", () => {
     const outcome = await makeFixUnit(deps(session))(unit("src/a.ts"));
 
     expect(outcome.kept).toBe(false);
+    expect(outcome.detail).toBe("Session completed without changing owned files");
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
+  });
+
+  it("records repair session failure detail when the repair window still fails", async () => {
+    write("src/a.ts", "const x = a == b;\n");
+    let runs = 0;
+    const session: SessionRunner = {
+      async run() {
+        runs++;
+        write("src/a.ts", "const x = a === b;\n");
+        if (runs === 1) return { ok: true, edits: [] };
+        return { ok: false, error: "repair timed out", rateLimited: false };
+      },
+    };
+    const runRelated = vi.fn(async () => [{ name: "greenTest", status: "fail" as const }]);
+
+    const outcome = await makeFixUnit(
+      deps(session, {
+        hasTestRunner: true,
+        baseline: new Set(["greenTest"]),
+        runRelated,
+        maxRepairs: 1,
+      }),
+    )(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("broke-test");
+    expect(outcome.detail).toBe("Repair session failed: repair timed out");
   });
 
   it("sums estimated AI usage across the initial session and every repair session", async () => {

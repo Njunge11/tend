@@ -1,4 +1,5 @@
 import { FindingSchema, type Finding } from "./finding.js";
+import { normalizeRevertDetail } from "./revert-detail.js";
 import { z } from "zod";
 
 type RevertReason = NonNullable<Finding["revertReason"]>;
@@ -33,6 +34,8 @@ export class FindingStore {
     for (const known of this.findings.values()) {
       if (!freshIds.has(known.id)) {
         known.status = "fixed";
+        delete known.revertReason;
+        delete known.revertDetail;
       }
     }
 
@@ -64,11 +67,14 @@ export class FindingStore {
   }
 
   /** Record a failed fix attempt against a finding's fingerprint. */
-  recordFailedAttempt(id: string, reason: RevertReason): void {
+  recordFailedAttempt(id: string, reason: RevertReason, detail?: string): void {
     const finding = this.findings.get(id);
     if (!finding) return;
     finding.attempts += 1;
     finding.revertReason = reason;
+    const normalizedDetail = normalizeRevertDetail(detail);
+    if (normalizedDetail) finding.revertDetail = normalizedDetail;
+    else delete finding.revertDetail;
   }
 
   /** A finding's per-issue budget is exhausted once it has used `budget` attempts. */

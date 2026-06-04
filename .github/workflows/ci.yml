@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    env:
+      # Exposed at job level so the step `if` below can detect its absence
+      # (fork PRs don't get repo secrets — we skip Sonar there instead of failing).
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # SonarCloud needs full history for accurate blame / new-code detection.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test (with coverage)
+        run: pnpm test:coverage
+
+      - name: Build
+        run: pnpm build
+
+      - name: SonarQube Scan
+        # Run once (not per Node version) and only when the token is available.
+        if: ${{ matrix.node == '20' && env.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v8

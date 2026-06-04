@@ -129,8 +129,10 @@ describe("runEslintSonarjs (per-file config resolution in a monorepo)", () => {
     // would trigger the core rule without that override.  Absence proves apps/dashboard's config
     // was resolved rather than tend's bundled fallback (which also disables it) or no config.
     expect(rules).not.toContain("no-unused-vars");
-    // Fixture is clean code — the run succeeds with zero findings, confirming the TS parser
-    // from apps/dashboard/eslint.config.mjs was applied without parse errors.
-    expect(res.findings).toHaveLength(0);
+    // The package-only eqeqeq rule proves apps/dashboard's config was used, and the sonarjs
+    // finding proves tend layered sonarjs over that config.
+    expect(rules).toContain("eqeqeq");
+    expect(rules).toContain("sonarjs/no-all-duplicated-branches");
+    expect(res.findings.find((f) => f.rule === "eqeqeq")?.file).toBe("apps/dashboard/sample.ts");
   });
 });

@@ -1,4 +1,5 @@
 import type { Finding } from "../findings/finding.js";
+import { normalizeRevertDetail } from "../findings/revert-detail.js";
 import { assignRetryIds, type RetryIdGenerator } from "./retry-id.js";
 import { ReportSchema, type AiUsage, type BehaviorChange, type Report, type ScannerStatus } from "./schema.js";
 
@@ -21,7 +22,11 @@ export class ReportBuilder {
 
   /** Record (or update) a finding's final outcome by fingerprint. */
   recordOutcome(finding: Finding): void {
-    this.outcomes.set(finding.id, finding);
+    const normalized = normalizeRevertDetail(finding.revertDetail);
+    const outcome = { ...finding };
+    if (normalized) outcome.revertDetail = normalized;
+    else delete outcome.revertDetail;
+    this.outcomes.set(finding.id, outcome);
   }
 
   recordOutcomes(findings: Finding[]): void {

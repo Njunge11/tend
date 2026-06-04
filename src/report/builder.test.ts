@@ -24,6 +24,23 @@ describe("ReportBuilder", () => {
     expect(() => ReportSchema.parse(report)).not.toThrow();
   });
 
+  it("preserves revert diagnostics in report findings", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome({
+      ...makeFinding({ file: "src/a.ts" }),
+      status: "unfixable",
+      attempts: 1,
+      revertReason: "session-error",
+      revertDetail: "Claude exited non-zero: 1",
+    });
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 0 });
+
+    expect(report.findings[0]?.revertReason).toBe("session-error");
+    expect(report.findings[0]?.revertDetail).toBe("Claude exited non-zero: 1");
+    expect(() => ReportSchema.parse(report)).not.toThrow();
+  });
+
   it("T-096: report includes secrets, dep bumps, flagged behavior changes, timings, exit status", () => {
     const builder = new ReportBuilder();
     const secret = makeFinding({ tool: "gitleaks", rule: "aws-key", category: "secret", file: "config/prod.ts" });

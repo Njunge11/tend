@@ -1,5 +1,10 @@
 # tend
 
+[![CI](https://github.com/Njunge11/tend/actions/workflows/ci.yml/badge.svg)](https://github.com/Njunge11/tend/actions/workflows/ci.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=Njunge11_tend&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=Njunge11_tend)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=Njunge11_tend&metric=coverage)](https://sonarcloud.io/summary/new_code?id=Njunge11_tend)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=Njunge11_tend&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=Njunge11_tend)
+[![npm version](https://img.shields.io/npm/v/tend-cli)](https://www.npmjs.com/package/tend-cli)
 ![status: alpha](https://img.shields.io/badge/status-alpha-yellow)
 
 *Tend your code now so it never becomes an overgrown mess.*

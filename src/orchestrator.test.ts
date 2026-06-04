@@ -120,6 +120,22 @@ describe("orchestrate", () => {
     expect(res.usage.sessions).toBe(2);
   });
 
+  it("stores session error detail on a reverted finding", async () => {
+    const finding = ai("a.ts");
+    const audit = vi.fn(scriptedAudit([[finding], [finding]]));
+    const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "session-error",
+      detail: "Claude exited non-zero: 1",
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, config: { ...config, perIssueBudget: 1 } });
+
+    expect(res.findings[0]?.status).toBe("unfixable");
+    expect(res.findings[0]?.revertReason).toBe("session-error");
+    expect(res.findings[0]?.revertDetail).toBe("Claude exited non-zero: 1");
+  });
+
   it("reports zero usage for a no-fix run", async () => {
     const audit = vi.fn(scriptedAudit([[]]));
     const res = await orchestrate({ audit, fixUnit: vi.fn(keep), config });

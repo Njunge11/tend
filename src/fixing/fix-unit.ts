@@ -85,28 +85,36 @@ export function makeFixUnit(deps: FixUnitDeps) {
     const res = await deps.session.run({ file: unit.file, findings: unit.findings, prompt: renderPrompt(unit) });
     if (res.usage) usage = addUsage(usage, res.usage);
 
-    // The session left the files untouched → nothing to gate or revert.
-    if (!changedOnDisk()) return { kept: false, reason: "session-error", usage };
-
     // Files changed but the session errored/crashed → never leave a half-applied edit
     // for the re-scan to call "fixed"; revert to the snapshot.
     if (!res.ok) {
-      restore();
-      return { kept: false, reason: "session-error", usage };
+      if (changedOnDisk()) restore();
+      return { kept: false, reason: "session-error", detail: res.error, usage };
+    }
+
+    // The session left the files untouched → nothing to gate or revert.
+    if (!changedOnDisk()) {
+      return {
+        kept: false,
+        reason: "session-error",
+        detail: "Session completed without changing owned files",
+        usage,
+      };
     }
 
     const supp = antiSuppression(buildDiff(before, diskNow()));
     if (!supp.ok) {
       restore();
-      return { kept: false, reason: supp.reason, usage };
+      return { kept: false, reason: supp.reason, detail: supp.detail, usage };
     }
 
     const tc = await typecheck({ hasTsconfig: () => deps.typescript, runTsc: deps.runTsc });
     if (!tc.ok) {
       restore();
-      return { kept: false, reason: tc.reason, usage };
+      return { kept: false, reason: tc.reason, detail: tc.detail, usage };
     }
 
+    let repairFailureDetail: string | undefined;
     const phase = await runTestPhase({
       baseline: deps.baseline,
       runRelated: () => deps.runRelated(unit.files),
@@ -118,20 +126,21 @@ export function makeFixUnit(deps: FixUnitDeps) {
           prompt: `${renderPrompt(unit)}\n\nThe previous edit left a test red — diagnose and fix.`,
         });
         if (repair.usage) usage = addUsage(usage, repair.usage);
+        if (!repair.ok) repairFailureDetail = `Repair session failed: ${repair.error}`;
       },
       maxRepairs: deps.maxRepairs,
       hasTestRunner: deps.hasTestRunner,
     });
     if (!phase.ok) {
       restore();
-      return { kept: false, reason: phase.reason, usage };
+      return { kept: false, reason: phase.reason, detail: repairFailureDetail ?? phase.detail, usage };
     }
 
     const afterFindings = await deps.scanFindings(unit.files);
     const regression = antiRegression(unit.findings, afterFindings);
     if (!regression.ok) {
       restore();
-      return { kept: false, reason: regression.reason, usage };
+      return { kept: false, reason: regression.reason, detail: regression.detail, usage };
     }
 
     return { kept: true, usage };
