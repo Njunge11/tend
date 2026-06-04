@@ -21,15 +21,34 @@ land as uncommitted edits for you to review.
 
 ## Quick start
 
+Run the latest published package directly from the registry:
+
 ```bash
-npx tend-cli                 # changed files vs HEAD (the default)
-npx tend-cli src/app lib/    # only findings under these paths
-npx tend-cli --all           # the entire backlog, repo-wide
+npx tend-cli@latest              # changed files vs HEAD (the default)
+npx tend-cli@latest run src/app lib/  # only findings under these paths
+npx tend-cli@latest run --all    # the entire backlog, repo-wide
+```
+
+Or install it and use the product command:
+
+```bash
+npm install -g tend-cli
+tend                 # changed files vs HEAD (the default)
+tend run src/app lib/
+tend run --all
 ```
 
 Requires **Node ≥ 20**, a git repo, and the [Claude Code](https://www.anthropic.com/claude-code)
 CLI (`claude`) installed and signed in — tend drives it to make the fixes. Review the edits with
 `tend diff`; undo the whole run with `tend undo`.
+
+The npm package is named `tend-cli`, while the installed executable is `tend`. They intentionally
+do not need to match: `tend` is the command users run, and `tend-cli` is the registry package name.
+When developing inside this repo, use the local script instead of `npx tend-cli`:
+
+```bash
+pnpm cli run src/scanners
+```
 
 ## What it does
 

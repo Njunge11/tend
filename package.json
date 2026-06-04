@@ -39,6 +39,7 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "cli": "pnpm build && node dist/bin.js",
     "prepublishOnly": "tsdown",
     "test": "vitest run",
     "test:watch": "vitest",

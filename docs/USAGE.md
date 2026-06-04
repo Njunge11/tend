@@ -5,9 +5,26 @@ Full reference for flags, config, scanner behavior, and output. For the overview
 
 ## Commands
 
+Invocation depends on where tend is running:
+
+| Context | Use |
+|---------|-----|
+| Installed or global command | `tend` |
+| Registry one-off | `npx tend-cli@latest` |
+| Local contributor run from this repo | `pnpm cli` |
+
+The npm package name is `tend-cli`, but the installed executable is intentionally `tend`; npm
+packages and executable names do not need to match. From inside this repository, avoid
+`npx tend-cli` because npm can resolve the local package without creating a local `.bin/tend`
+shim. Use the repo-local script instead:
+
+```bash
+pnpm cli run src/scanners
+```
+
 | Command | What it does |
 |---------|--------------|
-| `tend [paths...]` / `tend run [paths...]` | snapshot → audit → fix loop → report (no args = changed files) |
+| `tend` / `tend run [paths...]` | snapshot → audit → fix loop → report (no args = changed files) |
 | `tend diff` | show only the tool's edits (your own changes filtered out) |
 | `tend undo` | restore the pre-run snapshot exactly |
 | `tend show <id>` | full detail on one finding (attempts, flow path, docs) |
@@ -18,7 +35,8 @@ Full reference for flags, config, scanner behavior, and output. For the overview
 `tend run` resolves which findings to fix from its arguments:
 
 - **no args** — findings in files changed vs `HEAD` (the default).
-- **`[paths...]`** — only findings under the given files/dirs, e.g. `tend run src/app lib/`.
+- **`[paths...]`** — only findings under the given files/dirs, e.g. `tend run src/app lib/`
+  or `npx tend-cli@latest run src/app lib/`.
 - **`--all`** — the entire repo backlog.
 
 Test files are excluded as fix targets by default; pass `--include-tests` to opt in. A test

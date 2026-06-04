@@ -355,6 +355,6 @@ Developed here, extracted later — so it's built as a **self-contained leaf** f
 
 **Extraction:** `git subtree split --prefix=packages/tend -b tend-standalone` → push to new repo → publish. No untangling.
 
-**Distribution:** one registry (npmjs.com); pnpm/npm/yarn/bun all install from it. Publish once (`npm publish` / `pnpm publish`). Package name: **`tend-cli`** (unscoped; `tend` is taken), bin command **`tend`** — so `npx tend-cli` to run, and `tend` after a global install. (Optional later: also publish to JSR.)
+**Distribution:** one registry (npmjs.com); pnpm/npm/yarn/bun all install from it. Publish once (`npm publish` / `pnpm publish`). Package name: **`tend-cli`** (unscoped; `tend` is taken), bin command **`tend`** — so `npx tend-cli@latest` for a registry one-off, and `tend` after an install. The package and executable names intentionally do not need to match. (Optional later: also publish to JSR.)
 
 **Build:** ESM, Node ≥ 20, `tsdown` → `dist/` with a shebang'd `bin/tend` entry so `npx` works.
