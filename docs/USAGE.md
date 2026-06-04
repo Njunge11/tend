@@ -19,12 +19,12 @@ packages and executable names do not need to match. From inside this repository,
 shim. Use the repo-local script instead:
 
 ```bash
-pnpm cli run src/scanners
+pnpm cli -- src/scanners
 ```
 
 | Command | What it does |
 |---------|--------------|
-| `tend` / `tend run [paths...]` | snapshot → audit → fix loop → report (no args = changed files) |
+| `tend [paths...]` / `tend run [paths...]` | snapshot → audit → fix loop → report (no args = changed files) |
 | `tend diff` | show only the tool's edits (your own changes filtered out) |
 | `tend undo` | restore the pre-run snapshot exactly |
 | `tend show <id>` | full detail on one finding (attempts, flow path, docs) |
@@ -32,11 +32,11 @@ pnpm cli run src/scanners
 
 ## Scope
 
-`tend run` resolves which findings to fix from its arguments:
+The root command and explicit `run` command resolve which findings to fix from their arguments:
 
 - **no args** — findings in files changed vs `HEAD` (the default).
-- **`[paths...]`** — only findings under the given files/dirs, e.g. `tend run src/app lib/`
-  or `npx tend-cli@latest run src/app lib/`.
+- **`[paths...]`** — only findings under the given files/dirs, e.g. `tend src/scanners`,
+  `tend run src/scanners`, or `npx tend-cli@latest src/scanners`.
 - **`--all`** — the entire repo backlog.
 
 Test files are excluded as fix targets by default; pass `--include-tests` to opt in. A test
@@ -44,7 +44,7 @@ file always stays editable as the sibling of the code file it covers.
 
 ## Flags
 
-All flags apply to `tend run`:
+All flags apply to root-level runs and `tend run`:
 
 | Flag | Effect |
 |------|--------|

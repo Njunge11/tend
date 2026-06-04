@@ -25,8 +25,8 @@ Run the latest published package directly from the registry:
 
 ```bash
 npx tend-cli@latest              # changed files vs HEAD (the default)
-npx tend-cli@latest run src/app lib/  # only findings under these paths
-npx tend-cli@latest run --all    # the entire backlog, repo-wide
+npx tend-cli@latest src/scanners # only findings under this path
+npx tend-cli@latest --all        # the entire backlog, repo-wide
 ```
 
 Or install it and use the product command:
@@ -34,8 +34,9 @@ Or install it and use the product command:
 ```bash
 npm install -g tend-cli
 tend                 # changed files vs HEAD (the default)
-tend run src/app lib/
-tend run --all
+tend src/scanners
+tend --all
+tend run src/scanners # explicit form is also available
 ```
 
 Requires **Node ≥ 20**, a git repo, and the [Claude Code](https://www.anthropic.com/claude-code)
@@ -47,7 +48,7 @@ do not need to match: `tend` is the command users run, and `tend-cli` is the reg
 When developing inside this repo, use the local script instead of `npx tend-cli`:
 
 ```bash
-pnpm cli run src/scanners
+pnpm cli -- src/scanners
 ```
 
 ## What it does

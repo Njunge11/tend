@@ -105,7 +105,7 @@ The loop is literally a diff of successive audits against this store; `report.js
 
 Two separate questions: **what we scan** and **what we fix**.
 
-**Fixing** is the expensive part (AI sessions cost time + tokens), so by default tend only fixes findings in **files changed vs `HEAD`**. `--all` fixes the entire backlog. Passing one or more paths — `tend run <path...>` — fixes only findings under those files/dirs regardless of git status (each path is expanded to its concrete tracked + untracked files via `git ls-files`). Either way the full finding set is reported in `report.json`.
+**Fixing** is the expensive part (AI sessions cost time + tokens), so by default tend only fixes findings in **files changed vs `HEAD`**. `--all` fixes the entire backlog. Passing one or more paths — `tend <path...>` or `tend run <path...>` — fixes only findings under those files/dirs regardless of git status (each path is expanded to its concrete tracked + untracked files via `git ls-files`). Either way the full finding set is reported in `report.json`.
 
 The fix scope is resolved once, up front, as a single file list (or "whole repo" for `--all`), then drives three things in lockstep: the test baseline, the diff-aware scanners' targets, and the final fix filter. The three sources are mutually exclusive — `--all` wins over paths, paths win over the changed-files default.
 
@@ -189,7 +189,7 @@ Where edge cases occur and how each is handled.
 **Preflight (environment):**
 
 ```
-tend run
+tend
    │
    ▼
 ┌ git repo? ─────── no ──► ERROR "not a git repo" ─► EXIT
@@ -269,7 +269,8 @@ re-audit ─► compare to previous report
 
 ```
 tend                # snapshot → audit → fix loop → report (changed files)
-tend run <path...>  # fix only findings under these files/dirs (committed or not)
+tend <path...>     # fix only findings under these files/dirs (committed or not)
+tend run <path...> # explicit form is also available
 tend --all          # fix entire backlog, not just changed files
 tend diff           # show only the tool's edits
 tend undo           # restore pre-run snapshot

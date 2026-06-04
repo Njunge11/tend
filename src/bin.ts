@@ -433,9 +433,7 @@ const program = buildProgram({
   retry: (id) => runRetry(id),
 });
 
-const argv =
-  process.argv.slice(2).length === 0 ? [...process.argv, "run"] : process.argv;
-program.parseAsync(argv).catch((e: unknown) => {
+program.parseAsync(process.argv).catch((e: unknown) => {
   // commander throws for --help/--version (exitCode 0) and usage errors; honor its code
   if (e instanceof Error && e.name === "CommanderError") {
     process.exitCode = (e as Error & { exitCode?: number }).exitCode ?? 1;
