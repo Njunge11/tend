@@ -6,8 +6,9 @@
 
 > [!NOTE]
 > **Early days (v0.x).** tend works, but it's young — flags and config may still
-> change before 1.0. As with any tool that edits code, run it on a committed repo
-> and review the changes. Feedback and issues are very welcome.
+> change before 1.0. The fix sessions run on Claude via [Claude Code](https://www.anthropic.com/claude-code)
+> for now; support for other models is planned. As with any tool that edits code, run it on a
+> committed repo and review the changes. Feedback and issues are very welcome.
 
 An open-source CLI that audits a JS/TS repo with standard scanners, then fixes the findings
 with parallel AI sessions in a safe **scan → fix → re-scan** loop. It never commits — fixes
@@ -21,8 +22,9 @@ npx tend-cli src/app lib/    # only findings under these paths
 npx tend-cli --all           # the entire backlog, repo-wide
 ```
 
-Requires **Node ≥ 20** and a git repo. Review the edits with `tend diff`; undo the whole run
-with `tend undo`.
+Requires **Node ≥ 20**, a git repo, and the [Claude Code](https://www.anthropic.com/claude-code)
+CLI (`claude`) installed and signed in — tend drives it to make the fixes. Review the edits with
+`tend diff`; undo the whole run with `tend undo`.
 
 ## What it does
 
