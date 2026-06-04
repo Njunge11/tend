@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.3.0...tend-cli-v0.4.0) (2026-06-04)
+
+
+### Features
+
+* **cli:** default to the run command for bare paths and options ([9e6d502](https://github.com/Njunge11/tend/commit/9e6d502d17a34f4b76971006cb3f1bd417550b14))
+
 ## [0.3.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.2.1...tend-cli-v0.3.0) (2026-06-04)
 
 
