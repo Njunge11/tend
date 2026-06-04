@@ -1,19 +1,42 @@
 name: Release
 
-# Publishes to npm only when you cut a GitHub Release (Releases -> Draft a new
-# release -> create tag vX.Y.Z -> Publish). Merging to main never publishes.
+# On every push to main, release-please maintains a "release PR" that bumps the
+# version and updates CHANGELOG.md from your Conventional Commits (feat:/fix:/...).
+# Merging that PR creates the git tag + GitHub Release and triggers the publish
+# job below. Ordinary pushes just keep the release PR up to date.
+#
+# Publishing happens in this same workflow (not a separate release-triggered one)
+# because the default GITHUB_TOKEN cannot trigger another workflow.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
 
-permissions:
-  contents: read
-  id-token: write # OIDC — required for npm trusted publishing + provenance.
+# Deny by default; each job opts into exactly what it needs.
+permissions: {}
 
 jobs:
+  release-please:
+    name: Release PR / tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create tags + GitHub Releases
+      pull-requests: write # open/update the release PR
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+
   publish:
     name: Publish to npm
+    needs: release-please
+    # Only runs on the push where a release PR was merged (tag + Release created).
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC — required for npm trusted publishing + provenance
     steps:
       - uses: actions/checkout@v6
 
@@ -30,19 +53,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Verify release tag matches package.json version
-        run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
-          TAG="${{ github.event.release.tag_name }}"
-          if [ "$PKG_VERSION" != "$TAG" ]; then
-            echo "::error::Release tag '$TAG' does not match package.json version '$PKG_VERSION'. Bump package.json and re-tag."
-            exit 1
-          fi
-
       - name: Build
         run: pnpm build
 
       - name: Publish
         # No NODE_AUTH_TOKEN: npm exchanges the OIDC token automatically and
-        # attaches provenance. Requires a Trusted Publisher configured on npmjs.com.
+        # attaches provenance. Requires the Trusted Publisher configured on npmjs.com.
         run: npm publish --access public
