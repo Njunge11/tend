@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { SimpleGit } from "simple-git";
-import { createGit, gitEnv } from "./client.js";
+import { createGit } from "./client.js";
 
 const SNAP_MSG = "tend snapshot";
 /** A private ref pins the snapshot commit so `git gc` can't prune it (it's on no branch). */
@@ -19,7 +19,7 @@ let indexCounter = 0;
 async function writeWorkingTree(root: string): Promise<string> {
   const idxPath = join(tmpdir(), `tend-index-${process.pid}-${indexCounter++}`);
   try {
-    const g = createGit(root).env(gitEnv({ GIT_INDEX_FILE: idxPath }));
+    const g = createGit(root, { GIT_INDEX_FILE: idxPath });
     await g.raw(["add", "-A"]); // stage everything present; respects .gitignore (and .tend/, excluded below)
     return (await g.raw(["write-tree"])).trim();
   } finally {
@@ -66,7 +66,8 @@ export class Snapshot {
     private readonly sha: string,
   ) {}
 
-  static async capture(git: SimpleGit, cwd: string): Promise<Snapshot> {
+  static async capture(_git: SimpleGit, cwd: string): Promise<Snapshot> {
+    const git = createGit(cwd);
     const root = (await git.revparse(["--show-toplevel"])).trim();
     const gitDir = (await git.revparse(["--absolute-git-dir"])).trim();
     ensureTendIgnored(gitDir);

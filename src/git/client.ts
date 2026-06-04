@@ -1,6 +1,13 @@
 import { simpleGit, type SimpleGit } from "simple-git";
 
-const UNSAFE_GIT_ENV_KEYS = ["GIT_EDITOR", "GIT_PAGER", "GIT_SEQUENCE_EDITOR", "PAGER"] as const;
+const UNSAFE_GIT_ENV_KEYS = [
+  "EDITOR",
+  "VISUAL",
+  "GIT_EDITOR",
+  "GIT_SEQUENCE_EDITOR",
+  "GIT_PAGER",
+  "PAGER",
+] as const;
 
 export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
@@ -12,6 +19,6 @@ export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return env;
 }
 
-export function createGit(root: string): SimpleGit {
-  return simpleGit(root).env(gitEnv());
+export function createGit(root: string, extraEnv: NodeJS.ProcessEnv = {}): SimpleGit {
+  return simpleGit(root).env(gitEnv(extraEnv));
 }

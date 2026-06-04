@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { tmpRepo, type TmpRepo } from "../../test/helpers/tmp-repo.js";
+import { createGit } from "./client.js";
 import { Snapshot } from "./snapshot.js";
 
 let repo: TmpRepo;
@@ -79,34 +80,39 @@ describe("Snapshot", () => {
 
   it("ignores unsafe pager/editor env while capturing, diffing, and restoring", async () => {
     const previous = {
+      EDITOR: process.env.EDITOR,
+      VISUAL: process.env.VISUAL,
       GIT_EDITOR: process.env.GIT_EDITOR,
-      GIT_PAGER: process.env.GIT_PAGER,
       GIT_SEQUENCE_EDITOR: process.env.GIT_SEQUENCE_EDITOR,
+      GIT_PAGER: process.env.GIT_PAGER,
       PAGER: process.env.PAGER,
     };
 
+    process.env.EDITOR = "code --wait";
+    process.env.VISUAL = "vim";
     process.env.GIT_EDITOR = "echo editor";
-    process.env.GIT_PAGER = "cat";
     process.env.GIT_SEQUENCE_EDITOR = "echo sequence-editor";
-    process.env.PAGER = "cat";
+    process.env.GIT_PAGER = "less";
+    process.env.PAGER = "less";
 
     try {
       repo.write("src/a.ts", "A\n");
       repo.write("src/b.ts", "B\n");
       await repo.commit("init");
 
-      const snap = await Snapshot.capture(repo.git, repo.dir);
+      const hostileGit = createGit(repo.dir);
+      const snap = await Snapshot.capture(hostileGit, repo.dir);
       write("src/a.ts", "A_EDITED\n");
       write("src/b.ts", "B_EDITED\n");
       write("src/new.ts", "NEW\n");
 
-      expect(await snap.changedSince(repo.git)).toStrictEqual(["src/a.ts", "src/b.ts", "src/new.ts"]);
+      expect(await snap.changedSince(createGit(repo.dir))).toStrictEqual(["src/a.ts", "src/b.ts", "src/new.ts"]);
 
       await snap.restoreFile("src/a.ts");
       expect(read("src/a.ts")).toBe("A\n");
       expect(read("src/b.ts")).toBe("B_EDITED\n");
 
-      await snap.restore(repo.git);
+      await snap.restore(createGit(repo.dir));
       expect(read("src/b.ts")).toBe("B\n");
       expect(existsSync(join(repo.dir, "src/new.ts"))).toBe(false);
     } finally {
