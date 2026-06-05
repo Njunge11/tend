@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.4.1...tend-cli-v0.5.0) (2026-06-05)
+
+
+### Features
+
+* **gate:** allow code deletion when a ([2f499d2](https://github.com/Njunge11/tend/commit/2f499d2faf32f73045f9f59048bcc65ef4be2763))
+
+
+### Bug Fixes
+
+* **scanners:** stop sonarjs crashing on --all whole-repo scans ([064c8d3](https://github.com/Njunge11/tend/commit/064c8d3178cafbd920ca7f7a78fad6c559d33315))
+
 ## [0.4.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.4.0...tend-cli-v0.4.1) (2026-06-04)
 
 
