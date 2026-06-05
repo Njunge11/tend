@@ -56,14 +56,32 @@ export function mapJscpdReport(report: JscpdReport, ctx: ScanContext): RawFindin
         startLine: first.start,
         startCol: first.startLoc?.column ?? 0,
         endLine: first.end,
-        endCol: second.endLoc?.column ?? 0,
+        endCol: first.endLoc?.column ?? 0,
       },
       message: `Duplicated ${dup.lines} lines, also at ${cloneFile}:${second.start}-${second.end}`,
       // Both clone sites, so the changed-files scope filter can keep the clone when EITHER
       // file changed (a finding records only firstFile as `.file`).
       flowPath: [
-        { file, line: first.start },
-        { file: cloneFile, line: second.start },
+        {
+          file,
+          line: first.start,
+          range: {
+            startLine: first.start,
+            startCol: first.startLoc?.column ?? 0,
+            endLine: first.end,
+            endCol: first.endLoc?.column ?? 0,
+          },
+        },
+        {
+          file: cloneFile,
+          line: second.start,
+          range: {
+            startLine: second.start,
+            startCol: second.startLoc?.column ?? 0,
+            endLine: second.end,
+            endCol: second.endLoc?.column ?? 0,
+          },
+        },
       ],
     } satisfies RawFinding;
   });

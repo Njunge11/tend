@@ -28,15 +28,23 @@ describe("mapJscpdReport", () => {
       tool: "jscpd",
       category: "duplication",
       file: "src/a.ts",
-      range: { startLine: 10, endLine: 23 },
+      range: { startLine: 10, endLine: 23, endCol: 2 },
     });
     // the clone's other location is preserved in the message
     expect(dup.message).toContain("src/b.ts");
     expect(dup.message).toContain("45");
     // both clone sites are recorded so the scope filter can match either file
     expect(dup.flowPath).toStrictEqual([
-      { file: "src/a.ts", line: 10 },
-      { file: "src/b.ts", line: 45 },
+      {
+        file: "src/a.ts",
+        line: 10,
+        range: { startLine: 10, startCol: 1, endLine: 23, endCol: 2 },
+      },
+      {
+        file: "src/b.ts",
+        line: 45,
+        range: { startLine: 45, startCol: 1, endLine: 58, endCol: 2 },
+      },
     ]);
   });
 
