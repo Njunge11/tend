@@ -14,10 +14,14 @@ import { detectTestRunner } from "./detect/test-runner.js";
 import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
 import { makeFixUnit } from "./fixing/fix-unit.js";
+import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
+import { detectBuildCommand } from "./fixing/generated-source.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
-import { planWork } from "./fixing/dispatch.js";
+import { planWorkFromRepairs } from "./fixing/dispatch.js";
+import { planRepair } from "./fixing/repair-strategy.js";
 import { ClaudeSession } from "./session/claude.js";
 import { orchestrate } from "./orchestrator.js";
+import type { FixOutcome } from "./orchestrator.js";
 import { ReportBuilder } from "./report/builder.js";
 import { ReportSchema, type Report } from "./report/schema.js";
 import { renderSummary } from "./output/summary.js";
@@ -43,6 +47,7 @@ const REPORT_PATH = join(TEND_DIR, "report.json");
 
 // Upper bounds so a hung child can't stall the run forever — execa kills it on timeout.
 const CLAUDE_TIMEOUT_MS = 10 * 60_000; // one file-fix session
+const BUILD_TIMEOUT_MS = 5 * 60_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = 5 * 60_000;
 const out = (s: string) => process.stdout.write(`${s}\n`);
@@ -120,18 +125,15 @@ async function makeProductionFixUnit(
   // root. Defaults to the repo cwd for whole-repo / root-package runs.
   ownerRoot: string = cwd,
 ): Promise<{
-  fixUnit: (
-    unit: WorkUnit,
-    loop: number,
-  ) => Promise<{
-    kept: boolean;
-    reason?: import("./gate/check.js").RevertReason;
-  }>;
+  fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
+  deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   typescript: boolean;
   runner: "vitest" | "jest" | null;
 }> {
   const typescript = detectTypeScript(ownerRoot);
   const runner = detectTestRunner(ownerRoot) ?? null;
+  const buildArgs = detectBuildCommand(ownerRoot);
+  const pm = detectPackageManager(ownerRoot);
   const baseline = new Set<string>(
     runner && baselineTargets.length > 0
       ? (await runTests(runner, baselineTargets, ownerRoot))
@@ -157,52 +159,70 @@ async function makeProductionFixUnit(
         ],
         { cwd, reject: false, timeout: CLAUDE_TIMEOUT_MS },
       );
-      // On timeout/kill exitCode is undefined; treat any failure as non-zero so the session
-      // is judged failed (and the change reverted) rather than silently accepted.
-      const exitCode = r.exitCode ?? (r.failed ? 1 : 0);
+      // On timeout/kill exitCode is often undefined; preserve that as the conventional
+      // SIGTERM exit so session classification can treat it as a tool timeout.
+      const exitCode = r.exitCode ?? (r.timedOut ? 143 : r.failed ? 1 : 0);
       return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode };
     },
   });
+
+  const gateDeps = {
+    cwd,
+    typescript,
+    runTsc: async () => {
+      const r = await execa("npx", ["tsc", "--noEmit"], {
+        // tsc picks up the owning package's tsconfig from its cwd.
+        cwd: ownerRoot,
+        reject: false,
+        timeout: TSC_TIMEOUT_MS,
+      });
+      // exitCode is undefined on timeout/spawn failure → treat as a typecheck failure (revert).
+      return {
+        exitCode: r.exitCode ?? 1,
+        output: `${r.stdout}\n${r.stderr}`,
+      };
+    },
+    runBuild: buildArgs
+      ? async () => {
+          const r = await execa(pm, buildArgs, {
+            cwd: ownerRoot,
+            reject: false,
+            timeout: BUILD_TIMEOUT_MS,
+          });
+          return {
+            exitCode: r.exitCode ?? 1,
+            output: `${r.stdout}\n${r.stderr}`,
+          };
+        }
+      : undefined,
+    hasTestRunner: Boolean(runner),
+    runRelated: (files: string[]) =>
+      runner ? runTests(runner, files, ownerRoot) : Promise.resolve([]),
+    scanFindings: async (files: string[]) =>
+      (
+        await scanFiles(
+          {
+            cwd,
+            which: realWhich,
+            spawn: realSpawn,
+            timeoutMs: 120_000,
+          },
+          files,
+          0,
+        )
+      ).findings,
+    baseline,
+  };
 
   return {
     typescript,
     runner,
     fixUnit: makeFixUnit({
-      cwd,
+      ...gateDeps,
       session,
-      typescript,
-      runTsc: async () => {
-        const r = await execa("npx", ["tsc", "--noEmit"], {
-          // tsc picks up the owning package's tsconfig from its cwd.
-          cwd: ownerRoot,
-          reject: false,
-          timeout: TSC_TIMEOUT_MS,
-        });
-        // exitCode is undefined on timeout/spawn failure → treat as a typecheck failure (revert).
-        return {
-          exitCode: r.exitCode ?? 1,
-          output: `${r.stdout}\n${r.stderr}`,
-        };
-      },
-      hasTestRunner: Boolean(runner),
-      runRelated: (files) =>
-        runner ? runTests(runner, files, ownerRoot) : Promise.resolve([]),
-      scanFindings: async (files) =>
-        (
-          await scanFiles(
-            {
-              cwd,
-              which: realWhich,
-              spawn: realSpawn,
-              timeoutMs: 120_000,
-            },
-            files,
-            0,
-          )
-        ).findings,
-      baseline,
       maxRepairs: 3,
     }),
+    deterministicFixUnit: makeDeterministicFixUnit(gateDeps),
   };
 }
 
@@ -293,7 +313,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // For a path-scoped run, resolve the package that owns the scoped files and gate against
   // it. Whole-repo runs (`--all`, scope === null) stay rooted at the repo cwd.
   const ownerRoot = scope ? resolveOwnerRoot(cwd, scope) : cwd;
-  const { fixUnit, runner, typescript } = await makeProductionFixUnit(
+  const { fixUnit, deterministicFixUnit, runner, typescript } = await makeProductionFixUnit(
     config,
     baselineTargets,
     ownerRoot,
@@ -317,6 +337,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   let result;
   try {
     result = await orchestrate({
+      cwd,
       audit: buildAudit({
         cwd,
         which: realWhich,
@@ -325,6 +346,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
         timeoutMs: 120_000,
       }),
       fixUnit,
+      deterministicFixUnit,
       config,
       inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
       bus,
@@ -344,7 +366,13 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     exitStatus: result.exitStatus,
     aiUsage: result.usage,
     runScope: result.runScope,
-    fixPolicy: { includeTests: Boolean(config.includeTests) },
+    fixPolicy: {
+      includeTests: Boolean(config.includeTests),
+      include: config.fix.include,
+      exclude: config.fix.exclude,
+      includeGenerated: config.fix.includeGenerated,
+      includeFixtures: config.fix.includeFixtures,
+    },
   });
   persist(REPORT_PATH, report);
 
@@ -378,7 +406,13 @@ async function runRetry(id: string): Promise<void> {
     report,
     baseBudget: config.perIssueBudget,
     runFix: async (finding) => {
-      const unit = planWork([finding])[0];
+      const plan = planRepair({
+        finding,
+        cwd,
+        scope: finding,
+        config: { ...config.fix, includeTests: config.includeTests },
+      });
+      const unit = planWorkFromRepairs([plan])[0];
       if (!unit) return { kept: false, reason: "session-error" };
       if (!snapshotSaved) {
         const snapshot = await Snapshot.capture(git, cwd);
