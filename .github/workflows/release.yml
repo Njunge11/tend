@@ -56,6 +56,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Smoke test built CLI
+        run: node dist/bin.js --help
+
       - name: Publish
         # No NODE_AUTH_TOKEN: npm exchanges the OIDC token automatically and
         # attaches provenance. Requires the Trusted Publisher configured on npmjs.com.

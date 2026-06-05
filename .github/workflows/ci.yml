@@ -50,6 +50,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Smoke test built CLI
+        run: node dist/bin.js --help
+
       - name: SonarQube Scan
         # Run once (not per Node version) and only when the token is available.
         if: ${{ matrix.node == '20' && env.SONAR_TOKEN != '' }}
