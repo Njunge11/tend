@@ -36,6 +36,8 @@ describe("normalize", () => {
       attempts: 0,
       firstSeenLoop: 1,
       lastSeenLoop: 1,
+      inReportScope: true,
+      inFixScope: true,
     });
   });
 
