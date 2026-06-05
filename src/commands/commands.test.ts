@@ -1,11 +1,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
 import { tmpRepo, type TmpRepo } from "../../test/helpers/tmp-repo.js";
 import { Snapshot } from "../git/snapshot.js";
 import type { AuditResult, FixOutcome } from "../orchestrator.js";
-import type { Report } from "../report/schema.js";
+import { ReportSchema, type Report } from "../report/schema.js";
 import { diffCommand } from "./diff.js";
 import { retryCommand } from "./retry.js";
 import { runCommand } from "./run.js";
@@ -14,17 +15,35 @@ import { undoCommand } from "./undo.js";
 
 const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4 };
 
+function badRunScopeAndTimeoutsReport(): Report {
+  return ReportSchema.parse(
+    JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../../test/fixtures/reports/bad-run-scope-and-timeouts.json", import.meta.url)),
+        "utf8",
+      ),
+    ),
+  );
+}
+
 function reportWith(findings: Report["findings"]): Report {
   return {
     findings,
     secrets: findings.filter((f) => f.category === "secret"),
+    reportOnly: findings.filter((f) => f.track === "report-only" && f.category !== "secret"),
     depBumps: findings
-      .filter((f) => f.remediation !== undefined)
+      .filter((f) => f.track === "deterministic" && f.remediation !== undefined)
       .map((f) => ({ findingId: f.id, remediation: f.remediation! })),
     flaggedBehaviorChanges: [],
     scannerStatuses: [],
     runScope: { type: "scoped" },
-    fixPolicy: { includeTests: false },
+    fixPolicy: {
+      includeTests: false,
+      include: [],
+      exclude: [],
+      includeGenerated: false,
+      includeFixtures: false,
+    },
     aiUsage: {
       estimatedCostUsd: 0,
       inputTokens: 0,
@@ -33,6 +52,17 @@ function reportWith(findings: Report["findings"]): Report {
       cacheReadInputTokens: 0,
       sessions: 0,
     },
+    failureSummary: {
+      blockingSecrets: 0,
+      unresolvedEligible: 0,
+      toolFailures: 0,
+      failedDeterministic: 0,
+      sessionErrors: 0,
+      regressions: 0,
+      typecheckFailures: 0,
+      testFailures: 0,
+    },
+    unresolvedEligibleCount: 0,
     loops: 1,
     durationMs: 10,
     exitStatus: 0,
@@ -241,6 +271,36 @@ describe("retry", () => {
       error:
         'Finding id "abcdef" is ambiguous; matches kx7p2q, m8n4sa. Use the retry id or full fingerprint.',
     });
+    expect(runFix).not.toHaveBeenCalled();
+  });
+
+  it("keeps report-only jscpd findings out of secrets and retry dispatch", async () => {
+    const report = badRunScopeAndTimeoutsReport();
+    const reportOnly = report.findings.find((f) => f.retryId === "dupe01");
+    expect(reportOnly).toBeDefined();
+
+    expect(report.secrets).toHaveLength(0);
+    expect(report.reportOnly.map((f) => f.id)).toContain(reportOnly?.id);
+    expect(reportOnly).toMatchObject({
+      track: "report-only",
+      category: "duplication",
+      tool: "jscpd",
+    });
+
+    const detail = showCommand("dupe01", report.findings);
+    expect(detail).toContain("jscpd  duplicate-code  [pending]");
+    expect(detail).toContain("src/components/SignupForm.ts:20");
+    expect(detail).not.toContain("rotate");
+    expect(detail).not.toContain("secret");
+
+    const runFix = vi.fn(async (): Promise<FixOutcome> => ({ kept: true }));
+    const result = await retryCommand("dupe01", {
+      report,
+      baseBudget: 3,
+      runFix,
+    });
+
+    expect(result).toStrictEqual({ error: `Finding ${reportOnly?.id} is not AI-fixable` });
     expect(runFix).not.toHaveBeenCalled();
   });
 });

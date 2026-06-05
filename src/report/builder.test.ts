@@ -58,6 +58,62 @@ describe("ReportBuilder", () => {
     expect(report.exitStatus).toBe(1);
   });
 
+  it("separates report-only findings from secrets and deterministic dep bumps", () => {
+    const builder = new ReportBuilder();
+    const reportOnly = {
+      ...makeFinding({
+        tool: "jscpd",
+        rule: "duplicate-code",
+        category: "duplication",
+        file: "src/a.ts",
+        flowPath: [
+          { file: "src/a.ts", line: 1 },
+          { file: "src/b.ts", line: 20 },
+        ],
+      }),
+      track: "report-only" as const,
+    };
+    const secret = makeFinding({
+      tool: "gitleaks",
+      rule: "aws-key",
+      category: "secret",
+      file: "config/prod.ts",
+    });
+    builder.recordOutcome(reportOnly);
+    builder.recordOutcome(secret);
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 1 });
+
+    expect(report.secrets).toHaveLength(1);
+    expect(report.secrets[0]).toMatchObject({ id: secret.id, category: "secret" });
+    expect(report.reportOnly).toHaveLength(1);
+    expect(report.reportOnly[0]).toMatchObject({
+      id: reportOnly.id,
+      track: "report-only",
+      category: "duplication",
+    });
+    expect(report.depBumps).toStrictEqual([]);
+  });
+
+  it("derives failure summary and unresolved eligible counts", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome({
+      ...makeFinding({ file: "src/a.ts" }),
+      status: "unfixable",
+      revertReason: "typecheck",
+    });
+    builder.recordScannerStatuses([{ tool: "knip", status: "failed", reason: "boom" }]);
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 1 });
+
+    expect(report.unresolvedEligibleCount).toBe(0);
+    expect(report.failureSummary).toMatchObject({
+      unresolvedEligible: 0,
+      toolFailures: 1,
+      typecheckFailures: 1,
+    });
+  });
+
   it("includes the run's estimated AI usage when provided to build()", () => {
     const builder = new ReportBuilder();
     builder.recordOutcome(makeFinding({ file: "src/a.ts" }));
@@ -122,7 +178,25 @@ describe("ReportBuilder", () => {
       sessions: 0,
     });
     expect(parsed.runScope).toStrictEqual({ type: "scoped" });
-    expect(parsed.fixPolicy).toStrictEqual({ includeTests: false });
+    expect(parsed.fixPolicy).toStrictEqual({
+      includeTests: false,
+      include: [],
+      exclude: [],
+      includeGenerated: false,
+      includeFixtures: false,
+    });
+    expect(parsed.reportOnly).toStrictEqual([]);
+    expect(parsed.failureSummary).toStrictEqual({
+      blockingSecrets: 0,
+      unresolvedEligible: 0,
+      toolFailures: 0,
+      failedDeterministic: 0,
+      sessionErrors: 0,
+      regressions: 0,
+      typecheckFailures: 0,
+      testFailures: 0,
+    });
+    expect(parsed.unresolvedEligibleCount).toBe(0);
   });
 
   it("includes run scope and fix policy metadata when provided to build()", () => {
@@ -134,11 +208,23 @@ describe("ReportBuilder", () => {
       durationMs: 42,
       exitStatus: 0,
       runScope: { type: "all" },
-      fixPolicy: { includeTests: true },
+      fixPolicy: {
+        includeTests: true,
+        include: ["dist/index.d.ts"],
+        exclude: ["coverage/**"],
+        includeGenerated: true,
+        includeFixtures: false,
+      },
     });
 
     expect(report.runScope).toStrictEqual({ type: "all" });
-    expect(report.fixPolicy).toStrictEqual({ includeTests: true });
+    expect(report.fixPolicy).toStrictEqual({
+      includeTests: true,
+      include: ["dist/index.d.ts"],
+      exclude: ["coverage/**"],
+      includeGenerated: true,
+      includeFixtures: false,
+    });
   });
 
   it("assigns unique human retry ids to report findings", () => {

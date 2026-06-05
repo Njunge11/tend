@@ -2,7 +2,7 @@ import Table from "cli-table3";
 import { TOOLS, type Finding, type Tool } from "../findings/finding.js";
 import { isTestFile } from "../fixing/dispatch.js";
 import type { Report } from "../report/schema.js";
-import { formatDuration, reasonLabel } from "./format.js";
+import { formatDuration } from "./format.js";
 import { makeTheme, type Theme } from "./theme.js";
 
 const RULE_WIDTH = 49;
@@ -21,14 +21,27 @@ export type SummaryOptions = {
 
 type Buckets = {
   fixed: Finding[];
-  couldntFix: Finding[]; // reverted or unfixable (not a secret)
   skippedTests: Finding[]; // excluded by default unless --include-tests is passed
+  generated: Finding[]; // generated/build/cache findings reported but excluded from AI fixes
+  fixtures: Finding[]; // fixture findings reported but excluded from AI fixes
+  outOfScope: Finding[]; // path/tooling scope findings reported but excluded from AI fixes
   reportOnly: Finding[]; // unsupported/report-only findings that tend did not attempt
-  left: Finding[]; // unresolved for reasons other than the default test-file exclusion
+  timedOutSessionError: Finding[];
+  regressed: Finding[];
+  typecheckFailed: Finding[];
+  testFailed: Finding[];
+  retryExhausted: Finding[];
+  unresolvedEligible: Finding[]; // unresolved for reasons other than explicit exclusions/failures
   secrets: Finding[];
 };
 
-type PendingBucket = "skippedTests" | "reportOnly" | "left";
+type PendingBucket =
+  | "skippedTests"
+  | "generated"
+  | "fixtures"
+  | "outOfScope"
+  | "reportOnly"
+  | "left";
 
 /** A finding the developer can't read as part of their changes (scanned wide, out of scope). */
 function isOutOfScope(f: Finding): boolean {
@@ -37,30 +50,66 @@ function isOutOfScope(f: Finding): boolean {
 
 function bucket(report: Report): Buckets {
   const fixed: Finding[] = [];
-  const couldntFix: Finding[] = [];
   const skippedTests: Finding[] = [];
+  const generated: Finding[] = [];
+  const fixtures: Finding[] = [];
+  const outOfScope: Finding[] = [];
   const reportOnly: Finding[] = [];
-  const left: Finding[] = [];
+  const timedOutSessionError: Finding[] = [];
+  const regressed: Finding[] = [];
+  const typecheckFailed: Finding[] = [];
+  const testFailed: Finding[] = [];
+  const retryExhausted: Finding[] = [];
+  const unresolvedEligible: Finding[] = [];
   const secrets: Finding[] = [];
   for (const f of report.findings) {
     if (f.category === "secret") secrets.push(f);
     // Out-of-scope findings are reported on the separate repo-wide line, never folded into
     // the headline counts — so "0 in your changes" can't read as "the repo is clean".
-    else if (isOutOfScope(f)) continue;
+    else if (isOutOfScope(f)) outOfScope.push(f);
+    else if (f.inReportScope === false) continue;
     else if (f.status === "fixed") fixed.push(f);
-    else if (f.status === "reverted" || f.status === "unfixable")
-      couldntFix.push(f);
+    else if (f.status === "reverted" || f.status === "unfixable") {
+      if (f.revertReason === "session-error" || f.finalFailureClass === "tool-timeout") timedOutSessionError.push(f);
+      else if (f.revertReason === "regression") regressed.push(f);
+      else if (f.revertReason === "typecheck") typecheckFailed.push(f);
+      else if (f.revertReason === "broke-test") testFailed.push(f);
+      else retryExhausted.push(f);
+    }
     else {
       const pending = classifyPending(f, report);
       if (pending === "skippedTests") skippedTests.push(f);
+      else if (pending === "generated") generated.push(f);
+      else if (pending === "fixtures") fixtures.push(f);
+      else if (pending === "outOfScope") outOfScope.push(f);
       else if (pending === "reportOnly") reportOnly.push(f);
-      else left.push(f);
+      else unresolvedEligible.push(f);
     }
   }
-  return { fixed, couldntFix, skippedTests, reportOnly, left, secrets };
+  return {
+    fixed,
+    skippedTests,
+    generated,
+    fixtures,
+    outOfScope,
+    reportOnly,
+    timedOutSessionError,
+    regressed,
+    typecheckFailed,
+    testFailed,
+    retryExhausted,
+    unresolvedEligible,
+    secrets,
+  };
 }
 
 function classifyPending(f: Finding, report: Report): PendingBucket {
+  if (f.inFixScope === false) {
+    if (f.scopeExclusionReason === "generated") return "generated";
+    if (f.scopeExclusionReason === "fixtures") return "fixtures";
+    if (f.scopeExclusionReason === "tests") return "skippedTests";
+    return "outOfScope";
+  }
   if (f.track === "report-only") return "reportOnly";
   if (
     f.track === "ai-fix" &&
@@ -69,6 +118,16 @@ function classifyPending(f: Finding, report: Report): PendingBucket {
   )
     return "skippedTests";
   return "left";
+}
+
+function couldntFixFindings(b: Buckets): Finding[] {
+  return [
+    ...b.timedOutSessionError,
+    ...b.regressed,
+    ...b.typecheckFailed,
+    ...b.testFailed,
+    ...b.retryExhausted,
+  ];
 }
 
 /**
@@ -99,10 +158,16 @@ export function renderSummary(
   lines.push(theme.bold("scanner breakdown"));
   lines.push(renderScannerBreakdownTable(report, theme));
 
-  if (b.couldntFix.length > 0) {
+  const couldntFix = couldntFixFindings(b);
+  if (couldntFix.length > 0) {
     lines.push("");
     lines.push(theme.bold("couldn't fix"));
-    lines.push(renderCouldntFixTable(b.couldntFix, theme));
+    lines.push(renderCouldntFixSummaryTable(couldntFix));
+    if (opts.verbose) {
+      lines.push("");
+      lines.push(theme.bold("couldn't fix retry details"));
+      lines.push(renderCouldntFixDetailTable(couldntFix, theme));
+    }
   }
 
   if (b.secrets.length > 0) {
@@ -131,11 +196,19 @@ function renderPlainSummary(
     [
       "summary",
       `fixed=${b.fixed.length}`,
-      `couldntFix=${b.couldntFix.length}`,
+      `couldntFix=${couldntFixFindings(b).length}`,
       `skippedTests=${b.skippedTests.length}`,
       `reportOnly=${b.reportOnly.length}`,
-      `left=${b.left.length}`,
+      `left=${b.unresolvedEligible.length}`,
       `secrets=${b.secrets.length}`,
+      `generated=${b.generated.length}`,
+      `fixtures=${b.fixtures.length}`,
+      `outOfScope=${b.outOfScope.length}`,
+      `unresolvedEligible=${b.unresolvedEligible.length}`,
+      `timedOutSessionError=${b.timedOutSessionError.length}`,
+      `regressed=${b.regressed.length}`,
+      `typecheckFailed=${b.typecheckFailed.length}`,
+      `testFailed=${b.testFailed.length}`,
     ].join(" "),
     [
       "aiUsage",
@@ -147,6 +220,30 @@ function renderPlainSummary(
       `cacheCreationInputTokens=${report.aiUsage.cacheCreationInputTokens}`,
     ].join(" "),
   ];
+  const strategyCounts = repairStrategyCounts(report);
+  if (strategyCounts.size > 0) {
+    lines.push(
+      [
+        "repairStrategies",
+        ...[...strategyCounts.entries()].map(([strategy, count]) => `${strategy}=${count}`),
+      ].join(" "),
+    );
+  }
+  if (report.exitStatus !== 0 || hasFailureSummary(report)) {
+    lines.push(
+      [
+        "failureSummary",
+        `blockingSecrets=${report.failureSummary.blockingSecrets}`,
+        `unresolvedEligible=${report.failureSummary.unresolvedEligible}`,
+        `toolFailures=${report.failureSummary.toolFailures}`,
+        `failedDeterministic=${report.failureSummary.failedDeterministic}`,
+        `sessionErrors=${report.failureSummary.sessionErrors}`,
+        `regressions=${report.failureSummary.regressions}`,
+        `typecheckFailures=${report.failureSummary.typecheckFailures}`,
+        `testFailures=${report.failureSummary.testFailures}`,
+      ].join(" "),
+    );
+  }
 
   const counts = inScopeByTool(report);
   const statusByTool = new Map(report.scannerStatuses.map((s) => [s.tool, s]));
@@ -160,6 +257,9 @@ function renderPlainSummary(
       skippedTests: 0,
       reportOnly: 0,
       left: 0,
+      generated: 0,
+      fixtures: 0,
+      outOfScope: 0,
     };
     const reason =
       status?.status === "failed" && status.reason
@@ -168,14 +268,14 @@ function renderPlainSummary(
           ? " reason=not-installed"
           : "";
     lines.push(
-      `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left}${reason}`,
+      `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left} unresolvedEligible=${c.left} generated=${c.generated} fixtures=${c.fixtures} outOfScope=${c.outOfScope}${reason}`,
     );
   }
 
-  for (const f of b.couldntFix) {
+  for (const f of couldntFixFindings(b)) {
     const id = retryTarget(f);
     lines.push(
-      `couldnt-fix retryId=${f.retryId ?? "(none)"} file=${JSON.stringify(f.file)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(findingReason(f))} command=${JSON.stringify(`tend retry ${id}`)}`,
+      `couldnt-fix retryId=${f.retryId ?? "(none)"} file=${JSON.stringify(f.file)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(findingReason(f))} detail=${JSON.stringify(firstLine(f.revertDetail ?? ""))} command=${JSON.stringify(`tend retry ${id}`)}`,
     );
   }
 
@@ -191,6 +291,24 @@ function renderPlainSummary(
     );
   }
 
+  if (b.generated.length > 0) {
+    lines.push(
+      `generated count=${b.generated.length} reason="generated/cache/build output is excluded from fixes by default"`,
+    );
+  }
+
+  if (b.fixtures.length > 0) {
+    lines.push(
+      `fixtures count=${b.fixtures.length} reason="fixture files are excluded from fixes by default"`,
+    );
+  }
+
+  if (b.outOfScope.length > 0) {
+    lines.push(
+      `out-of-scope count=${b.outOfScope.length} reason="outside the current fix scope or explicitly excluded"`,
+    );
+  }
+
   if (b.reportOnly.length > 0) {
     lines.push(
       `report-only count=${b.reportOnly.length} reason="unsupported or report-only findings"`,
@@ -200,7 +318,7 @@ function renderPlainSummary(
   if (verbose) {
     for (const f of report.findings) {
       lines.push(
-        `finding retryId=${f.retryId ?? ""} status=${f.status} tool=${f.tool} location=${JSON.stringify(`${f.file}:${f.range.startLine}`)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(f.status === "fixed" ? "" : findingReason(f))}`,
+        `finding retryId=${f.retryId ?? ""} status=${f.status} strategy=${f.repairStrategy ?? ""} tool=${f.tool} location=${JSON.stringify(`${f.file}:${f.range.startLine}`)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(f.status === "fixed" ? "" : findingReason(f))}`,
       );
     }
   }
@@ -209,6 +327,15 @@ function renderPlainSummary(
     'next command="tend diff" command="git add -p" command="tend undo"',
   );
   return lines.join("\n");
+}
+
+function repairStrategyCounts(report: Report): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const finding of report.findings) {
+    if (!finding.repairStrategy) continue;
+    counts.set(finding.repairStrategy, (counts.get(finding.repairStrategy) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function renderTable(head: string[], rows: string[][]): string {
@@ -222,13 +349,18 @@ function renderTable(head: string[], rows: string[][]): string {
 }
 
 function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
+  const couldntFix = couldntFixFindings(b);
   const clean =
     b.fixed.length === 0 &&
-    b.couldntFix.length === 0 &&
+    couldntFix.length === 0 &&
     b.skippedTests.length === 0 &&
+    b.generated.length === 0 &&
+    b.fixtures.length === 0 &&
+    b.outOfScope.length === 0 &&
     b.reportOnly.length === 0 &&
-    b.left.length === 0 &&
-    b.secrets.length === 0;
+    b.unresolvedEligible.length === 0 &&
+    b.secrets.length === 0 &&
+    !hasFailureSummary(report);
   const status =
     report.exitStatus === 0
       ? clean
@@ -241,24 +373,75 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
     [
-      "couldn't fix",
-      `${theme.reverted(theme.glyph.reverted)} ${b.couldntFix.length}`,
+      "timed out/session error",
+      `${theme.reverted(theme.glyph.reverted)} ${b.timedOutSessionError.length}`,
     ],
+    [
+      "regressed",
+      `${theme.reverted(theme.glyph.reverted)} ${b.regressed.length}`,
+    ],
+    [
+      "typecheck failed",
+      `${theme.reverted(theme.glyph.reverted)} ${b.typecheckFailed.length}`,
+    ],
+    [
+      "test failed",
+      `${theme.reverted(theme.glyph.reverted)} ${b.testFailed.length}`,
+    ],
+    ["retries exhausted", `${theme.reverted(theme.glyph.reverted)} ${b.retryExhausted.length}`],
     [
       "skipped tests",
       `${theme.dim(theme.glyph.left)} ${b.skippedTests.length} (pass --include-tests)`,
     ],
+    ["skipped generated", `${theme.dim(theme.glyph.left)} ${b.generated.length}`],
+    ["skipped fixtures", `${theme.dim(theme.glyph.left)} ${b.fixtures.length}`],
+    ["out of scope", `${theme.dim(theme.glyph.left)} ${b.outOfScope.length}`],
     ["report only", `${theme.dim(theme.glyph.left)} ${b.reportOnly.length}`],
-    ["left", `${theme.dim(theme.glyph.left)} ${b.left.length}`],
+    [
+      "unresolved eligible",
+      `${theme.dim(theme.glyph.left)} ${b.unresolvedEligible.length}`,
+    ],
     [
       "secrets",
       b.secrets.length > 0 ? theme.error(String(b.secrets.length)) : "0",
+    ],
+    [
+      "tool failures",
+      report.failureSummary.toolFailures > 0
+        ? theme.error(String(report.failureSummary.toolFailures))
+        : "0",
+    ],
+    [
+      "failed deterministic fixes",
+      report.failureSummary.failedDeterministic > 0
+        ? theme.error(String(report.failureSummary.failedDeterministic))
+        : "0",
     ],
     ["estimated AI cost", formatCost(report.aiUsage.estimatedCostUsd)],
     ["AI sessions", String(report.aiUsage.sessions)],
     ["tokens", formatTokens(report.aiUsage)],
   ];
+  if (report.exitStatus !== 0 && !hasFailureSummary(report) && couldntFix.length === 0) {
+    rows.splice(1, 0, [
+      "failure reason",
+      theme.error("exit status set without recorded blocking findings"),
+    ]);
+  }
   return renderTable(["metric", "value"], rows);
+}
+
+function hasFailureSummary(report: Report): boolean {
+  const summary = report.failureSummary;
+  return (
+    summary.blockingSecrets > 0 ||
+    summary.unresolvedEligible > 0 ||
+    summary.toolFailures > 0 ||
+    summary.failedDeterministic > 0 ||
+    summary.sessionErrors > 0 ||
+    summary.regressions > 0 ||
+    summary.typecheckFailures > 0 ||
+    summary.testFailures > 0
+  );
 }
 
 /** Estimated AI cost as `$X.XX` — always two decimals, never called a "bill". */
@@ -283,6 +466,9 @@ type ScopeCounts = {
   skippedTests: number;
   reportOnly: number;
   left: number;
+  generated: number;
+  fixtures: number;
+  outOfScope: number;
 };
 
 /** Per-tool tally over the in-scope findings only. */
@@ -297,6 +483,9 @@ function inScopeByTool(report: Report): Map<Tool, ScopeCounts> {
       skippedTests: 0,
       reportOnly: 0,
       left: 0,
+      generated: 0,
+      fixtures: 0,
+      outOfScope: 0,
     };
     row.total += 1;
     if (f.status === "fixed") row.fixed += 1;
@@ -305,6 +494,9 @@ function inScopeByTool(report: Report): Map<Tool, ScopeCounts> {
     else {
       const pending = classifyPending(f, report);
       if (pending === "skippedTests") row.skippedTests += 1;
+      else if (pending === "generated") row.generated += 1;
+      else if (pending === "fixtures") row.fixtures += 1;
+      else if (pending === "outOfScope") row.outOfScope += 1;
       else if (pending === "reportOnly") row.reportOnly += 1;
       else row.left += 1;
     }
@@ -320,7 +512,23 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
   if (tools.length === 0) {
     return renderTable(
       scannerBreakdownHeaders(),
-      [["(none)", "not recorded", scopeLabel(report), "0", "0", "0", "0", "0", "0", ""]],
+      [
+        [
+          "(none)",
+          "not recorded",
+          scopeLabel(report),
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "0",
+          "",
+        ],
+      ],
     );
   }
 
@@ -333,6 +541,9 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
       skippedTests: 0,
       reportOnly: 0,
       left: 0,
+      generated: 0,
+      fixtures: 0,
+      outOfScope: 0,
     };
     const label = scannerLabel(tool);
     const statusText =
@@ -359,6 +570,9 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
       String(c.skippedTests),
       String(c.reportOnly),
       String(c.left),
+      String(c.generated),
+      String(c.fixtures),
+      String(c.outOfScope),
       reason,
     ];
   });
@@ -375,7 +589,10 @@ function scannerBreakdownHeaders(): string[] {
     "couldn't fix",
     "skipped tests",
     "report only",
-    "left",
+    "unresolved eligible",
+    "generated",
+    "fixtures",
+    "out of scope",
     "reason",
   ];
 }
@@ -392,27 +609,136 @@ function plainScopeLabel(report: Report): string {
 }
 
 function findingReason(f: Finding): string {
-  return f.status === "reverted"
-    ? reasonLabel(f.revertReason)
-    : "exhausted retries";
+  if (f.finalFailureClass === "tool-timeout") return "timeout/session error";
+  if (f.finalFailureClass === "rate-limit") return "rate limited";
+  if (f.finalFailureClass === "no-op") return "no-op";
+  switch (f.revertReason) {
+    case "session-error":
+      return "timeout/session error";
+    case "regression":
+      return "regression introduced";
+    case "typecheck":
+      return "typecheck failed";
+    case "broke-test":
+      return "tests failed";
+    case "suppression":
+      return "added a suppression";
+    default:
+      return "retries exhausted";
+  }
 }
 
 function retryTarget(f: Finding): string {
   return f.retryId ?? f.id;
 }
 
-function renderCouldntFixTable(findings: Finding[], theme: Theme): string {
+type CouldntFixReason =
+  | "session error"
+  | "regression"
+  | "typecheck failed"
+  | "test failed"
+  | "retries exhausted"
+  | "unsupported / report-only";
+
+type CouldntFixReasonGroup = {
+  reason: CouldntFixReason;
+  findings: Finding[];
+};
+
+const COULDNT_FIX_REASON_ORDER: CouldntFixReason[] = [
+  "session error",
+  "regression",
+  "typecheck failed",
+  "test failed",
+  "retries exhausted",
+  "unsupported / report-only",
+];
+
+function couldntFixReason(f: Finding): CouldntFixReason {
+  if (f.track === "report-only") return "unsupported / report-only";
+  if (
+    f.revertReason === "session-error" ||
+    f.finalFailureClass === "tool-timeout" ||
+    f.finalFailureClass === "rate-limit" ||
+    f.finalFailureClass === "model-tool-failure" ||
+    f.finalFailureClass === "no-edit"
+  )
+    return "session error";
+  if (f.revertReason === "regression" || f.finalFailureClass === "regression")
+    return "regression";
+  if (f.revertReason === "typecheck" || f.finalFailureClass === "typecheck")
+    return "typecheck failed";
+  if (f.revertReason === "broke-test" || f.finalFailureClass === "broke-test")
+    return "test failed";
+  return "retries exhausted";
+}
+
+export function groupCouldntFixByReason(
+  findings: Finding[],
+): CouldntFixReasonGroup[] {
+  const groups = new Map<CouldntFixReason, Finding[]>();
+  for (const finding of findings) {
+    const reason = couldntFixReason(finding);
+    const group = groups.get(reason) ?? [];
+    group.push(finding);
+    groups.set(reason, group);
+  }
+  return COULDNT_FIX_REASON_ORDER.flatMap((reason) => {
+    const group = groups.get(reason);
+    return group && group.length > 0 ? [{ reason, findings: group }] : [];
+  });
+}
+
+export function truncateCell(value: string, maxLength = 64): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+export function uniqueExampleFiles(findings: Finding[], maxFiles = 3): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  for (const finding of findings) {
+    if (seen.has(finding.file)) continue;
+    seen.add(finding.file);
+    files.push(finding.file);
+    if (files.length >= maxFiles) break;
+  }
+  return files;
+}
+
+function nextActionForCouldntFixGroup(findings: Finding[]): string {
+  if (findings.length === 1) return `tend retry ${retryTarget(findings[0]!)}`;
+  return "run with --verbose";
+}
+
+export function renderCouldntFixSummaryTable(findings: Finding[]): string {
+  const rows = groupCouldntFixByReason(findings).map((group) => [
+    group.reason,
+    String(group.findings.length),
+    uniqueExampleFiles(group.findings)
+      .map((file) => truncateCell(file, 56))
+      .join(", "),
+    nextActionForCouldntFixGroup(group.findings),
+  ]);
+  return renderTable(["reason", "count", "examples", "next action"], rows);
+}
+
+export function renderCouldntFixDetailTable(
+  findings: Finding[],
+  theme: Theme,
+): string {
   const rows = findings.map((f) => [
     f.retryId ?? "(none)",
     f.file,
     String(f.range.startLine),
     f.rule,
-    f.message,
     findingReason(f),
+    firstLine(f.revertDetail ?? ""),
     `${theme.glyph.arrow} tend retry ${retryTarget(f)}`,
   ]);
   return renderTable(
-    ["retryId", "file", "line", "rule", "message", "reason", "command"],
+    ["retryId", "file", "line", "rule", "reason", "detail", "command"],
     rows,
   );
 }
@@ -473,6 +799,7 @@ function renderVerbose(report: Report, theme: Theme): string {
   const findingRows = report.findings.map((f) => [
     f.retryId ?? "",
     f.status,
+    f.repairStrategy ?? "",
     f.tool,
     `${f.file}:${f.range.startLine}`,
     f.rule,
@@ -483,7 +810,7 @@ function renderVerbose(report: Report, theme: Theme): string {
     table.toString(),
     theme.bold("verbose findings"),
     renderTable(
-      ["retryId", "status", "tool", "location", "rule", "reason"],
+      ["retryId", "status", "strategy", "tool", "location", "rule", "reason"],
       findingRows,
     ),
   ].join("\n");

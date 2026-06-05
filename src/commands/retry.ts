@@ -2,6 +2,7 @@ import type { Finding } from "../findings/finding.js";
 import { normalizeRevertDetail } from "../findings/revert-detail.js";
 import type { RevertReason } from "../gate/check.js";
 import type { FixOutcome } from "../orchestrator.js";
+import { deriveReportFields } from "../report/builder.js";
 import type { Report } from "../report/schema.js";
 import { resolveFindingId } from "./resolve-finding.js";
 
@@ -23,11 +24,26 @@ function findingsOf(deps: RetryDeps): Finding[] {
 }
 
 function syncDerivedReportFields(report: Report): void {
-  report.secrets = report.findings.filter((f) => f.category === "secret");
-  report.depBumps = report.findings
-    .filter((f) => f.remediation !== undefined)
-    .map((f) => ({ findingId: f.id, remediation: f.remediation! }));
-  report.exitStatus = report.secrets.length > 0 ? 1 : 0;
+  const derived = deriveReportFields(
+    report.findings,
+    report.scannerStatuses,
+    report.fixPolicy,
+  );
+  report.secrets = derived.secrets;
+  report.reportOnly = derived.reportOnly;
+  report.depBumps = derived.depBumps;
+  report.failureSummary = derived.failureSummary;
+  report.unresolvedEligibleCount = derived.unresolvedEligibleCount;
+  const hasBlockingFailure =
+    derived.failureSummary.blockingSecrets > 0 ||
+    derived.failureSummary.unresolvedEligible > 0 ||
+    derived.failureSummary.toolFailures > 0 ||
+    derived.failureSummary.failedDeterministic > 0 ||
+    derived.failureSummary.sessionErrors > 0 ||
+    derived.failureSummary.regressions > 0 ||
+    derived.failureSummary.typecheckFailures > 0 ||
+    derived.failureSummary.testFailures > 0;
+  report.exitStatus = hasBlockingFailure ? 1 : 0;
 }
 
 export function resolveRetryTarget(id: string, findings: Finding[]): Finding | { error: string } {
@@ -55,6 +71,7 @@ export async function retryCommand(
     finding.status = "fixed";
     delete finding.revertReason;
     delete finding.revertDetail;
+    delete finding.finalFailureClass;
     if (deps.report) syncDerivedReportFields(deps.report);
     return { outcome: "fixed", finding, budget: largerBudget };
   }
@@ -62,6 +79,7 @@ export async function retryCommand(
   const reason = outcome.reason ?? "session-error";
   finding.attempts += 1;
   finding.revertReason = reason;
+  finding.finalFailureClass = outcome.failureClass;
   const detail = normalizeRevertDetail(outcome.detail);
   if (detail) finding.revertDetail = detail;
   else delete finding.revertDetail;

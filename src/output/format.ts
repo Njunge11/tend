@@ -34,6 +34,8 @@ export function reasonLabel(reason: string | undefined): string {
       return "introduced a new issue";
     case "session-error":
       return "the fix session failed";
+    case "needs-lockfile-update":
+      return "needs lockfile update";
     default:
       return "couldn't fix";
   }

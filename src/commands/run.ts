@@ -20,7 +20,13 @@ export async function runCommand(deps: RunDeps): Promise<{ report: Report; exitS
     exitStatus: result.exitStatus,
     aiUsage: result.usage,
     runScope: result.runScope,
-    fixPolicy: { includeTests: Boolean(deps.config.includeTests) },
+    fixPolicy: {
+      includeTests: Boolean(deps.config.includeTests),
+      include: deps.config.fix?.include ?? [],
+      exclude: deps.config.fix?.exclude ?? [],
+      includeGenerated: Boolean(deps.config.fix?.includeGenerated),
+      includeFixtures: Boolean(deps.config.fix?.includeFixtures),
+    },
   });
 
   return { report, exitStatus: result.exitStatus };

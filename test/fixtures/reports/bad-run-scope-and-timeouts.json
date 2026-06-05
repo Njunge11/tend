@@ -1,0 +1,266 @@
+{
+  "findings": [
+    {
+      "id": "bad-run-dist-generated-000000000000000000000000000000000000000000000000000000000001",
+      "retryId": "dist01",
+      "tool": "sonarjs",
+      "rule": "no-identical-expressions",
+      "category": "bug",
+      "severity": "error",
+      "file": "dist/index.js",
+      "range": {
+        "startLine": 12,
+        "startCol": 4,
+        "endLine": 12,
+        "endCol": 26
+      },
+      "message": "Identical sub-expressions in generated bundle output",
+      "repairStrategy": "unsupported",
+      "repairStrategyReason": "generated",
+      "track": "ai-fix",
+      "status": "pending",
+      "attempts": 0,
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": false,
+      "scopeExclusionReason": "generated"
+    },
+    {
+      "id": "bad-run-test-fixture-000000000000000000000000000000000000000000000000000000000002",
+      "retryId": "fixt01",
+      "tool": "knip",
+      "rule": "unused-export",
+      "category": "dead-code",
+      "severity": "warning",
+      "file": "test/fixtures/monorepo/apps/dashboard/sample.ts",
+      "range": {
+        "startLine": 4,
+        "startCol": 0,
+        "endLine": 4,
+        "endCol": 18
+      },
+      "message": "Fixture export is unused by the real project graph",
+      "repairStrategy": "unsupported",
+      "repairStrategyReason": "fixtures",
+      "track": "ai-fix",
+      "status": "pending",
+      "attempts": 0,
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": false,
+      "scopeExclusionReason": "fixtures"
+    },
+    {
+      "id": "bad-run-report-only-jscpd-000000000000000000000000000000000000000000000000000000000003",
+      "retryId": "dupe01",
+      "tool": "jscpd",
+      "rule": "duplicate-code",
+      "category": "duplication",
+      "severity": "warning",
+      "file": "src/components/SignupForm.ts",
+      "range": {
+        "startLine": 20,
+        "startCol": 0,
+        "endLine": 44,
+        "endCol": 1
+      },
+      "message": "Duplicate code found across two source files; report only in this fixture",
+      "flowPath": [
+        {
+          "file": "src/components/SignupForm.ts",
+          "line": 20
+        },
+        {
+          "file": "src/components/LegacySignupForm.ts",
+          "line": 18
+        }
+      ],
+      "repairStrategy": "unsupported",
+      "repairStrategyReason": "report-only",
+      "track": "report-only",
+      "status": "pending",
+      "attempts": 0,
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": true
+    },
+    {
+      "id": "bad-run-session-timeout-000000000000000000000000000000000000000000000000000000000004",
+      "retryId": "time01",
+      "tool": "sonarjs",
+      "rule": "cognitive-complexity",
+      "category": "smell",
+      "severity": "warning",
+      "file": "src/workflows/signup.ts",
+      "range": {
+        "startLine": 88,
+        "startCol": 0,
+        "endLine": 156,
+        "endCol": 1
+      },
+      "message": "Refactor this function to reduce its cognitive complexity",
+      "repairStrategy": "single-file-ai-edit",
+      "track": "ai-fix",
+      "status": "unfixable",
+      "attempts": 0,
+      "revertReason": "session-error",
+      "revertDetail": "Claude session failed (exit 143)\nProcess was terminated before a fix could be evaluated",
+      "finalFailureClass": "tool-timeout",
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": true
+    },
+    {
+      "id": "bad-run-regression-000000000000000000000000000000000000000000000000000000000005",
+      "retryId": "regr01",
+      "tool": "semgrep",
+      "rule": "typescript.express.security.audit.xss.direct-response-write",
+      "category": "security",
+      "severity": "error",
+      "file": "src/routes/signup.ts",
+      "range": {
+        "startLine": 42,
+        "startCol": 2,
+        "endLine": 42,
+        "endCol": 24
+      },
+      "message": "Direct response write introduced a regression in signup rendering",
+      "repairStrategy": "single-file-ai-edit",
+      "track": "ai-fix",
+      "status": "unfixable",
+      "attempts": 2,
+      "revertReason": "regression",
+      "revertDetail": "Anti-regression check found a newly introduced semgrep finding in src/routes/signup.ts",
+      "finalFailureClass": "regression",
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": true
+    },
+    {
+      "id": "bad-run-normal-source-000000000000000000000000000000000000000000000000000000000006",
+      "retryId": "src001",
+      "tool": "sonarjs",
+      "rule": "no-identical-expressions",
+      "category": "bug",
+      "severity": "error",
+      "file": "src/signup/validate.ts",
+      "range": {
+        "startLine": 31,
+        "startCol": 9,
+        "endLine": 31,
+        "endCol": 32
+      },
+      "message": "Identical sub-expressions in signup validation",
+      "repairStrategy": "single-file-ai-edit",
+      "track": "ai-fix",
+      "status": "pending",
+      "attempts": 0,
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": true
+    }
+  ],
+  "secrets": [],
+  "reportOnly": [
+    {
+      "id": "bad-run-report-only-jscpd-000000000000000000000000000000000000000000000000000000000003",
+      "retryId": "dupe01",
+      "tool": "jscpd",
+      "rule": "duplicate-code",
+      "category": "duplication",
+      "severity": "warning",
+      "file": "src/components/SignupForm.ts",
+      "range": {
+        "startLine": 20,
+        "startCol": 0,
+        "endLine": 44,
+        "endCol": 1
+      },
+      "message": "Duplicate code found across two source files; report only in this fixture",
+      "flowPath": [
+        {
+          "file": "src/components/SignupForm.ts",
+          "line": 20
+        },
+        {
+          "file": "src/components/LegacySignupForm.ts",
+          "line": 18
+        }
+      ],
+      "repairStrategy": "unsupported",
+      "repairStrategyReason": "report-only",
+      "track": "report-only",
+      "status": "pending",
+      "attempts": 0,
+      "firstSeenLoop": 1,
+      "lastSeenLoop": 3,
+      "inScope": true,
+      "inReportScope": true,
+      "inFixScope": true
+    }
+  ],
+  "depBumps": [],
+  "flaggedBehaviorChanges": [],
+  "scannerStatuses": [
+    {
+      "tool": "sonarjs",
+      "status": "ran"
+    },
+    {
+      "tool": "knip",
+      "status": "ran"
+    },
+    {
+      "tool": "jscpd",
+      "status": "ran"
+    },
+    {
+      "tool": "semgrep",
+      "status": "ran"
+    }
+  ],
+  "runScope": {
+    "type": "all"
+  },
+  "fixPolicy": {
+    "includeTests": false,
+    "include": [],
+    "exclude": [],
+    "includeGenerated": false,
+    "includeFixtures": false
+  },
+  "aiUsage": {
+    "estimatedCostUsd": 2.41,
+    "inputTokens": 760000,
+    "outputTokens": 41000,
+    "cacheCreationInputTokens": 18000,
+    "cacheReadInputTokens": 530000,
+    "sessions": 9
+  },
+  "failureSummary": {
+    "blockingSecrets": 0,
+    "unresolvedEligible": 1,
+    "toolFailures": 0,
+    "failedDeterministic": 0,
+    "sessionErrors": 1,
+    "regressions": 1,
+    "typecheckFailures": 0,
+    "testFailures": 0
+  },
+  "unresolvedEligibleCount": 1,
+  "loops": 3,
+  "durationMs": 4519754,
+  "exitStatus": 1
+}

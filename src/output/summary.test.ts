@@ -1,12 +1,26 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
 import { ReportBuilder } from "../report/builder.js";
+import { ReportSchema, type Report } from "../report/schema.js";
 import { groupRemaining, renderSummary } from "./summary.js";
 
 function reportWith(...findings: ReturnType<typeof makeFinding>[]) {
   const builder = new ReportBuilder();
   builder.recordOutcomes(findings);
   return builder;
+}
+
+function badRunScopeAndTimeoutsReport(): Report {
+  return ReportSchema.parse(
+    JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../../test/fixtures/reports/bad-run-scope-and-timeouts.json", import.meta.url)),
+        "utf8",
+      ),
+    ),
+  );
 }
 
 describe("renderSummary", () => {
@@ -45,7 +59,7 @@ describe("renderSummary", () => {
     expect(out).toContain("3m 12s"); // 192_000ms
   });
 
-  it("surfaces each reverted finding per-file with its line, message, and revert reason", () => {
+  it("renders a compact default couldn't-fix table and detailed retry table only in verbose mode", () => {
     const builder = reportWith({
       ...makeFinding({
         tool: "sonarjs",
@@ -63,20 +77,30 @@ describe("renderSummary", () => {
     const out = renderSummary(report);
 
     expect(out).toContain("couldn't fix");
-    expect(out).toContain("retryId");
-    expect(out).toContain("line");
-    expect(out).toContain("message");
-    expect(out).toContain("command");
+    expect(out).toContain("reason");
+    expect(out).toContain("count");
+    expect(out).toContain("examples");
+    expect(out).toContain("next action");
     expect(out).toContain("src/legacy/parse.ts");
-    expect(out).toContain("142");
-    expect(out).toContain("Refactor this function to reduce its cognitive complexity");
-    expect(out).toContain("kx7p2q");
-    expect(out).toContain("cognitive-complexity");
-    expect(out).toContain("broke tests");
+    expect(out).toContain("test failed");
     expect(out).toContain("tend retry kx7p2q");
+    expect(out).not.toContain("Refactor this function to reduce its cognitive complexity");
+    expect(out).not.toContain("couldn't fix retry details");
+
+    const verbose = renderSummary(report, { verbose: true });
+    expect(verbose).toContain("couldn't fix retry details");
+    expect(verbose).toContain("retryId");
+    expect(verbose).toContain("line");
+    expect(verbose).toContain("detail");
+    expect(verbose).toContain("command");
+    expect(verbose).not.toContain("message");
+    expect(verbose).toContain("142");
+    expect(verbose).toContain("kx7p2q");
+    expect(verbose).toContain("cognitive-complexity");
+    expect(verbose).toContain("tests failed");
   });
 
-  it("distinguishes same-rule findings in one file by line and message", () => {
+  it("verbose summary distinguishes same-rule findings in one file by line", () => {
     const builder = reportWith(
       {
         ...makeFinding({
@@ -103,12 +127,12 @@ describe("renderSummary", () => {
     );
     const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
 
-    const out = renderSummary(report);
+    const out = renderSummary(report, { verbose: true });
 
     expect(out).toContain("12");
     expect(out).toContain("47");
-    expect(out).toContain("'token' is assigned a value but never used");
-    expect(out).toContain("'session' is assigned a value but never used");
+    expect(out).toContain("aaa111");
+    expect(out).toContain("bbb222");
   });
 
   it("ends with the next-step affordances", () => {
@@ -153,6 +177,127 @@ describe("renderSummary", () => {
     expect(out).toContain('next command="tend diff"');
     expect(out).not.toContain("┌");
     expect(out).not.toContain("│");
+  });
+
+  it("default summary with many failed findings renders grouped rows instead of every retryId", () => {
+    const longMessage =
+      "Refactor this function to reduce its cognitive complexity from 42 to the 15 allowed by the scanner because this long scanner message makes tables unreadable.";
+    const findings = Array.from({ length: 50 }, (_, index) => ({
+      ...makeFinding({
+        tool: "sonarjs",
+        rule: "cognitive-complexity",
+        file: `src/feature-${index % 5}/very/deep/path/component-${index}.ts`,
+        range: {
+          startLine: index + 1,
+          startCol: 0,
+          endLine: index + 1,
+          endCol: 10,
+        },
+        message: longMessage,
+      }),
+      retryId: `r${String(index).padStart(5, "0")}`,
+      status: "unfixable" as const,
+      revertReason: "session-error" as const,
+    }));
+    const report = reportWith(...findings).build({
+      loops: 1,
+      durationMs: 1000,
+      exitStatus: 1,
+    });
+
+    const out = renderSummary(report);
+
+    expect(out).toContain("session error");
+    expect(out).toMatch(/session error\s+│ 50\s+│/);
+    expect(out).toContain("run with --verbose");
+    expect(out).not.toContain("r00000");
+    expect(out).not.toContain("r00049");
+    expect(out).not.toContain(longMessage);
+    expect(out).not.toContain("cognitive-complexity");
+  });
+
+  it("default summary limits example files to 3 per reason", () => {
+    const report = reportWith(
+      ...[0, 1, 2, 3].map((index) => ({
+        ...makeFinding({
+          file: `src/example-${index}.ts`,
+          message: `Finding ${index}`,
+        }),
+        retryId: `x${index}`,
+        status: "unfixable" as const,
+        revertReason: "typecheck" as const,
+      })),
+    ).build({ loops: 1, durationMs: 1000, exitStatus: 1 });
+
+    const out = renderSummary(report);
+
+    expect(out).toContain("src/example-0.ts");
+    expect(out).toContain("src/example-1.ts");
+    expect(out).toContain("src/example-2.ts");
+    expect(out).not.toContain("src/example-3.ts");
+  });
+
+  it("renders session-error failures as timeout/session error with revert detail", () => {
+    const builder = reportWith({
+      ...makeFinding({
+        tool: "sonarjs",
+        rule: "complexity",
+        file: "src/a.ts",
+      }),
+      retryId: "kx7p2q",
+      status: "unfixable",
+      revertReason: "session-error",
+      finalFailureClass: "tool-timeout",
+      revertDetail: "Claude session failed (exit 143)\nProcess was terminated",
+    });
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 1 });
+
+    const out = renderSummary(report);
+    expect(out).toContain("timed out/session error");
+    expect(out).toContain("session error");
+    expect(out).not.toContain("Claude session failed (exit 143)");
+    expect(out).not.toContain("exhausted retries");
+
+    const verbose = renderSummary(report, { verbose: true });
+    expect(verbose).toContain("timeout/session error");
+    expect(verbose).toContain("Claude session failed (exit 143)");
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain('reason="timeout/session error"');
+    expect(plain).toContain('detail="Claude session failed (exit 143)"');
+  });
+
+  it("renders regression, typecheck, and test failures with specific reasons", () => {
+    const builder = reportWith(
+      {
+        ...makeFinding({ file: "src/regressed.ts" }),
+        status: "unfixable",
+        revertReason: "regression",
+      },
+      {
+        ...makeFinding({ file: "src/typecheck.ts" }),
+        status: "unfixable",
+        revertReason: "typecheck",
+      },
+      {
+        ...makeFinding({ file: "src/test-fail.ts" }),
+        status: "unfixable",
+        revertReason: "broke-test",
+      },
+    );
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 1 });
+
+    const out = renderSummary(report);
+    expect(out).toContain("regression");
+    expect(out).toContain("typecheck failed");
+    expect(out).toContain("test failed");
+    expect(out).toMatch(/regressed\s+│ ↩ 1/);
+    expect(out).toMatch(/typecheck failed\s+│ ↩ 1/);
+    expect(out).toMatch(/test failed\s+│ ↩ 1/);
+
+    const verbose = renderSummary(report, { verbose: true });
+    expect(verbose).toContain("regression introduced");
+    expect(verbose).toContain("tests failed");
   });
 
   it("renders estimated AI cost, sessions, and token rows", () => {
@@ -354,7 +499,7 @@ describe("renderSummary", () => {
     expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 reportOnly=0 left=0 secrets=0");
   });
 
-  it("renders pending report-only jscpd cross-file duplicates as report-only, not skipped tests", () => {
+  it("renders pending report-only duplicates as report-only, not skipped tests", () => {
     const builder = reportWith({
       ...makeFinding({
         tool: "jscpd",
@@ -366,6 +511,7 @@ describe("renderSummary", () => {
           { file: "src/bar.ts", line: 1 },
         ],
       }),
+      track: "report-only",
       status: "pending",
       inScope: true,
     });
@@ -400,7 +546,7 @@ describe("renderSummary", () => {
     const out = renderSummary(report);
     expect(out).toContain("skipped tests");
     expect(out).toContain("1 (pass --include-tests)");
-    expect(out).toMatch(/left\s+│ – 0/);
+    expect(out).toMatch(/unresolved eligible\s+│ – 0/);
 
     const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=1 reportOnly=0 left=0");
@@ -408,7 +554,55 @@ describe("renderSummary", () => {
     expect(plain).toContain('command="tend run --include-tests <path...>"');
   });
 
-  it("renders pending non-test AI-fix findings as left", () => {
+  it("shows generated, fixture, test, and out-of-scope exclusions separately", () => {
+    const builder = reportWith(
+      {
+        ...makeFinding({ tool: "sonarjs", file: "dist/index.d.ts" }),
+        status: "pending",
+        inScope: true,
+        inFixScope: false,
+        scopeExclusionReason: "generated",
+      },
+      {
+        ...makeFinding({ tool: "sonarjs", file: "test/fixtures/sample.ts" }),
+        status: "pending",
+        inScope: true,
+        inFixScope: false,
+        scopeExclusionReason: "fixtures",
+      },
+      {
+        ...makeFinding({ tool: "sonarjs", file: "src/a.test.ts" }),
+        status: "pending",
+        inScope: true,
+        inFixScope: false,
+        scopeExclusionReason: "tests",
+      },
+      {
+        ...makeFinding({ tool: "sonarjs", file: "src/outside.ts" }),
+        status: "pending",
+        inScope: false,
+        inFixScope: false,
+        scopeExclusionReason: "out-of-scope",
+      },
+    );
+    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
+
+    const out = renderSummary(report);
+    expect(out).toMatch(/generated\s+│ – 1/);
+    expect(out).toMatch(/fixtures\s+│ – 1/);
+    expect(out).toMatch(/skipped tests\s+│ – 1/);
+    expect(out).toMatch(/out of scope\s+│ – 1/);
+    expect(out).toMatch(/unresolved eligible\s+│ – 0/);
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain("skippedTests=1 reportOnly=0 left=0 secrets=0 generated=1 fixtures=1 outOfScope=1");
+    expect(plain).toContain("generated count=1");
+    expect(plain).toContain("fixtures count=1");
+    expect(plain).toContain("out-of-scope count=1");
+  });
+
+  it("renders pending non-test AI-fix findings as unresolved eligible", () => {
     const builder = reportWith({
       ...makeFinding({
         tool: "sonarjs",
@@ -425,7 +619,7 @@ describe("renderSummary", () => {
     const out = renderSummary(report);
     expect(out).toMatch(/skipped tests\s+│ – 0/);
     expect(out).toMatch(/report only\s+│ – 0/);
-    expect(out).toMatch(/left\s+│ – 1/);
+    expect(out).toMatch(/unresolved eligible\s+│ – 1/);
 
     const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=0 reportOnly=0 left=1");
@@ -490,6 +684,43 @@ describe("renderSummary", () => {
     expect(out).toMatch(/knip.*failed/);
     expect(out).toContain("Error loading knip.config.ts"); // reason surfaced (first line)
     expect(out).not.toContain("Reason: boom"); // multi-line reason is trimmed to its first line
+  });
+
+  it("renders the bad scope/timeout regression fixture as actionable buckets", () => {
+    const report = badRunScopeAndTimeoutsReport();
+
+    const out = renderSummary(report);
+    expect(out).toContain("needs attention (exit 1)");
+    expect(out).toMatch(/timed out\/session error\s+│ ↩ 1/);
+    expect(out).toMatch(/regressed\s+│ ↩ 1/);
+    expect(out).toMatch(/skipped generated\s+│ – 1/);
+    expect(out).toMatch(/skipped fixtures\s+│ – 1/);
+    expect(out).toMatch(/report only\s+│ – 1/);
+    expect(out).toMatch(/unresolved eligible\s+│ – 1/);
+    expect(out).toContain("session error");
+    expect(out).toMatch(/session error\s+│ 1\s+│ src\/workflows\/signup\.ts/);
+    expect(out).toMatch(/regression\s+│ 1\s+│ src\/routes\/signup\.ts/);
+    expect(out).not.toContain("Claude session failed (exit 143)");
+    expect(out).not.toContain("exit status set without recorded blocking findings");
+
+    const verbose = renderSummary(report, { verbose: true });
+    expect(verbose).toContain("Claude session failed (exit 143)");
+    expect(verbose).toMatch(/time01[\s\S]*src\/workflows\/signup\.ts[\s\S]*timeout\/session error/);
+    expect(verbose).toMatch(/regr01[\s\S]*src\/routes\/signup\.ts[\s\S]*regression introduced/);
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain(
+      "summary fixed=0 couldntFix=2 skippedTests=0 reportOnly=1 left=1 secrets=0 generated=1 fixtures=1 outOfScope=0 unresolvedEligible=1 timedOutSessionError=1 regressed=1",
+    );
+    expect(plain).toContain(
+      "failureSummary blockingSecrets=0 unresolvedEligible=1 toolFailures=0 failedDeterministic=0 sessionErrors=1 regressions=1 typecheckFailures=0 testFailures=0",
+    );
+    expect(plain).toContain('couldnt-fix retryId=time01 file="src/workflows/signup.ts"');
+    expect(plain).toContain('reason="timeout/session error" detail="Claude session failed (exit 143)"');
+    expect(plain).not.toMatch(/retryId=time01[^\n]+reason="retries exhausted"/);
+    expect(plain).toContain("generated count=1");
+    expect(plain).toContain("fixtures count=1");
+    expect(plain).toContain("report-only count=1");
   });
 });
 

@@ -42,8 +42,29 @@ export const RunScopeSchema = z
 export const FixPolicySchema = z
   .object({
     includeTests: z.boolean().default(false),
+    include: z.array(z.string()).default([]),
+    exclude: z.array(z.string()).default([]),
+    includeGenerated: z.boolean().default(false),
+    includeFixtures: z.boolean().default(false),
   })
-  .default({ includeTests: false });
+  .default({
+    includeTests: false,
+    include: [],
+    exclude: [],
+    includeGenerated: false,
+    includeFixtures: false,
+  });
+
+export const FailureSummarySchema = z.object({
+  blockingSecrets: z.number().int().nonnegative(),
+  unresolvedEligible: z.number().int().nonnegative(),
+  toolFailures: z.number().int().nonnegative(),
+  failedDeterministic: z.number().int().nonnegative(),
+  sessionErrors: z.number().int().nonnegative(),
+  regressions: z.number().int().nonnegative(),
+  typecheckFailures: z.number().int().nonnegative(),
+  testFailures: z.number().int().nonnegative(),
+});
 
 const ZERO_AI_USAGE = {
   estimatedCostUsd: 0,
@@ -54,9 +75,21 @@ const ZERO_AI_USAGE = {
   sessions: 0,
 };
 
+const ZERO_FAILURE_SUMMARY = {
+  blockingSecrets: 0,
+  unresolvedEligible: 0,
+  toolFailures: 0,
+  failedDeterministic: 0,
+  sessionErrors: 0,
+  regressions: 0,
+  typecheckFailures: 0,
+  testFailures: 0,
+};
+
 export const ReportSchema = z.object({
   findings: z.array(FindingSchema),
   secrets: z.array(FindingSchema),
+  reportOnly: z.array(FindingSchema).default([]),
   depBumps: z.array(DepBumpSchema),
   flaggedBehaviorChanges: z.array(BehaviorChangeSchema),
   scannerStatuses: z.array(ScannerStatusSchema).default([]),
@@ -65,6 +98,8 @@ export const ReportSchema = z.object({
   fixPolicy: FixPolicySchema,
   // Default to zero so reports written before usage tracking still parse.
   aiUsage: AiUsageSchema.default(ZERO_AI_USAGE),
+  failureSummary: FailureSummarySchema.default(ZERO_FAILURE_SUMMARY),
+  unresolvedEligibleCount: z.number().int().nonnegative().default(0),
   loops: z.number().int().nonnegative(),
   durationMs: z.number().nonnegative(),
   exitStatus: z.number().int(),
@@ -76,3 +111,4 @@ export type ScannerStatus = z.infer<typeof ScannerStatusSchema>;
 export type AiUsage = z.infer<typeof AiUsageSchema>;
 export type RunScope = z.infer<typeof RunScopeSchema>;
 export type FixPolicy = z.infer<typeof FixPolicySchema>;
+export type FailureSummary = z.infer<typeof FailureSummarySchema>;
