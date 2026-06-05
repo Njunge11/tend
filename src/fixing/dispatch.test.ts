@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
-import { dispatch, planWork } from "./dispatch.js";
+import { dispatch, planWork, planWorkFromRepairs } from "./dispatch.js";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -41,6 +41,39 @@ describe("planWork — group by file", () => {
     // file ownership is pairwise disjoint across workers
     const all = units.flatMap((u) => u.files);
     expect(new Set(all).size).toBe(all.length);
+  });
+});
+
+describe("planWorkFromRepairs", () => {
+  it("creates one multi-file repair unit for a cross-file duplicate plan", () => {
+    const finding = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1 },
+        { file: "src/b.ts", line: 20 },
+      ],
+    });
+
+    const units = planWorkFromRepairs([
+      {
+        finding,
+        strategy: "multi-file-duplicate-refactor",
+        editableFiles: ["src/a.ts", "src/b.ts"],
+        verificationTargets: ["src/a.ts", "src/b.ts"],
+      },
+    ]);
+
+    expect(units).toHaveLength(1);
+    expect(units[0]).toMatchObject({
+      file: "src/a.ts",
+      files: ["src/a.ts", "src/b.ts"],
+      findings: [finding],
+      strategy: "multi-file-duplicate-refactor",
+      verificationTargets: ["src/a.ts", "src/b.ts"],
+    });
   });
 });
 

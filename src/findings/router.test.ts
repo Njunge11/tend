@@ -39,7 +39,7 @@ describe("route", () => {
     expect(r.reportOnly).toHaveLength(0);
   });
 
-  it("routes cross-file jscpd duplicate-code findings to report-only with remediation", () => {
+  it("keeps cross-file jscpd duplicate-code findings on ai-fix for repair planning", () => {
     const crossFileDuplicate = makeFinding({
       tool: "jscpd",
       rule: "duplicate-code",
@@ -53,10 +53,10 @@ describe("route", () => {
 
     const r = route([crossFileDuplicate]);
 
-    expect(crossFileDuplicate.track).toBe("report-only");
-    expect(crossFileDuplicate.remediation).toContain("multi-file refactor");
-    expect(r.reportOnly).toStrictEqual([crossFileDuplicate]);
-    expect(r.aiFix).toHaveLength(0);
+    expect(crossFileDuplicate.track).toBe("ai-fix");
+    expect(crossFileDuplicate.remediation).toBeUndefined();
+    expect(r.aiFix).toStrictEqual([crossFileDuplicate]);
+    expect(r.reportOnly).toHaveLength(0);
   });
 
   it("considers the second jscpd flowPath file when detecting cross-file duplication", () => {
@@ -73,8 +73,8 @@ describe("route", () => {
 
     const r = route([duplicate]);
 
-    expect(r.reportOnly.map((f) => f.file)).toStrictEqual(["src/a.ts"]);
-    expect(r.reportOnly[0]?.flowPath?.[1]).toStrictEqual({ file: "src/clone.ts", line: 40 });
+    expect(r.aiFix.map((f) => f.file)).toStrictEqual(["src/a.ts"]);
+    expect(r.aiFix[0]?.flowPath?.[1]).toStrictEqual({ file: "src/clone.ts", line: 40 });
   });
 
   it("T-016: osv → deterministic", () => {

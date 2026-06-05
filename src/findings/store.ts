@@ -1,5 +1,6 @@
 import { FindingSchema, type Finding } from "./finding.js";
 import { normalizeRevertDetail } from "./revert-detail.js";
+import type { FailureClass } from "../session/types.js";
 import { z } from "zod";
 
 type RevertReason = NonNullable<Finding["revertReason"]>;
@@ -36,6 +37,7 @@ export class FindingStore {
         known.status = "fixed";
         delete known.revertReason;
         delete known.revertDetail;
+        delete known.finalFailureClass;
       }
     }
 
@@ -67,11 +69,27 @@ export class FindingStore {
   }
 
   /** Record a failed fix attempt against a finding's fingerprint. */
-  recordFailedAttempt(id: string, reason: RevertReason, detail?: string): void {
+  recordFailedAttempt(id: string, reason: RevertReason, detail?: string, failureClass?: FailureClass): void {
     const finding = this.findings.get(id);
     if (!finding) return;
     finding.attempts += 1;
     finding.revertReason = reason;
+    if (failureClass) finding.finalFailureClass = failureClass;
+    const normalizedDetail = normalizeRevertDetail(detail);
+    if (normalizedDetail) finding.revertDetail = normalizedDetail;
+    else delete finding.revertDetail;
+  }
+
+  recordFailureWithoutAttempt(
+    id: string,
+    reason: RevertReason,
+    detail: string | undefined,
+    failureClass: FailureClass,
+  ): void {
+    const finding = this.findings.get(id);
+    if (!finding) return;
+    finding.revertReason = reason;
+    finding.finalFailureClass = failureClass;
     const normalizedDetail = normalizeRevertDetail(detail);
     if (normalizedDetail) finding.revertDetail = normalizedDetail;
     else delete finding.revertDetail;
