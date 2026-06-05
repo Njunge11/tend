@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.6.0...tend-cli-v0.6.1) (2026-06-05)
+
+
+### Bug Fixes
+
+* **build:** externalize runtime TypeScript dependency ([7f09d86](https://github.com/Njunge11/tend/commit/7f09d86aed372a93a2fadc504006c8f853253fca))
+
 ## [0.6.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.5.0...tend-cli-v0.6.0) (2026-06-05)
 
 
