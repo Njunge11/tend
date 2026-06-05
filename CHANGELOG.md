@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.6.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.5.0...tend-cli-v0.6.0) (2026-06-05)
+
+
+### Features
+
+* **fixing:** add repair strategy planner ([fe0ed48](https://github.com/Njunge11/tend/commit/fe0ed481cc69d4bf1772ccfd93e861d53fa6f03d))
+* **fixing:** gate strategy-based repair units ([f101992](https://github.com/Njunge11/tend/commit/f1019928cc964e468ec58bcf5fb68000106db84a))
+* **fixing:** resolve generated artifacts to source repairs ([18977ab](https://github.com/Njunge11/tend/commit/18977abcbc73efc046f73bc3a912332a6e9bd699))
+* **fixing:** run deterministic fixers before AI ([04e8e0b](https://github.com/Njunge11/tend/commit/04e8e0bf649dab5e425935aca7c91bb6c3abb878))
+* **jscpd:** repair cross-file duplicates with multi-file units ([460c8d4](https://github.com/Njunge11/tend/commit/460c8d41eaad46e2c6c43e32138307df63cdd71e))
+* **prompts:** add strategy-specific repair prompts ([964dcec](https://github.com/Njunge11/tend/commit/964dcecceaf71376e3f9d8e4751374961f4d0058))
+
+
+### Bug Fixes
+
+* **deps:** keep bundled jscpd and update lockfile ([28d217e](https://github.com/Njunge11/tend/commit/28d217e1aadc5c25a9370f96d8de5a9d7b927667))
+* **report:** render truthful failure reasons ([b243af6](https://github.com/Njunge11/tend/commit/b243af6a1b80d6b2633025e5e06b8a5885ab5331))
+* **scope:** split report scope from fix scope ([f764cff](https://github.com/Njunge11/tend/commit/f764cff650ce4e82495c3d02ad90e2ad45a19589))
+* **session:** classify timeouts and retry adaptively ([91619af](https://github.com/Njunge11/tend/commit/91619af26f93affe16bfc890b293f142be4d32f8))
+
 ## [0.5.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.4.1...tend-cli-v0.5.0) (2026-06-05)
 
 
