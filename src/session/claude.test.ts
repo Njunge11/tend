@@ -72,6 +72,7 @@ describe("ClaudeSession", () => {
     if (!result.ok) {
       expect(result.error).toContain("ENOENT");
       expect(result.rateLimited).toBe(false);
+      expect(result.failureClass).toBe("model-tool-failure");
     }
     expect(result.usage).toStrictEqual({
       estimatedCostUsd: 0,
@@ -103,6 +104,7 @@ describe("ClaudeSession", () => {
       cacheReadInputTokens: 2,
       sessions: 1,
     });
+    if (!result.ok) expect(result.failureClass).toBe("model-tool-failure");
   });
 
   it("T-072: rate-limit signal surfaced for backoff", async () => {
@@ -115,6 +117,30 @@ describe("ClaudeSession", () => {
     const result = await runStream(stream);
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.rateLimited).toBe(true);
+    if (!result.ok) {
+      expect(result.rateLimited).toBe(true);
+      expect(result.failureClass).toBe("rate-limit");
+    }
+  });
+
+  it("classifies exit 143 as a tool timeout", async () => {
+    const result = await runStream("", 143);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe("Claude session failed (exit 143)");
+      expect(result.failureClass).toBe("tool-timeout");
+      expect(result.rateLimited).toBe(false);
+    }
+  });
+
+  it("classifies killed or timed-out spawn errors as tool timeouts", async () => {
+    const spawn = vi.fn().mockRejectedValue(new Error("Command timed out after 600000 milliseconds"));
+    const session = new ClaudeSession({ spawn });
+
+    const result = await session.run(req);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.failureClass).toBe("tool-timeout");
   });
 });

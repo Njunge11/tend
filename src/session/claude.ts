@@ -1,5 +1,11 @@
 import { parseStreamJson } from "./stream-json.js";
-import { zeroUsage, type AiUsage, type SessionRequest, type SessionResult, type SessionRunner } from "./types.js";
+import {
+  zeroUsage,
+  type AiUsage,
+  type SessionRequest,
+  type SessionResult,
+  type SessionRunner,
+} from "./types.js";
 
 type ClaudeSpawn = (
   request: SessionRequest,
@@ -16,7 +22,14 @@ export class ClaudeSession implements SessionRunner {
       ({ stdout, exitCode } = await this.deps.spawn(request));
     } catch (err) {
       // No stdout → no Claude result was observed; report zero usage and sessions=0.
-      return { ok: false, error: err instanceof Error ? err.message : String(err), rateLimited: false, usage: zeroUsage() };
+      const error = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        error,
+        rateLimited: false,
+        failureClass: classifySessionFailure(error),
+        usage: zeroUsage(),
+      };
     }
 
     const parsed = parseStreamJson(stdout);
@@ -24,12 +37,33 @@ export class ClaudeSession implements SessionRunner {
     const usage: AiUsage = { ...parsed.usage, sessions: 1 };
 
     if (parsed.rateLimited) {
-      return { ok: false, error: "Claude session rate-limited", rateLimited: true, usage };
+      return {
+        ok: false,
+        error: "Claude session rate-limited",
+        rateLimited: true,
+        failureClass: "rate-limit",
+        usage,
+      };
     }
     if (exitCode !== 0 || parsed.errored) {
-      return { ok: false, error: `Claude session failed (exit ${exitCode})`, rateLimited: false, usage };
+      const error = `Claude session failed (exit ${exitCode})`;
+      return {
+        ok: false,
+        error,
+        rateLimited: false,
+        failureClass: classifySessionFailure(error, exitCode),
+        usage,
+      };
     }
 
     return { ok: true, edits: parsed.edits, usage };
   }
+}
+
+const TIMEOUT_OR_KILLED_RE = /\b(timed?\s*out|timeout|killed|terminated|sigterm|sigkill|exit\s+143)\b/i;
+
+export function classifySessionFailure(error: string, exitCode?: number): "tool-timeout" | "rate-limit" | "model-tool-failure" {
+  if (/rate.?limit|overloaded|\b429\b/i.test(error)) return "rate-limit";
+  if (exitCode === 143 || exitCode === 124 || TIMEOUT_OR_KILLED_RE.test(error)) return "tool-timeout";
+  return "model-tool-failure";
 }

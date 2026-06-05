@@ -10,6 +10,18 @@ export type SessionRequest = {
   prompt: string;
 };
 
+export type FailureClass =
+  | "tool-timeout"
+  | "rate-limit"
+  | "model-tool-failure"
+  | "no-edit"
+  | "no-op"
+  | "regression"
+  | "typecheck"
+  | "broke-test"
+  | "suppression"
+  | "needs-lockfile-update";
+
 /**
  * Estimated AI cost/usage for a unit of work. `total_cost_usd` from Claude's
  * stream-json `result` message is a **client-side estimate**, never authoritative
@@ -53,7 +65,13 @@ export function addUsage(a: AiUsage, b: AiUsage): AiUsage {
 
 export type SessionResult =
   | { ok: true; edits: FileEdit[]; usage?: AiUsage }
-  | { ok: false; error: string; rateLimited: boolean; usage?: AiUsage };
+  | {
+      ok: false;
+      error: string;
+      rateLimited: boolean;
+      failureClass: Extract<FailureClass, "tool-timeout" | "rate-limit" | "model-tool-failure">;
+      usage?: AiUsage;
+    };
 
 /** One of the two interfaces in tend: drives an AI fix session. */
 export interface SessionRunner {
