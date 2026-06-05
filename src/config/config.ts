@@ -9,6 +9,20 @@ const ToolConfigSchema = z.object({
   configPath: z.string().optional(),
 });
 
+const FixScopeConfigSchema = z
+  .object({
+    include: z.array(z.string()).default([]),
+    exclude: z.array(z.string()).default([]),
+    includeGenerated: z.boolean().default(false),
+    includeFixtures: z.boolean().default(false),
+  })
+  .default({
+    include: [],
+    exclude: [],
+    includeGenerated: false,
+    includeFixtures: false,
+  });
+
 export const ConfigSchema = z.object({
   maxSessions: z.number().int().positive().default(4),
   maxLoops: z.number().int().positive().default(5),
@@ -20,6 +34,8 @@ export const ConfigSchema = z.object({
   model: z.string().default("sonnet"),
   /** Reasoning effort for fixes; unset → claude's own default. */
   effort: z.enum(EFFORT_LEVELS).optional(),
+  /** Report/fix scope policy. Reports stay broad; fixes default away from generated/tooling paths. */
+  fix: FixScopeConfigSchema,
   tools: z.record(z.string(), ToolConfigSchema).default({}),
 });
 

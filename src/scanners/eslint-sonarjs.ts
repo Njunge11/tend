@@ -1,6 +1,7 @@
 import { dirname, relative, resolve } from "node:path";
-import { ESLint } from "eslint";
+import { ESLint, type Linter } from "eslint";
 import sonarjs from "eslint-plugin-sonarjs";
+import type { Finding } from "../findings/finding.js";
 import { normalize, type RawFinding } from "../findings/normalize.js";
 import {
   defaultEslintConfigPath,
@@ -20,6 +21,7 @@ type EslintMessage = {
   column: number;
   endLine?: number;
   endColumn?: number;
+  fix?: unknown;
 };
 type EslintResult = { filePath: string; messages: EslintMessage[] };
 
@@ -43,6 +45,7 @@ function mapEslintResults(results: EslintResult[], ctx: ScanContext): RawFinding
           endCol: msg.endColumn ?? msg.column,
         },
         message: msg.message,
+        autofixable: msg.fix !== undefined,
       });
     }
   }
@@ -107,7 +110,7 @@ function groupByConfig(ctx: ScanContext): LintGroup[] {
 }
 
 /** Lint one group through the Node API; ESLint returns absolute filePaths regardless of cwd. */
-async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
+function eslintOptionsForGroup(group: LintGroup): ESLint.Options {
   const options: ESLint.Options = { cwd: group.cwd, errorOnUnmatchedPattern: false };
   if (group.mode === "default") {
     options.overrideConfigFile = defaultEslintConfigPath();
@@ -116,8 +119,51 @@ async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
     // it replaces). `defer` adds nothing: the project already configures sonarjs itself.
     options.overrideConfig = [sonarjs.configs.recommended];
   }
+  return options;
+}
+
+async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
+  const eslint = new ESLint(eslintOptionsForGroup(group));
+  return (await eslint.lintFiles(group.targets)) as EslintResult[];
+}
+
+function messageMatchesFinding(message: Linter.LintMessage, finding: Finding): boolean {
+  return message.ruleId === finding.rule && message.line === finding.range.startLine;
+}
+
+async function fixGroup(group: LintGroup, findings: Finding[]): Promise<EslintResult[]> {
+  const options: ESLint.Options = {
+    ...eslintOptionsForGroup(group),
+    fix: (message) => findings.some((finding) => messageMatchesFinding(message, finding)),
+    fixTypes: ["problem", "suggestion", "layout"],
+  };
   const eslint = new ESLint(options);
   return (await eslint.lintFiles(group.targets)) as EslintResult[];
+}
+
+export type EslintFixResult = { changed: boolean; error?: string };
+
+/**
+ * Apply ESLint's own autofixes for the exact findings Tend has assigned to the current unit.
+ * Each file is linted separately so the fix predicate's rule/line match is scoped to that file.
+ */
+export async function applyEslintFixesForFindings(ctx: ScanContext, findings: Finding[]): Promise<EslintFixResult> {
+  const files = [...new Set(findings.map((finding) => finding.file))];
+  if (files.length === 0) return { changed: false };
+
+  try {
+    const results: EslintResult[] = [];
+    for (const file of files) {
+      const fileFindings = findings.filter((finding) => finding.file === file);
+      for (const group of groupByConfig({ ...ctx, files: [file] })) {
+        results.push(...(await fixGroup(group, fileFindings)));
+      }
+    }
+    await ESLint.outputFixes(results as Awaited<ReturnType<ESLint["lintFiles"]>>);
+    return { changed: results.some((result) => "output" in result) };
+  } catch (err) {
+    return { changed: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**

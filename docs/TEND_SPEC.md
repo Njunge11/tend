@@ -107,6 +107,8 @@ Two separate questions: **what we scan** and **what we fix**.
 
 **Fixing** is the expensive part (AI sessions cost time + tokens), so by default tend only fixes findings in **files changed vs `HEAD`**. `--all` fixes the entire backlog. Passing one or more paths — `tend <path...>` or `tend run <path...>` — fixes only findings under those files/dirs regardless of git status (each path is expanded to its concrete tracked + untracked files via `git ls-files`). Either way the full finding set is reported in `report.json`.
 
+`reportScope` and `fixScope` are intentionally different. `reportScope` is the scanner-visible set Tend records in `.tend/report.json` so the user can understand what was found, including generated output, cache/build files, fixtures, and report-only findings. `fixScope` is the narrower set Tend is allowed to spend deterministic edits or AI sessions on. By default, generated files and fixtures stay in report scope but are excluded from fix scope; report-only findings remain review information and must not be counted as secrets or dispatched as retryable AI work.
+
 The fix scope is resolved once, up front, as a single file list (or "whole repo" for `--all`), then drives three things in lockstep: the test baseline, the diff-aware scanners' targets, and the final fix filter. The three sources are mutually exclusive — `--all` wins over paths, paths win over the changed-files default.
 
 **Scanning** is cheap (seconds), so each tool runs in the most correct mode available — diff-aware where it's free and correct, whole-repo where correctness requires it:

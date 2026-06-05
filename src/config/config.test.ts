@@ -26,7 +26,34 @@ describe("loadConfig", () => {
       perIssueBudget: 3,
       teethCheck: true,
       includeTests: false,
+      fix: {
+        include: [],
+        exclude: [],
+        includeGenerated: false,
+        includeFixtures: false,
+      },
       model: "sonnet",
+    });
+  });
+
+  it("loads fix scope overrides", async () => {
+    writeFileSync(
+      join(dir, ".tendrc.json"),
+      JSON.stringify({
+        fix: {
+          include: ["dist/index.d.ts"],
+          exclude: ["coverage/**"],
+          includeGenerated: true,
+          includeFixtures: true,
+        },
+      }),
+    );
+
+    expect((await loadConfig(dir)).fix).toStrictEqual({
+      include: ["dist/index.d.ts"],
+      exclude: ["coverage/**"],
+      includeGenerated: true,
+      includeFixtures: true,
     });
   });
 
