@@ -62,6 +62,23 @@ describe("runEslintSonarjs (Node API, bundled eslint)", () => {
     expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
   });
 
+  it('treats "." as a whole-repo sentinel instead of passing an empty target to ESLint', async () => {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "code.js"), DUP_BRANCHES);
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["."], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    expect(res.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          file: "code.js",
+          rule: expect.stringMatching(/^sonarjs\//),
+        }),
+      ]),
+    );
+  });
+
   it("layer mode → project's own rules AND sonarjs in one pass", async () => {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
     writeFileSync(join(dir, "eslint.config.mjs"), 'export default [{ rules: { "no-unused-vars": "error" } }];\n');

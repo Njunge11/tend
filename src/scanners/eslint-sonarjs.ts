@@ -68,6 +68,10 @@ type LintGroup = {
   targets: string[];
 };
 
+function relativeLintTarget(from: string, to: string): string {
+  return relative(from, to) || ".";
+}
+
 /**
  * Group scoped files by their governing eslint config. Each file's config is resolved by walking
  * up from the file's directory (bounded by ctx.cwd) — NOT from ctx.cwd alone — so files in a
@@ -90,14 +94,14 @@ function groupByConfig(ctx: ScanContext): LintGroup[] {
         configDir: null,
         mode: "default",
         cwd: ctx.cwd,
-        targets: absFiles.map((f) => relative(ctx.cwd, f)),
+        targets: absFiles.map((f) => relativeLintTarget(ctx.cwd, f)),
       };
     }
     return {
       configDir: key,
       mode: projectConfiguresSonarjs(key) ? "defer" : "layer",
       cwd: key,
-      targets: absFiles.map((f) => relative(key, f)),
+      targets: absFiles.map((f) => relativeLintTarget(key, f)),
     };
   });
 }
@@ -124,9 +128,9 @@ async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
  * Output paths stay relative to the original ctx.cwd so finding IDs/filtering are unaffected.
  */
 export async function runEslintSonarjs(ctx: ScanContext): Promise<ScanResult> {
-  // Whole-repo scan (no explicit file list): one pass rooted at ctx.cwd, mode decided there.
+  // Whole-repo scan: one pass rooted at ctx.cwd, mode decided there.
   const groups: LintGroup[] =
-    ctx.files.length === 0
+    ctx.files.length === 0 || ctx.files.includes(".")
       ? [{ configDir: null, mode: eslintMode(ctx.cwd), cwd: ctx.cwd, targets: ["."] }]
       : groupByConfig(ctx);
 
