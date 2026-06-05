@@ -70,6 +70,14 @@ function buildDiff(before: Map<string, string | null>, after: Map<string, string
 /** A file's current contents, or null if it doesn't exist. */
 const snapshotFile = (abs: string): string | null => (existsSync(abs) ? readFileSync(abs, "utf8") : null);
 
+function isDeadCodeFinding(finding: Finding): boolean {
+  return finding.category === "dead-code" || (finding.tool === "knip" && finding.rule.startsWith("unused-"));
+}
+
+function allowsDeleteOnly(unit: WorkUnit): boolean {
+  return unit.findings.length > 0 && unit.findings.every(isDeadCodeFinding);
+}
+
 /**
  * Production fix worker. The session edits files directly on disk (`claude -p
  * --allowedTools Read,Write,Edit`), so the **disk is the source of truth** — we
@@ -121,7 +129,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
       };
     }
 
-    const supp = antiSuppression(buildDiff(before, diskNow()));
+    const supp = antiSuppression(buildDiff(before, diskNow()), { allowDeleteOnly: allowsDeleteOnly(unit) });
     if (!supp.ok) {
       restore();
       return { kept: false, reason: supp.reason, detail: supp.detail, usage };

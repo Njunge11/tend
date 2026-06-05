@@ -27,6 +27,18 @@ describe("antiSuppression", () => {
     if (!r.ok) expect(r.reason).toBe("suppression");
   });
 
+  it("allows delete-only diffs when explicitly requested", () => {
+    const diff = ["-function unusedHelper() {", "-  return compute();", "-}"].join("\n");
+    expect(antiSuppression(diff, { allowDeleteOnly: true })).toStrictEqual({ ok: true });
+  });
+
+  it("still rejects added suppressions when delete-only diffs are allowed", () => {
+    const diff = ["-const x = before;", "+// @ts-ignore", "+const x = after;"].join("\n");
+    const r = antiSuppression(diff, { allowDeleteOnly: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.detail).toBe("Fix added @ts-ignore");
+  });
+
   it("T-042: happy — a legitimate fix passes", () => {
     const diff = ["-  return a == b;", "+  return a === b;"].join("\n");
     expect(antiSuppression(diff)).toStrictEqual({ ok: true });

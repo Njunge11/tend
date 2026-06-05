@@ -137,6 +137,59 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a === b;\n");
   });
 
+  it("allows delete-only disk edits for dead-code work units", async () => {
+    write("src/unused.ts", "export function unusedHelper() {}\n");
+    const session = diskSession({ "src/unused.ts": "" }, { ok: true, edits: [] });
+    const work: WorkUnit = {
+      file: "src/unused.ts",
+      files: ["src/unused.ts"],
+      findings: [
+        makeFinding({
+          tool: "knip",
+          rule: "unused-export",
+          category: "dead-code",
+          file: "src/unused.ts",
+          message: "Unused export",
+        }),
+      ],
+    };
+
+    const outcome = await makeFixUnit(deps(session))(work);
+
+    expect(outcome.kept).toBe(true);
+    expect(read("src/unused.ts")).toBe("");
+  });
+
+  it("keeps delete-only disk edits rejected for non-dead-code work units", async () => {
+    write("src/a.ts", "export function brokenButReal() {\n  return a == b;\n}\n");
+    const session = diskSession({ "src/a.ts": "" }, { ok: true, edits: [] });
+
+    const outcome = await makeFixUnit(deps(session))(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("suppression");
+    expect(read("src/a.ts")).toBe("export function brokenButReal() {\n  return a == b;\n}\n");
+  });
+
+  it("keeps delete-only disk edits rejected for mixed dead-code and non-dead-code work units", async () => {
+    write("src/a.ts", "export function usedButBuggy() {\n  return a == b;\n}\n");
+    const session = diskSession({ "src/a.ts": "" }, { ok: true, edits: [] });
+    const work: WorkUnit = {
+      file: "src/a.ts",
+      files: ["src/a.ts"],
+      findings: [
+        makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/a.ts" }),
+        makeFinding({ file: "src/a.ts", message: "Use === instead of ==" }),
+      ],
+    };
+
+    const outcome = await makeFixUnit(deps(session))(work);
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("suppression");
+    expect(read("src/a.ts")).toBe("export function usedButBuggy() {\n  return a == b;\n}\n");
+  });
+
   it("T-125: a session that changes nothing on disk is not a fix", async () => {
     write("src/a.ts", "const x = a == b;\n");
     const session = diskSession({}, { ok: true, edits: [] });

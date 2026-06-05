@@ -11,6 +11,10 @@ const SUPPRESSION_PATTERNS: { re: RegExp; what: string }[] = [
 
 type DiffLines = { added: string[]; removed: string[] };
 
+export type AntiSuppressionOptions = {
+  allowDeleteOnly?: boolean;
+};
+
 function splitDiff(diff: string): DiffLines {
   const added: string[] = [];
   const removed: string[] = [];
@@ -29,7 +33,7 @@ const nonBlank = (lines: string[]) => lines.filter((l) => l.trim().length > 0);
  * newly-added suppression comments / any-casts, or code deleted instead of fixed.
  * Only NEW (added) lines are inspected — pre-existing suppressions in context are ignored.
  */
-export function antiSuppression(diff: string): CheckResult {
+export function antiSuppression(diff: string, options: AntiSuppressionOptions = {}): CheckResult {
   const { added, removed } = splitDiff(diff);
 
   for (const line of added) {
@@ -38,7 +42,7 @@ export function antiSuppression(diff: string): CheckResult {
     }
   }
 
-  if (nonBlank(removed).length > 0 && nonBlank(added).length === 0) {
+  if (!options.allowDeleteOnly && nonBlank(removed).length > 0 && nonBlank(added).length === 0) {
     return reject("suppression", "Code was deleted instead of fixed");
   }
 
