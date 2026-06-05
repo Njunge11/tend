@@ -6,6 +6,7 @@ import type { RevertReason } from "./gate/check.js";
 import { dispatch, isTestFile, planWork, type WorkUnit } from "./fixing/dispatch.js";
 import { EventBus } from "./output/events.js";
 import { addUsage, zeroUsage, type AiUsage } from "./session/types.js";
+import type { RunScope } from "./report/schema.js";
 
 export type AuditResult = {
   findings: Finding[];
@@ -36,6 +37,7 @@ export type OrchestrateResult = {
   secrets: Finding[];
   depBumps: Finding[];
   scannerStatuses: ScannerStatus[];
+  runScope: RunScope;
   /** Estimated AI cost/usage summed across every fix attempt (including reverted ones). */
   usage: AiUsage;
 };
@@ -91,6 +93,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
   let fixingLoops = 0;
   let termination: Termination = "converged";
   let scannerStatuses: ScannerStatus[] = [];
+  let runScope: RunScope = { type: "scoped" };
   // Estimated AI cost/usage accumulates across every fix outcome, including reverted ones.
   let usage = zeroUsage();
 
@@ -99,10 +102,16 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
     bus.emit({ type: "scan-start", loop });
     const audited = await deps.audit(loop);
     scannerStatuses = audited.scannerStatuses ?? scannerStatuses;
+    if (loop === 1) {
+      runScope =
+        audited.scanned == null
+          ? { type: "all" }
+          : { type: "scoped", fileCount: audited.scanned };
+    }
 
     if (loop === 1 && audited.allScannersMissing) {
       bus.emit({ type: "done", exitStatus: 1 });
-      return result("no-scanners", fixingLoops, 1, store, secrets, depBumps, scannerStatuses, usage);
+      return result("no-scanners", fixingLoops, 1, store, secrets, depBumps, scannerStatuses, runScope, usage);
     }
 
     store.reconcile(audited.findings, loop);
@@ -188,7 +197,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
 
   const exitStatus = secrets.size > 0 ? 1 : 0;
   bus.emit({ type: "done", exitStatus });
-  return result(termination, fixingLoops, exitStatus, store, secrets, depBumps, scannerStatuses, usage);
+  return result(termination, fixingLoops, exitStatus, store, secrets, depBumps, scannerStatuses, runScope, usage);
 }
 
 function result(
@@ -199,6 +208,7 @@ function result(
   secrets: Map<string, Finding>,
   depBumps: Map<string, Finding>,
   scannerStatuses: ScannerStatus[],
+  runScope: RunScope,
   usage: AiUsage,
 ): OrchestrateResult {
   return {
@@ -209,6 +219,7 @@ function result(
     secrets: [...secrets.values()],
     depBumps: [...depBumps.values()],
     scannerStatuses,
+    runScope,
     usage,
   };
 }

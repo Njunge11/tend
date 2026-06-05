@@ -122,6 +122,8 @@ describe("LiveReporter", () => {
     expect(output).toContain("in-scope findings 150 across 150 files");
     expect(output).toContain("fix pass 1 150/150");
     expect(output).toContain("150 fixed");
+    expect(output).toContain("0 not attempted");
+    expect(output).not.toContain("left");
     // Regression guard for captured terminals: fixed files should not be emitted as
     // persistent completed Listr rows, one per file, across redraws.
     expect(output.match(/file-\d+\.ts/g) ?? []).toHaveLength(0);

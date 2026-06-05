@@ -23,6 +23,8 @@ function reportWith(findings: Report["findings"]): Report {
       .map((f) => ({ findingId: f.id, remediation: f.remediation! })),
     flaggedBehaviorChanges: [],
     scannerStatuses: [],
+    runScope: { type: "scoped" },
+    fixPolicy: { includeTests: false },
     aiUsage: {
       estimatedCostUsd: 0,
       inputTokens: 0,

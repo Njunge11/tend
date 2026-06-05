@@ -1,7 +1,15 @@
 import type { Finding } from "../findings/finding.js";
 import { normalizeRevertDetail } from "../findings/revert-detail.js";
 import { assignRetryIds, type RetryIdGenerator } from "./retry-id.js";
-import { ReportSchema, type AiUsage, type BehaviorChange, type Report, type ScannerStatus } from "./schema.js";
+import {
+  ReportSchema,
+  type AiUsage,
+  type BehaviorChange,
+  type FixPolicy,
+  type Report,
+  type RunScope,
+  type ScannerStatus,
+} from "./schema.js";
 
 const ZERO_AI_USAGE: AiUsage = {
   estimatedCostUsd: 0,
@@ -43,7 +51,14 @@ export class ReportBuilder {
     this.scannerStatuses = statuses;
   }
 
-  build(meta: { loops: number; durationMs: number; exitStatus: number; aiUsage?: AiUsage }): Report {
+  build(meta: {
+    loops: number;
+    durationMs: number;
+    exitStatus: number;
+    aiUsage?: AiUsage;
+    runScope?: RunScope;
+    fixPolicy?: FixPolicy;
+  }): Report {
     const findings = assignRetryIds([...this.outcomes.values()], this.generateRetryId);
 
     const report: Report = {
@@ -54,6 +69,8 @@ export class ReportBuilder {
         .map((f) => ({ findingId: f.id, remediation: f.remediation! })),
       flaggedBehaviorChanges: this.flagged,
       scannerStatuses: this.scannerStatuses,
+      runScope: meta.runScope ?? { type: "scoped" },
+      fixPolicy: meta.fixPolicy ?? { includeTests: false },
       aiUsage: meta.aiUsage ?? ZERO_AI_USAGE,
       loops: meta.loops,
       durationMs: meta.durationMs,

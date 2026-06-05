@@ -19,6 +19,8 @@ export async function runCommand(deps: RunDeps): Promise<{ report: Report; exitS
     durationMs: now() - start,
     exitStatus: result.exitStatus,
     aiUsage: result.usage,
+    runScope: result.runScope,
+    fixPolicy: { includeTests: Boolean(deps.config.includeTests) },
   });
 
   return { report, exitStatus: result.exitStatus };

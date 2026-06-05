@@ -32,6 +32,19 @@ export const AiUsageSchema = z.object({
   sessions: z.number().int().nonnegative(),
 });
 
+export const RunScopeSchema = z
+  .object({
+    type: z.enum(["all", "scoped"]),
+    fileCount: z.number().int().nonnegative().optional(),
+  })
+  .default({ type: "scoped" });
+
+export const FixPolicySchema = z
+  .object({
+    includeTests: z.boolean().default(false),
+  })
+  .default({ includeTests: false });
+
 const ZERO_AI_USAGE = {
   estimatedCostUsd: 0,
   inputTokens: 0,
@@ -47,6 +60,9 @@ export const ReportSchema = z.object({
   depBumps: z.array(DepBumpSchema),
   flaggedBehaviorChanges: z.array(BehaviorChangeSchema),
   scannerStatuses: z.array(ScannerStatusSchema).default([]),
+  // Defaults keep older report.json files rendering as the historical changed-files scope.
+  runScope: RunScopeSchema,
+  fixPolicy: FixPolicySchema,
   // Default to zero so reports written before usage tracking still parse.
   aiUsage: AiUsageSchema.default(ZERO_AI_USAGE),
   loops: z.number().int().nonnegative(),
@@ -58,3 +74,5 @@ export type Report = z.infer<typeof ReportSchema>;
 export type BehaviorChange = z.infer<typeof BehaviorChangeSchema>;
 export type ScannerStatus = z.infer<typeof ScannerStatusSchema>;
 export type AiUsage = z.infer<typeof AiUsageSchema>;
+export type RunScope = z.infer<typeof RunScopeSchema>;
+export type FixPolicy = z.infer<typeof FixPolicySchema>;

@@ -23,22 +23,26 @@ type Buckets = {
   fixed: Finding[];
   couldntFix: Finding[]; // reverted or unfixable (not a secret)
   skippedTests: Finding[]; // excluded by default unless --include-tests is passed
+  reportOnly: Finding[]; // unsupported/report-only findings that tend did not attempt
   left: Finding[]; // unresolved for reasons other than the default test-file exclusion
   secrets: Finding[];
 };
+
+type PendingBucket = "skippedTests" | "reportOnly" | "left";
 
 /** A finding the developer can't read as part of their changes (scanned wide, out of scope). */
 function isOutOfScope(f: Finding): boolean {
   return f.inScope === false && f.category !== "secret";
 }
 
-function bucket(findings: Finding[]): Buckets {
+function bucket(report: Report): Buckets {
   const fixed: Finding[] = [];
   const couldntFix: Finding[] = [];
   const skippedTests: Finding[] = [];
+  const reportOnly: Finding[] = [];
   const left: Finding[] = [];
   const secrets: Finding[] = [];
-  for (const f of findings) {
+  for (const f of report.findings) {
     if (f.category === "secret") secrets.push(f);
     // Out-of-scope findings are reported on the separate repo-wide line, never folded into
     // the headline counts — so "0 in your changes" can't read as "the repo is clean".
@@ -46,10 +50,25 @@ function bucket(findings: Finding[]): Buckets {
     else if (f.status === "fixed") fixed.push(f);
     else if (f.status === "reverted" || f.status === "unfixable")
       couldntFix.push(f);
-    else if (isTestFile(f.file)) skippedTests.push(f);
-    else left.push(f);
+    else {
+      const pending = classifyPending(f, report);
+      if (pending === "skippedTests") skippedTests.push(f);
+      else if (pending === "reportOnly") reportOnly.push(f);
+      else left.push(f);
+    }
   }
-  return { fixed, couldntFix, skippedTests, left, secrets };
+  return { fixed, couldntFix, skippedTests, reportOnly, left, secrets };
+}
+
+function classifyPending(f: Finding, report: Report): PendingBucket {
+  if (f.track === "report-only") return "reportOnly";
+  if (
+    f.track === "ai-fix" &&
+    !report.fixPolicy.includeTests &&
+    isTestFile(f.file)
+  )
+    return "skippedTests";
+  return "left";
 }
 
 /**
@@ -63,7 +82,7 @@ export function renderSummary(
 ): string {
   const theme = opts.theme ?? PLAIN_THEME;
   const { glyph } = theme;
-  const b = bucket(report.findings);
+  const b = bucket(report);
   if (opts.plain)
     return renderPlainSummary(report, b, theme, Boolean(opts.verbose));
 
@@ -114,6 +133,7 @@ function renderPlainSummary(
       `fixed=${b.fixed.length}`,
       `couldntFix=${b.couldntFix.length}`,
       `skippedTests=${b.skippedTests.length}`,
+      `reportOnly=${b.reportOnly.length}`,
       `left=${b.left.length}`,
       `secrets=${b.secrets.length}`,
     ].join(" "),
@@ -128,7 +148,7 @@ function renderPlainSummary(
     ].join(" "),
   ];
 
-  const counts = inScopeByTool(report.findings);
+  const counts = inScopeByTool(report);
   const statusByTool = new Map(report.scannerStatuses.map((s) => [s.tool, s]));
   const tools = TOOLS.filter((t) => statusByTool.has(t) || counts.has(t));
   for (const tool of tools) {
@@ -137,6 +157,8 @@ function renderPlainSummary(
       total: 0,
       fixed: 0,
       couldntFix: 0,
+      skippedTests: 0,
+      reportOnly: 0,
       left: 0,
     };
     const reason =
@@ -146,7 +168,7 @@ function renderPlainSummary(
           ? " reason=not-installed"
           : "";
     lines.push(
-      `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=in-your-changes total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} left=${c.left}${reason}`,
+      `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left}${reason}`,
     );
   }
 
@@ -166,6 +188,12 @@ function renderPlainSummary(
   if (b.skippedTests.length > 0) {
     lines.push(
       `skipped-tests count=${b.skippedTests.length} reason="test files are excluded by default" command="tend run --include-tests <path...>"`,
+    );
+  }
+
+  if (b.reportOnly.length > 0) {
+    lines.push(
+      `report-only count=${b.reportOnly.length} reason="unsupported or report-only findings"`,
     );
   }
 
@@ -198,10 +226,17 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     b.fixed.length === 0 &&
     b.couldntFix.length === 0 &&
     b.skippedTests.length === 0 &&
+    b.reportOnly.length === 0 &&
     b.left.length === 0 &&
     b.secrets.length === 0;
+  const status =
+    report.exitStatus === 0
+      ? clean
+        ? theme.fixed("success (nothing to fix)")
+        : theme.fixed("success")
+      : theme.error(`needs attention (exit ${report.exitStatus})`);
   const rows = [
-    ["status", clean ? theme.fixed("nothing to fix") : "completed"],
+    ["status", status],
     ["fix passes", String(report.loops)],
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
@@ -213,6 +248,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
       "skipped tests",
       `${theme.dim(theme.glyph.left)} ${b.skippedTests.length} (pass --include-tests)`,
     ],
+    ["report only", `${theme.dim(theme.glyph.left)} ${b.reportOnly.length}`],
     ["left", `${theme.dim(theme.glyph.left)} ${b.left.length}`],
     [
       "secrets",
@@ -245,50 +281,46 @@ type ScopeCounts = {
   fixed: number;
   couldntFix: number;
   skippedTests: number;
+  reportOnly: number;
   left: number;
 };
 
-/** Per-tool tally over the in-scope (your-changes) findings only. */
-function inScopeByTool(findings: Finding[]): Map<Tool, ScopeCounts> {
+/** Per-tool tally over the in-scope findings only. */
+function inScopeByTool(report: Report): Map<Tool, ScopeCounts> {
   const counts = new Map<Tool, ScopeCounts>();
-  for (const f of findings) {
+  for (const f of report.findings) {
     if (f.inScope === false) continue;
     const row = counts.get(f.tool) ?? {
       total: 0,
       fixed: 0,
       couldntFix: 0,
       skippedTests: 0,
+      reportOnly: 0,
       left: 0,
     };
     row.total += 1;
     if (f.status === "fixed") row.fixed += 1;
     else if (f.status === "reverted" || f.status === "unfixable")
       row.couldntFix += 1;
-    else if (isTestFile(f.file)) row.skippedTests += 1;
-    else row.left += 1;
+    else {
+      const pending = classifyPending(f, report);
+      if (pending === "skippedTests") row.skippedTests += 1;
+      else if (pending === "reportOnly") row.reportOnly += 1;
+      else row.left += 1;
+    }
     counts.set(f.tool, row);
   }
   return counts;
 }
 
 function renderScannerBreakdownTable(report: Report, theme: Theme): string {
-  const counts = inScopeByTool(report.findings);
+  const counts = inScopeByTool(report);
   const statusByTool = new Map(report.scannerStatuses.map((s) => [s.tool, s]));
   const tools = TOOLS.filter((t) => statusByTool.has(t) || counts.has(t));
   if (tools.length === 0) {
     return renderTable(
-      [
-        "scanner",
-        "status",
-        "scope",
-        "total",
-        "fixed",
-        "couldn't fix",
-        "skipped tests",
-        "left",
-        "reason",
-      ],
-      [["(none)", "not recorded", "in your changes", "0", "0", "0", "0", "0", ""]],
+      scannerBreakdownHeaders(),
+      [["(none)", "not recorded", scopeLabel(report), "0", "0", "0", "0", "0", "0", ""]],
     );
   }
 
@@ -299,6 +331,7 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
       fixed: 0,
       couldntFix: 0,
       skippedTests: 0,
+      reportOnly: 0,
       left: 0,
     };
     const label = scannerLabel(tool);
@@ -319,29 +352,43 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
     return [
       label,
       statusText,
-      "in your changes",
+      scopeLabel(report),
       String(c.total),
       String(c.fixed),
       String(c.couldntFix),
       String(c.skippedTests),
+      String(c.reportOnly),
       String(c.left),
       reason,
     ];
   });
-  return renderTable(
-    [
-      "scanner",
-      "status",
-      "scope",
-      "total",
-      "fixed",
-      "couldn't fix",
-      "skipped tests",
-      "left",
-      "reason",
-    ],
-    rows,
-  );
+  return renderTable(scannerBreakdownHeaders(), rows);
+}
+
+function scannerBreakdownHeaders(): string[] {
+  return [
+    "scanner",
+    "status",
+    "scope",
+    "total",
+    "fixed",
+    "couldn't fix",
+    "skipped tests",
+    "report only",
+    "left",
+    "reason",
+  ];
+}
+
+function scopeLabel(report: Report): string {
+  if (report.runScope.type === "all") return "whole repo";
+  if (report.runScope.fileCount !== undefined)
+    return `${report.runScope.fileCount} scoped ${report.runScope.fileCount === 1 ? "file" : "files"}`;
+  return "in your changes";
+}
+
+function plainScopeLabel(report: Report): string {
+  return scopeLabel(report).replaceAll(" ", "-");
 }
 
 function findingReason(f: Finding): string {

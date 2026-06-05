@@ -121,6 +121,24 @@ describe("ReportBuilder", () => {
       cacheReadInputTokens: 0,
       sessions: 0,
     });
+    expect(parsed.runScope).toStrictEqual({ type: "scoped" });
+    expect(parsed.fixPolicy).toStrictEqual({ includeTests: false });
+  });
+
+  it("includes run scope and fix policy metadata when provided to build()", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome(makeFinding({ file: "src/a.ts" }));
+
+    const report = builder.build({
+      loops: 1,
+      durationMs: 42,
+      exitStatus: 0,
+      runScope: { type: "all" },
+      fixPolicy: { includeTests: true },
+    });
+
+    expect(report.runScope).toStrictEqual({ type: "all" });
+    expect(report.fixPolicy).toStrictEqual({ includeTests: true });
   });
 
   it("assigns unique human retry ids to report findings", () => {

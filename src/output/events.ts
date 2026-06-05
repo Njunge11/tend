@@ -1,4 +1,4 @@
-/** What happened to a file's fix attempt. "left" = in scope but never dispatched. */
+/** What happened to a file in the current dispatched batch. "left" = not attempted. */
 export type FileOutcome = "fixed" | "reverted" | "left";
 
 export type TendEvent =

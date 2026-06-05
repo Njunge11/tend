@@ -35,7 +35,7 @@ export class PlainReporter extends BaseReporter implements Reporter {
       case "file-result":
         if (event.outcome === "fixed") this.write(`${glyph.fixed} fixed ${event.file}`);
         else if (event.outcome === "reverted") this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}`);
-        else this.write(`${glyph.left} left ${event.file}`);
+        else this.write(`${glyph.left} not attempted ${event.file}`);
         break;
       // file-start is folded into file-result; snapshot/detected arrive as start() notes;
       // loop-complete/done are covered by the final summary.

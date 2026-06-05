@@ -61,7 +61,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private finished = 0;
   private fixed = 0;
   private reverted = 0;
-  private left = 0;
+  private notAttempted = 0;
   private currentLoop = 0;
   private currentFile?: string;
   private currentConcurrency?: number;
@@ -93,7 +93,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.finished = 0;
         this.fixed = 0;
         this.reverted = 0;
-        this.left = 0;
+        this.notAttempted = 0;
         this.currentFile = undefined;
         this.currentConcurrency = event.concurrency;
         this.rules.clear();
@@ -116,7 +116,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.finished += 1;
         if (event.outcome === "fixed") this.fixed += 1;
         else if (event.outcome === "reverted") this.reverted += 1;
-        else this.left += 1;
+        else this.notAttempted += 1;
         this.currentFile = undefined;
         this.refreshHeader();
         this.fixTicks.push();
@@ -262,7 +262,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
     const running = Math.max(0, this.started - this.finished);
     const queued = Math.max(0, this.fixTotal - this.started);
     const bullet = this.theme.glyph.bullet;
-    const outcomes = `${this.fixed} fixed ${bullet} ${this.reverted} reverted ${bullet} ${this.left} left`;
+    const outcomes = `${this.fixed} fixed ${bullet} ${this.reverted} reverted ${bullet} ${this.notAttempted} not attempted`;
     const parallel = this.currentConcurrency
       ? `${bullet} ${this.currentConcurrency} concurrent `
       : "";

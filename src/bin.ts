@@ -343,6 +343,8 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     durationMs,
     exitStatus: result.exitStatus,
     aiUsage: result.usage,
+    runScope: result.runScope,
+    fixPolicy: { includeTests: Boolean(config.includeTests) },
   });
   persist(REPORT_PATH, report);
 

@@ -146,7 +146,7 @@ describe("renderSummary", () => {
 
     const out = renderSummary(report, { plain: true });
 
-    expect(out).toContain("summary fixed=0 couldntFix=1 skippedTests=0 left=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=1 skippedTests=0 reportOnly=0 left=0 secrets=0");
     expect(out).toContain("scanner tool=knip status=ran");
     expect(out).toContain('couldnt-fix retryId=kx7p2q file="src/b.ts"');
     expect(out).toContain('command="tend retry kx7p2q"');
@@ -286,7 +286,7 @@ describe("renderSummary", () => {
       /sonarjs \(bundled\)\s+│ ✔ ran\s+│ in your changes\s+│ 2\s+│ 2/,
     );
     expect(out).toMatch(
-      /jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 1/,
+      /jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 0\s+│ 1/,
     );
     expect(out).toMatch(/knip\s+│ ✔ ran\s+│ in your changes\s+│ 0/); // clean scanner is explicit, never a vanished 0
   });
@@ -351,10 +351,39 @@ describe("renderSummary", () => {
     const out = renderSummary(report, { plain: true });
     expect(out).not.toContain("repo-wide");
     expect(out).not.toContain("tend --all");
-    expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 left=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 reportOnly=0 left=0 secrets=0");
   });
 
-  it("labels pending test-file findings as skipped by default, not left", () => {
+  it("renders pending report-only jscpd cross-file duplicates as report-only, not skipped tests", () => {
+    const builder = reportWith({
+      ...makeFinding({
+        tool: "jscpd",
+        rule: "duplicate-code",
+        category: "duplication",
+        file: "src/foo.test.ts",
+        flowPath: [
+          { file: "src/foo.test.ts", line: 1 },
+          { file: "src/bar.ts", line: 1 },
+        ],
+      }),
+      status: "pending",
+      inScope: true,
+    });
+    builder.recordScannerStatuses([{ tool: "jscpd", status: "ran" }]);
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
+
+    const out = renderSummary(report);
+    expect(out).toMatch(/skipped tests\s+│ – 0/);
+    expect(out).toMatch(/report only\s+│ – 1/);
+    expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 1\s+│ 0/);
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain("skippedTests=0 reportOnly=1 left=0");
+    expect(plain).toContain('report-only count=1 reason="unsupported or report-only findings"');
+    expect(plain).not.toContain("skipped-tests count=1");
+  });
+
+  it("renders pending AI-fix test-file findings as skipped tests by default", () => {
     const builder = reportWith({
       ...makeFinding({
         tool: "jscpd",
@@ -374,9 +403,66 @@ describe("renderSummary", () => {
     expect(out).toMatch(/left\s+│ – 0/);
 
     const plain = renderSummary(report, { plain: true });
-    expect(plain).toContain("skippedTests=1 left=0");
+    expect(plain).toContain("skippedTests=1 reportOnly=0 left=0");
     expect(plain).toContain('reason="test files are excluded by default"');
     expect(plain).toContain('command="tend run --include-tests <path...>"');
+  });
+
+  it("renders pending non-test AI-fix findings as left", () => {
+    const builder = reportWith({
+      ...makeFinding({
+        tool: "sonarjs",
+        rule: "cognitive-complexity",
+        category: "smell",
+        file: "src/foo.ts",
+      }),
+      status: "pending",
+      inScope: true,
+    });
+    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
+    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
+
+    const out = renderSummary(report);
+    expect(out).toMatch(/skipped tests\s+│ – 0/);
+    expect(out).toMatch(/report only\s+│ – 0/);
+    expect(out).toMatch(/left\s+│ – 1/);
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain("skippedTests=0 reportOnly=0 left=1");
+  });
+
+  it("--all scanner scope renders as whole repo, not in your changes", () => {
+    const builder = reportWith({
+      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
+      status: "pending",
+      inScope: true,
+    });
+    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
+    const report = builder.build({
+      loops: 1,
+      durationMs: 1000,
+      exitStatus: 0,
+      runScope: { type: "all" },
+    });
+
+    const out = renderSummary(report);
+    expect(out).toContain("whole repo");
+    expect(out).not.toContain("in your changes");
+
+    const plain = renderSummary(report, { plain: true });
+    expect(plain).toContain("scope=whole-repo");
+    expect(plain).not.toContain("scope=in-your-changes");
+  });
+
+  it("non-zero exitStatus renders as needs attention, not completed", () => {
+    const report = reportWith({
+      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
+      status: "fixed",
+    }).build({ loops: 1, durationMs: 1000, exitStatus: 1 });
+
+    const out = renderSummary(report);
+    expect(out).toContain("needs attention (exit 1)");
+    expect(out).not.toContain("completed");
   });
 
   it("T-138: scanner-status line distinguishes ran / skipped / failed (with reason)", () => {
