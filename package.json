@@ -57,6 +57,7 @@
     "execa": "^9.5.2",
     "globals": "^15.14.0",
     "gradient-string": "^3.0.0",
+    "jscpd": "^4.0.5",
     "knip": "^5.43.6",
     "listr2": "^8.2.5",
     "nanoid": "^5.1.6",
