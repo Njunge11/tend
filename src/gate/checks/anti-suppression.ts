@@ -11,7 +11,7 @@ const SUPPRESSION_PATTERNS: { re: RegExp; what: string }[] = [
 
 type DiffLines = { added: string[]; removed: string[] };
 
-export type AntiSuppressionOptions = {
+type AntiSuppressionOptions = {
   allowDeleteOnly?: boolean;
 };
 

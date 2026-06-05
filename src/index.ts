@@ -19,7 +19,21 @@ export { changedFiles, filterToChanged, scopeFindings } from "./scanners/scope.j
 export { runGate, type Check, type GateOutcome } from "./gate/gate.js";
 
 export { ChangeSet, type FileEdit } from "./fixing/change-set.js";
-export { planWork, dispatch, type WorkUnit } from "./fixing/dispatch.js";
+export { planWork, planWorkFromRepairs, dispatch, type WorkUnit } from "./fixing/dispatch.js";
+export {
+  makeDeterministicFixer,
+  makeDeterministicFixUnit,
+  type DeterministicFixer,
+  type DeterministicFixUnitDeps,
+} from "./fixing/deterministic.js";
+export {
+  REPAIR_STRATEGIES,
+  planRepair,
+  applyRepairPlanToFinding,
+  isAiDispatchStrategy,
+  type RepairPlan,
+  type RepairStrategy,
+} from "./fixing/repair-strategy.js";
 export { ClaudeSession } from "./session/claude.js";
 export type { SessionRunner, SessionRequest, SessionResult, AiUsage } from "./session/types.js";
 export { zeroUsage, addUsage } from "./session/types.js";

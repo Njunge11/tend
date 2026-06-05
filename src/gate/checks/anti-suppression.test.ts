@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { antiSuppression } from "./anti-suppression.js";
 
+function expectSuppressed(diff: string) {
+  const r = antiSuppression(diff);
+  expect(r.ok).toBe(false);
+  if (!r.ok) expect(r.reason).toBe("suppression");
+}
+
 // Minimal unified-diff-ish strings: '+' added, '-' removed, ' ' context.
 describe("antiSuppression", () => {
   it("T-038: reject — diff adds eslint-disable", () => {
     const diff = ["+// eslint-disable-next-line no-eval", " eval(input);"].join("\n");
-    const r = antiSuppression(diff);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe("suppression");
+    expectSuppressed(diff);
   });
 
   it("T-039: reject — diff adds @ts-ignore / @ts-nocheck", () => {
@@ -22,9 +26,7 @@ describe("antiSuppression", () => {
 
   it("T-041: reject — code deleted instead of fixed", () => {
     const diff = ["-function brokenButReal() {", "-  return compute();", "-}"].join("\n");
-    const r = antiSuppression(diff);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toBe("suppression");
+    expectSuppressed(diff);
   });
 
   it("allows delete-only diffs when explicitly requested", () => {

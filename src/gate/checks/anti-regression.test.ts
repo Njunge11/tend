@@ -21,4 +21,13 @@ describe("antiRegression", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("regression");
   });
+
+  it("rejects when a target finding must be resolved but remains present", () => {
+    const r = antiRegression([A], [A], { requireResolved: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("regression");
+      expect(r.detail).toContain("Fix did not clear target finding");
+    }
+  });
 });

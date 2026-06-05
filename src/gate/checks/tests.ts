@@ -58,7 +58,7 @@ type RunTestPhaseDeps = {
   /** Run the related test(s) against the current working tree. */
   runRelated: RunTests;
   /** AI attempt to repair a red test (edits code and/or test), then we re-run. */
-  repair: (attempt: number) => Promise<void>;
+  repair: (attempt: number, regressed: TestOutcome[]) => Promise<void>;
   /** Bound on repair attempts. */
   maxRepairs: number;
   /** False when the project has no test runner — gate degrades to a warning. */
@@ -83,7 +83,7 @@ export async function runTestPhase(deps: RunTestPhaseDeps): Promise<TestPhaseRes
   if (regressed.length === 0) return pass();
 
   for (let attempt = 1; attempt <= deps.maxRepairs; attempt++) {
-    await deps.repair(attempt);
+    await deps.repair(attempt, regressed);
     regressed = regressions(deps.baseline, await deps.runRelated());
     if (regressed.length === 0) return pass();
   }

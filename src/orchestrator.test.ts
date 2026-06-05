@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
 import type { Finding } from "./findings/finding.js";
@@ -7,11 +9,23 @@ import { orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.j
 import { filesUnder } from "./git/repo.js";
 import { filterToChanged } from "./scanners/scope.js";
 import { tmpRepo } from "../test/helpers/tmp-repo.js";
+import { ReportSchema } from "./report/schema.js";
 
 const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4 };
 
 const ai = (file: string, rule = "r1", line = 1): Finding =>
   makeFinding({ tool: "sonarjs", file, rule, range: { startLine: line, startCol: 0, endLine: line, endCol: 1 } });
+
+function badRunScopeAndTimeoutsFindings(): Finding[] {
+  return ReportSchema.parse(
+    JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("../test/fixtures/reports/bad-run-scope-and-timeouts.json", import.meta.url)),
+        "utf8",
+      ),
+    ),
+  ).findings;
+}
 
 /** audit() that returns a scripted findings list per loop (1-indexed). */
 function scriptedAudit(perLoop: Finding[][]): (loop: number) => Promise<AuditResult> {
@@ -50,6 +64,96 @@ describe("orchestrate", () => {
     // only the code file was dispatched, never the secret
     expect(fixUnit).toHaveBeenCalledTimes(1);
     expect(fixUnit.mock.calls[0]?.[0].file).toBe("src/a.ts");
+  });
+
+  it("plans cross-file jscpd as a multi-file unit", async () => {
+    const duplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1 },
+        { file: "src/b.ts", line: 20 },
+      ],
+    });
+    const audit = vi.fn(scriptedAudit([[duplicate], []]));
+    const fixUnit = vi.fn(keep);
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(res.secrets).toHaveLength(0);
+    expect(res.reportOnly).toHaveLength(0);
+    expect(res.exitStatus).toBe(0);
+    expect(fixUnit).toHaveBeenCalledOnce();
+    expect(fixUnit.mock.calls[0]?.[0]).toMatchObject({
+      file: "src/a.ts",
+      files: ["src/a.ts", "src/b.ts"],
+      strategy: "multi-file-duplicate-refactor",
+    });
+    expect(res.findings[0]?.repairStrategy).toBe("multi-file-duplicate-refactor");
+  });
+
+  it("reports cross-file jscpd duplicates excluded by scope without routing them to report-only", async () => {
+    const duplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1 },
+        { file: "dist/b.ts", line: 20 },
+      ],
+    });
+    const audit = vi.fn(scriptedAudit([[duplicate]]));
+    const fixUnit = vi.fn(keep);
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).not.toHaveBeenCalled();
+    expect(res.reportOnly).toHaveLength(0);
+    expect(res.findings[0]).toMatchObject({
+      track: "ai-fix",
+      status: "pending",
+      inReportScope: true,
+      inFixScope: false,
+      scopeExclusionReason: "generated",
+      repairStrategy: "unsupported",
+      repairStrategyReason: "generated",
+    });
+  });
+
+  it("does not dispatch cross-file jscpd unless both clone files are in fix scope", async () => {
+    const duplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1 },
+        { file: "src/b.ts", line: 20 },
+      ],
+    });
+    const audit = vi.fn(scriptedAudit([[duplicate]]));
+    const fixUnit = vi.fn(keep);
+
+    const res = await orchestrate({
+      audit,
+      fixUnit,
+      config,
+      inScope: (findings) => filterToChanged(findings, ["src/a.ts"]),
+    });
+
+    expect(fixUnit).not.toHaveBeenCalled();
+    expect(res.reportOnly).toHaveLength(0);
+    expect(res.findings[0]).toMatchObject({
+      track: "ai-fix",
+      inScope: true,
+      inFixScope: false,
+      scopeExclusionReason: "out-of-scope",
+      repairStrategy: "unsupported",
+      repairStrategyReason: "out-of-scope",
+    });
   });
 
   it("T-104: deterministic dep pass runs separately (no AI)", async () => {
@@ -136,6 +240,78 @@ describe("orchestrate", () => {
     expect(res.findings[0]?.revertDetail).toBe("Claude exited non-zero: 1");
   });
 
+  it("splits a timed-out multi-finding unit before retrying and does not burn original attempts", async () => {
+    const first = ai("src/a.ts", "r1", 1);
+    const second = ai("src/a.ts", "r2", 2);
+    const audit = vi.fn(scriptedAudit([[first, second], []]));
+    const fixUnit = vi.fn(async (unit: WorkUnit): Promise<FixOutcome> => {
+      if (unit.findings.length > 1) {
+        return {
+          kept: false,
+          reason: "session-error",
+          detail: "Claude session failed (exit 143)",
+          failureClass: "tool-timeout",
+        };
+      }
+      return { kept: true };
+    });
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).toHaveBeenCalledTimes(3);
+    expect(fixUnit.mock.calls.map((call) => call[0].findings.map((f) => f.rule))).toEqual([
+      ["r1", "r2"],
+      ["r1"],
+      ["r2"],
+    ]);
+    expect(res.findings.every((f) => f.attempts === 0)).toBe(true);
+    expect(res.findings.every((f) => f.status === "fixed")).toBe(true);
+  });
+
+  it("marks a second timeout as tool-timeout without exhausting normal attempts", async () => {
+    const first = ai("src/a.ts", "r1", 1);
+    const second = ai("src/a.ts", "r2", 2);
+    const audit = vi.fn(scriptedAudit([[first, second], [first, second]]));
+    const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "session-error",
+      detail: "Claude session failed (exit 143)",
+      failureClass: "tool-timeout",
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).toHaveBeenCalledTimes(3);
+    expect(res.termination).toBe("converged");
+    expect(res.findings).toHaveLength(2);
+    expect(res.findings.every((f) => f.status === "unfixable")).toBe(true);
+    expect(res.findings.every((f) => f.attempts === 0)).toBe(true);
+    expect(res.findings.every((f) => f.finalFailureClass === "tool-timeout")).toBe(true);
+  });
+
+  it("stops on rate limit with retryable infrastructure exit without consuming attempts", async () => {
+    const finding = ai("src/a.ts");
+    const audit = vi.fn(scriptedAudit([[finding], [finding]]));
+    const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "session-error",
+      detail: "Claude session rate-limited",
+      failureClass: "rate-limit",
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(res.termination).toBe("retryable-infrastructure");
+    expect(res.exitStatus).toBe(75);
+    expect(fixUnit).toHaveBeenCalledOnce();
+    expect(res.findings[0]).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      finalFailureClass: "rate-limit",
+      revertDetail: "Claude session rate-limited",
+    });
+  });
+
   it("reports zero usage for a no-fix run", async () => {
     const audit = vi.fn(scriptedAudit([[]]));
     const res = await orchestrate({ audit, fixUnit: vi.fn(keep), config });
@@ -147,6 +323,76 @@ describe("orchestrate", () => {
       cacheReadInputTokens: 0,
       sessions: 0,
     });
+  });
+
+  it("runs deterministic fixes before AI and records zero AI sessions", async () => {
+    const finding = makeFinding({
+      tool: "sonarjs",
+      rule: "curly",
+      file: "src/a.ts",
+      autofixable: true,
+    });
+    const audit = vi.fn(scriptedAudit([[finding], []]));
+    const fixUnit = vi.fn(keep);
+    const deterministicFixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: true,
+      usage: {
+        estimatedCostUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        sessions: 0,
+      },
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, deterministicFixUnit, config });
+
+    expect(deterministicFixUnit).toHaveBeenCalledOnce();
+    expect(fixUnit).not.toHaveBeenCalled();
+    expect(res.usage.sessions).toBe(0);
+    expect(res.findings[0]?.status).toBe("fixed");
+  });
+
+  it("does not silently fall back to AI when a deterministic fix fails", async () => {
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-dependency",
+      category: "dead-code",
+      file: "package.json",
+      message: "Unused dependency: jquery",
+    });
+    const audit = vi.fn(scriptedAudit([[finding], [finding]]));
+    const fixUnit = vi.fn(keep);
+    const deterministicFixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "needs-lockfile-update",
+      detail: "package.json dependency cleanup requires a lockfile update",
+      usage: {
+        estimatedCostUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        sessions: 0,
+      },
+    }));
+
+    const res = await orchestrate({
+      audit,
+      fixUnit,
+      deterministicFixUnit,
+      config: { ...config, perIssueBudget: 1 },
+    });
+
+    expect(deterministicFixUnit).toHaveBeenCalledOnce();
+    expect(fixUnit).not.toHaveBeenCalled();
+    expect(res.findings[0]).toMatchObject({
+      status: "unfixable",
+      revertReason: "needs-lockfile-update",
+      revertDetail: "package.json dependency cleanup requires a lockfile update",
+    });
+    expect(res.usage.sessions).toBe(0);
   });
 
   it("T-108: oscillation is bounded by max loops", async () => {
@@ -226,6 +472,98 @@ describe("orchestrate", () => {
     expect(fixUnit).not.toHaveBeenCalled();
     expect(audit).toHaveBeenCalledTimes(1);
     expect(res.findings.find((f) => f.file === "src/outside.ts")?.inScope).toBe(false);
+    expect(res.findings.find((f) => f.file === "src/outside.ts")?.inFixScope).toBe(false);
+    expect(res.findings.find((f) => f.file === "src/outside.ts")?.scopeExclusionReason).toBe("out-of-scope");
+  });
+
+  it("reports generated and fixture findings but does not dispatch them to AI by default", async () => {
+    const dist = ai("dist/index.d.ts");
+    const fixture = ai("test/fixtures/sample.ts");
+    const source = ai("src/a.ts");
+    const audit = vi.fn(scriptedAudit([[dist, fixture, source], [dist, fixture]]));
+    const fixUnit = vi.fn(keep);
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).toHaveBeenCalledTimes(1);
+    expect(fixUnit.mock.calls[0]?.[0].file).toBe("src/a.ts");
+    expect(res.findings.find((f) => f.file === "src/a.ts")?.inFixScope).toBe(true);
+    expect(res.findings.find((f) => f.file === "src/a.ts")?.status).toBe("fixed");
+    expect(res.findings.find((f) => f.file === "dist/index.d.ts")).toMatchObject({
+      inReportScope: true,
+      inFixScope: false,
+      scopeExclusionReason: "generated",
+      status: "pending",
+    });
+    expect(res.findings.find((f) => f.file === "test/fixtures/sample.ts")).toMatchObject({
+      inReportScope: true,
+      inFixScope: false,
+      scopeExclusionReason: "fixtures",
+      status: "pending",
+    });
+  });
+
+  it("does not spend work on generated, fixture, or report-only findings from the bad-run fixture", async () => {
+    const findings = badRunScopeAndTimeoutsFindings();
+    const normalSource = findings.find((f) => f.retryId === "src001");
+    const audit = vi.fn(
+      scriptedAudit([
+        findings,
+        findings.filter((f) => f.id !== normalSource?.id),
+      ]),
+    );
+    const fixUnit = vi.fn(keep);
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).toHaveBeenCalledOnce();
+    expect(fixUnit.mock.calls[0]?.[0]).toMatchObject({
+      file: "src/signup/validate.ts",
+      strategy: "single-file-ai-edit",
+    });
+    expect(res.reportOnly).toHaveLength(1);
+    expect(res.secrets).toHaveLength(0);
+    expect(res.findings.find((f) => f.retryId === "dist01")).toMatchObject({
+      inReportScope: true,
+      inFixScope: false,
+      scopeExclusionReason: "generated",
+      status: "pending",
+      attempts: 0,
+    });
+    expect(res.findings.find((f) => f.retryId === "fixt01")).toMatchObject({
+      inReportScope: true,
+      inFixScope: false,
+      scopeExclusionReason: "fixtures",
+      status: "pending",
+      attempts: 0,
+    });
+    expect(res.findings.find((f) => f.retryId === "dupe01")).toMatchObject({
+      track: "report-only",
+      category: "duplication",
+      status: "pending",
+    });
+    expect(res.findings.find((f) => f.retryId === "src001")).toMatchObject({
+      inFixScope: true,
+      status: "fixed",
+    });
+  });
+
+  it("does not dispatch a generated finding without a source owner", async () => {
+    const dist = ai("dist/index.d.ts");
+    const audit = vi.fn(scriptedAudit([[dist]]));
+    const fixUnit = vi.fn(keep);
+
+    const res = await orchestrate({
+      audit,
+      fixUnit,
+      config: { ...config, fix: { include: ["dist/index.d.ts"] } },
+    });
+
+    expect(fixUnit).not.toHaveBeenCalled();
+    expect(res.findings.find((f) => f.file === "dist/index.d.ts")).toMatchObject({
+      repairStrategy: "unsupported",
+      repairStrategyReason: "generated-source-not-found",
+    });
   });
 
   it("T-125: with a path scope, an out-of-scope finding is reported but not fixed", async () => {
