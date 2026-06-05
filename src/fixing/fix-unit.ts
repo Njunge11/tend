@@ -5,6 +5,7 @@ import type { Finding } from "../findings/finding.js";
 import type { FixOutcome } from "../orchestrator.js";
 import { addUsage, zeroUsage, type FailureClass, type SessionRunner } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
+import type { FixProgressEvent, FixStage } from "./progress.js";
 import type { RepairStrategy } from "./repair-strategy.js";
 import {
   buildDiff,
@@ -19,6 +20,7 @@ import {
 export type FixUnitDeps = UnitGateDeps & {
   session: SessionRunner;
   maxRepairs: number;
+  onProgress?: (event: FixProgressEvent) => void;
 };
 
 function readPromptTemplate(name: string): string {
@@ -191,7 +193,10 @@ function classFromOutcome(reason: FixOutcome["reason"], fallback?: FailureClass)
  * session error reverts the files to the snapshot. Nothing changed → not a fix.
  */
 export function makeFixUnit(deps: FixUnitDeps) {
-  return async (unit: WorkUnit): Promise<FixOutcome> => {
+  return async (unit: WorkUnit, loop = 0): Promise<FixOutcome> => {
+    const progress = (stage: FixStage, detail?: string): void => {
+      deps.onProgress?.({ loop, file: unit.file, stage, detail });
+    };
     const snapshotFiles =
       unit.strategy === "generated-source-repair"
         ? [...new Set([...unit.files, ...(unit.verificationTargets ?? [])])]
@@ -204,6 +209,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     // sessions — even when the unit ends up reverted or unfixable, the tokens were spent.
     let usage = zeroUsage();
 
+    progress("ai-edit");
     const res = await deps.session.run({ file: unit.file, findings: unit.findings, prompt: renderPrompt(unit) });
     if (res.usage) usage = addUsage(usage, res.usage);
 
@@ -223,6 +229,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     // No-edit sessions get one stricter retry. If that still does not edit, classify it
     // as a no-op so the orchestrator can stop spending ordinary issue attempts on it.
     if (!changedOnDisk()) {
+      progress("ai-no-edit-retry");
       const retry = await deps.session.run({
         file: unit.file,
         findings: unit.findings,
@@ -253,6 +260,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     }
 
     async function scanNewFindings(): Promise<Finding[]> {
+      progress("rescan");
       const verificationTargets = unit.verificationTargets ?? unit.files;
       const afterFindings = await deps.scanFindings(verificationTargets);
       const originalIds = new Set(unit.findings.map((f) => f.id));
@@ -262,6 +270,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     async function runRegressionRepair(outcome: FixOutcome): Promise<boolean> {
       if (outcome.reason !== "regression" && outcome.reason !== "typecheck") return false;
       const after = snapshotUnitNow(deps.cwd, snapshotFiles);
+      progress("regression-repair");
       const repair = await deps.session.run({
         file: unit.file,
         findings: unit.findings,
@@ -285,6 +294,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     async function gateCurrent(): Promise<FixOutcome> {
       return gateUnitChanges(unit, before, deps, {
         usage,
+        onProgress: progress,
         // The repair session also edits the disk directly — just re-run it.
         repair: async (_attempt, regressed) => {
           const after = snapshotUnitNow(deps.cwd, snapshotFiles);

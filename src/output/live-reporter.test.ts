@@ -110,6 +110,7 @@ describe("LiveReporter", () => {
           outcome: "fixed",
         });
       }
+      reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 150 });
       reporter.onEvent({ type: "done", exitStatus: 0 });
       reporter.close();
       await drawing;
@@ -128,5 +129,42 @@ describe("LiveReporter", () => {
     // persistent completed Listr rows, one per file, across redraws.
     expect(output.match(/file-\d+\.ts/g) ?? []).toHaveLength(0);
     expect(output.split("\n").length).toBeLessThan(25);
+  });
+
+  it("keeps a fix pass open for split retry work after the original batch finishes", async () => {
+    const { reporter } = harness();
+    const chunks: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      reporter.start();
+      const drawing = reporter.run();
+      reporter.onEvent({ type: "scan-start", loop: 1 });
+      reporter.onEvent({ type: "audit", loop: 1, findings: 1, files: 1, scanned: 1 });
+      reporter.onEvent({ type: "loop-start", loop: 1, files: ["src/a.ts"], concurrency: 1 });
+      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code" });
+      reporter.onEvent({ type: "file-result", loop: 1, file: "src/a.ts", outcome: "reverted", reason: "regression" });
+
+      // A split retry starts after the original unit has reported. The live row must grow
+      // the total and stay in fix mode until loop-complete, not advance to the next scan.
+      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code" });
+      reporter.onEvent({ type: "file-stage", loop: 1, file: "src/a.ts", stage: "typecheck" });
+      reporter.onEvent({ type: "file-result", loop: 1, file: "src/a.ts", outcome: "fixed" });
+      reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 1 });
+      reporter.onEvent({ type: "scan-start", loop: 2 });
+      reporter.onEvent({ type: "audit", loop: 2, findings: 0, files: 0, scanned: 1 });
+      reporter.onEvent({ type: "done", exitStatus: 0 });
+      reporter.close();
+      await drawing;
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    const output = chunks.join("");
+    expect(output).toContain("fix pass 1 2/2");
   });
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
+import { EventBus, type TendEvent } from "../output/events.js";
 import type { ScanContext, ScanResult } from "./scanner.js";
 
 const runEslintSonarjs = vi.hoisted(() =>
@@ -39,11 +40,15 @@ describe("buildAudit", () => {
 
     const which = vi.fn(async () => false);
     const spawn = vi.fn();
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
     const audit = buildAudit({
       cwd: "/repo",
       which,
       spawn,
       scope: ["src/a.ts"], // injected scope list, not derived from git
+      bus,
     });
 
     const result = await audit(1);
@@ -65,6 +70,13 @@ describe("buildAudit", () => {
         { tool: "semgrep", status: "skipped" },
         { tool: "osv", status: "skipped" },
         { tool: "gitleaks", status: "skipped" },
+      ]),
+    );
+    expect(events.filter((event) => event.type === "scanner-start")).toHaveLength(6);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        { type: "scanner-result", loop: 1, tool: "jscpd", status: "skipped", findings: 0 },
+        { type: "scanner-result", loop: 1, tool: "sonarjs", status: "ran", findings: 1 },
       ]),
     );
     runEslintSonarjs.mockReset();

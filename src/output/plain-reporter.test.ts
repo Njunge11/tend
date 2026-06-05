@@ -25,9 +25,12 @@ describe("PlainReporter", () => {
     const { reporter, lines } = harness();
     const events: TendEvent[] = [
       { type: "scan-start", loop: 1 },
+      { type: "scanner-start", loop: 1, tool: "jscpd" },
+      { type: "scanner-result", loop: 1, tool: "jscpd", status: "ran", findings: 4 },
       { type: "audit", loop: 1, findings: 13, files: 10, scanned: 159 },
       { type: "loop-start", loop: 1, files: ["a.ts", "b.ts"], concurrency: 4 },
       { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity" },
+      { type: "file-stage", loop: 1, file: "a.ts", stage: "typecheck" },
       { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed" },
       { type: "file-result", loop: 1, file: "b.ts", outcome: "reverted", reason: "broke-test" },
       { type: "done", exitStatus: 0 },
@@ -37,8 +40,11 @@ describe("PlainReporter", () => {
     // No ANSI escape codes anywhere.
     expect(lines.join("\n")).not.toMatch(new RegExp(String.fromCharCode(27)));
     expect(lines).toContain("initial audit: scanning…");
+    expect(lines).toContain("scanner jscpd: running");
+    expect(lines).toContain("scanner jscpd: ran 4 findings");
     expect(lines.some((l) => l.includes("initial audit: fix scope 159 files eligible for fixes") && l.includes("in-scope findings 13 across 10 files"))).toBe(true);
     expect(lines.some((l) => l.includes("fix pass 1") && l.includes("2 files") && l.includes("4 concurrent"))).toBe(true);
+    expect(lines).toContain("progress a.ts: typecheck");
     expect(lines.some((l) => l.includes("fixed a.ts"))).toBe(true);
     expect(lines.some((l) => l.includes("reverted b.ts") && l.includes("broke tests"))).toBe(true);
     // file-start, loop-complete, done produce no standalone lines.

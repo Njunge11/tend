@@ -1,5 +1,6 @@
 import type { Finding } from "../findings/finding.js";
 import type { AuditResult } from "../orchestrator.js";
+import type { EventBus } from "../output/events.js";
 import { filterToChanged } from "./scope.js";
 import { runEslintSonarjs } from "./eslint-sonarjs.js";
 import { gitleaksScanner } from "./gitleaks.js";
@@ -45,6 +46,7 @@ type AuditDeps = {
    */
   scope: string[] | null;
   timeoutMs?: number;
+  bus?: EventBus;
 };
 
 type ScanFilesDeps = {
@@ -52,6 +54,7 @@ type ScanFilesDeps = {
   which: Which;
   spawn: Spawn;
   timeoutMs?: number;
+  bus?: EventBus;
 };
 
 async function runScanners(
@@ -63,18 +66,41 @@ async function runScanners(
   scannerStatuses: ScannerStatus[];
 }> {
   const ctx = { cwd: deps.cwd, files, loop };
+  const runWithEvents = async (scanner: Scanner): Promise<ScanResult> => {
+    deps.bus?.emit({ type: "scanner-start", loop, tool: scanner.tool });
+    const result = await runScanner(scanner, ctx, {
+      which: deps.which,
+      spawn: deps.spawn,
+      timeout: deps.timeoutMs,
+    });
+    const status = scannerStatus(result);
+    deps.bus?.emit({
+      type: "scanner-result",
+      loop,
+      tool: scanner.tool,
+      status: status.status,
+      findings: result.findings.length,
+      reason: status.reason,
+    });
+    return result;
+  };
 
-  const spawned = await Promise.all(
-    SPAWN_SCANNERS.map((scanner) =>
-      runScanner(scanner, ctx, {
-        which: deps.which,
-        spawn: deps.spawn,
-        timeout: deps.timeoutMs,
-      }),
-    ),
-  );
+  const spawnedPromise = Promise.all(SPAWN_SCANNERS.map(runWithEvents));
   // eslint+sonarjs is bundled → always runs (via the Node API), never "missing"
-  const eslint = await runEslintSonarjs(ctx);
+  deps.bus?.emit({ type: "scanner-start", loop, tool: "sonarjs" });
+  const eslintPromise = runEslintSonarjs(ctx).then((result) => {
+    const status = scannerStatus(result);
+    deps.bus?.emit({
+      type: "scanner-result",
+      loop,
+      tool: "sonarjs",
+      status: status.status,
+      findings: result.findings.length,
+      reason: status.reason,
+    });
+    return result;
+  });
+  const [spawned, eslint] = await Promise.all([spawnedPromise, eslintPromise]);
   const results = [...spawned, eslint];
 
   return {

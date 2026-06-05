@@ -7,6 +7,7 @@ import { fakeSession } from "../../test/helpers/fake-session.js";
 import type { SessionResult, SessionRunner } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
 import { makeFixUnit, renderPrompt, type FixUnitDeps } from "./fix-unit.js";
+import type { FixProgressEvent } from "./progress.js";
 
 let dir: string;
 beforeEach(() => {
@@ -153,6 +154,38 @@ describe("fix prompt rendering", () => {
 
     expect(prompt).toContain("Strategy: `dead-code-cleanup`");
     expect(prompt).toContain("# Dead-code cleanup task");
+  });
+});
+
+describe("fix progress", () => {
+  it("emits visible stages around AI edit, gates, related tests, and rescan", async () => {
+    write("src/a.ts", "export const value = 1;\n");
+    const progress: FixProgressEvent[] = [];
+    const fix = makeFixUnit(
+      deps(
+        diskSession(
+          { "src/a.ts": "export const value = 2;\n" },
+          { ok: true, edits: [] },
+        ),
+        {
+          typescript: true,
+          hasTestRunner: true,
+          onProgress: (event) => progress.push(event),
+        },
+      ),
+    );
+
+    await fix(unit("src/a.ts"), 7);
+
+    expect(progress.map((event) => event.stage)).toEqual([
+      "ai-edit",
+      "anti-suppression",
+      "typecheck",
+      "related-tests",
+      "rescan",
+      "regression-check",
+    ]);
+    expect(progress.every((event) => event.loop === 7 && event.file === "src/a.ts")).toBe(true);
   });
 });
 

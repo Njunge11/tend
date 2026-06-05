@@ -8,6 +8,7 @@ import { runTestPhase, type TestOutcome } from "../gate/checks/tests.js";
 import type { FixOutcome } from "../orchestrator.js";
 import { zeroUsage, type AiUsage } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
+import type { FixStage } from "./progress.js";
 
 export type UnitGateDeps = {
   cwd: string;
@@ -77,6 +78,7 @@ type GateUnitOptions = {
   maxRepairs?: number;
   repairFailureDetail?: () => string | undefined;
   requireResolved?: boolean;
+  onProgress?: (stage: FixStage, detail?: string) => void;
 };
 
 export async function gateUnitChanges(
@@ -88,15 +90,18 @@ export async function gateUnitChanges(
   const usage = opts.usage ?? zeroUsage();
   const after = snapshotUnitNow(deps.cwd, unit.files);
 
+  opts.onProgress?.("anti-suppression");
   const supp = antiSuppression(buildDiff(before, after), {
     allowDeleteOnly: allowsDeleteOnly(unit),
   });
   if (!supp.ok) return { kept: false, reason: supp.reason, detail: supp.detail, usage };
 
+  opts.onProgress?.("typecheck");
   const tc = await typecheck({ hasTsconfig: () => deps.typescript, runTsc: deps.runTsc });
   if (!tc.ok) return { kept: false, reason: tc.reason, detail: tc.detail, usage };
 
   if (unit.strategy === "generated-source-repair" && deps.runBuild) {
+    opts.onProgress?.("build");
     const build = await deps.runBuild();
     if (build.exitCode !== 0) {
       return {
@@ -110,8 +115,14 @@ export async function gateUnitChanges(
 
   const phase = await runTestPhase({
     baseline: deps.baseline,
-    runRelated: () => deps.runRelated(unit.files),
-    repair: opts.repair ?? (async () => {}),
+    runRelated: () => {
+      opts.onProgress?.("related-tests");
+      return deps.runRelated(unit.files);
+    },
+    repair: async (attempt, regressed) => {
+      opts.onProgress?.("test-repair", `${attempt}/${opts.maxRepairs ?? 0}`);
+      await (opts.repair ?? (async () => {}))(attempt, regressed);
+    },
     maxRepairs: opts.maxRepairs ?? 0,
     hasTestRunner: deps.hasTestRunner,
   });
@@ -125,7 +136,9 @@ export async function gateUnitChanges(
   }
 
   const verificationTargets = unit.verificationTargets ?? unit.files;
+  opts.onProgress?.("rescan");
   const afterFindings = await deps.scanFindings(verificationTargets);
+  opts.onProgress?.("regression-check");
   const regression = antiRegression(unit.findings, afterFindings, {
     requireResolved: opts.requireResolved || unit.strategy === "multi-file-duplicate-refactor",
   });

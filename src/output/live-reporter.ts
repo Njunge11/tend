@@ -4,6 +4,9 @@ import {
   ListrDefaultRendererLogLevels as Level,
   type PresetTimer,
 } from "listr2";
+import type { Tool } from "../findings/finding.js";
+import { fixStageLabel, type FixStage } from "../fixing/progress.js";
+import type { ScannerStatusKind } from "../scanners/scanner.js";
 import { BaseReporter } from "./base-reporter.js";
 import type { TendEvent } from "./events.js";
 import { formatClock } from "./format.js";
@@ -12,6 +15,8 @@ import type { Reporter, ReporterDeps } from "./reporter.js";
 type AuditData = { loop: number; findings: number; files: number; scanned?: number };
 type FixInfo = { loop: number; files: string[]; concurrency: number };
 type Phase = { kind: "fix"; info: FixInfo } | { kind: "done" };
+type ScannerLiveStatus = "running" | ScannerStatusKind;
+type ScannerInfo = { status: ScannerLiveStatus; findings?: number; reason?: string };
 
 /** A one-shot value channel: take() resolves now if buffered, else when the next push lands. */
 class Channel<T> {
@@ -48,6 +53,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private readonly audits = new Channel<AuditData>();
   private readonly phases = new Channel<Phase>();
   private readonly fixTicks = new Channel<void>();
+  private readonly loopCompletions = new Channel<number>();
 
   private closed = false;
   private resolveClosed!: () => void;
@@ -66,7 +72,11 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private currentFile?: string;
   private currentConcurrency?: number;
   private readonly rules = new Map<string, string>();
+  private readonly stages = new Map<string, FixStage>();
+  private readonly scannerStates = new Map<Tool, ScannerInfo>();
+  private currentScanLoop?: number;
   private header?: { title: string };
+  private scanHeader?: { title: string };
   private labelWidth = 0;
 
   constructor(deps: ReporterDeps) {
@@ -84,6 +94,26 @@ export class LiveReporter extends BaseReporter implements Reporter {
           scanned: event.scanned,
         });
         break;
+      case "scan-start":
+        this.currentScanLoop = event.loop;
+        this.scannerStates.clear();
+        this.scanStarts.push(event.loop);
+        this.refreshScanHeader();
+        break;
+      case "scanner-start":
+        if (event.loop !== this.currentScanLoop) break;
+        this.scannerStates.set(event.tool, { status: "running" });
+        this.refreshScanHeader();
+        break;
+      case "scanner-result":
+        if (event.loop !== this.currentScanLoop) break;
+        this.scannerStates.set(event.tool, {
+          status: event.status,
+          findings: event.findings,
+          reason: event.reason,
+        });
+        this.refreshScanHeader();
+        break;
       case "loop-start":
         // Reset counters here (synchronously, before any file-start for this loop) so the
         // header counts stay correct no matter how events interleave with rendering.
@@ -97,6 +127,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.currentFile = undefined;
         this.currentConcurrency = event.concurrency;
         this.rules.clear();
+        this.stages.clear();
         this.labelWidth = Math.max(
           0,
           ...event.files.map((f) => basename(f).length),
@@ -108,12 +139,19 @@ export class LiveReporter extends BaseReporter implements Reporter {
         break;
       case "file-start":
         this.started += 1;
+        this.fixTotal = Math.max(this.fixTotal, this.started);
         this.currentFile = event.file;
         if (event.rule) this.rules.set(event.file, event.rule);
         this.refreshHeader();
         break;
+      case "file-stage":
+        this.currentFile = event.file;
+        this.stages.set(event.file, event.stage);
+        this.refreshHeader();
+        break;
       case "file-result":
         this.finished += 1;
+        this.fixTotal = Math.max(this.fixTotal, this.started, this.finished);
         if (event.outcome === "fixed") this.fixed += 1;
         else if (event.outcome === "reverted") this.reverted += 1;
         else this.notAttempted += 1;
@@ -121,15 +159,15 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.refreshHeader();
         this.fixTicks.push();
         break;
+      case "loop-complete":
+        this.loopCompletions.push(event.loop);
+        this.refreshHeader();
+        break;
       case "done":
         this.phases.push({ kind: "done" });
         break;
-      case "scan-start":
-        this.scanStarts.push(event.loop);
-        break;
       case "snapshot":
       case "detected":
-      case "loop-complete":
         break;
     }
   }
@@ -165,6 +203,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
         {
           title: this.theme.dim("scanning…"),
           task: async (_ctx, task) => {
+            this.scanHeader = task;
             const loop = await this.race(this.scanStarts.take());
             if (loop === CLOSED) {
               live = false;
@@ -177,6 +216,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
               return;
             }
             task.title = this.scannedTitle(audit);
+            this.scanHeader = undefined;
           },
         },
       ],
@@ -197,10 +237,16 @@ export class LiveReporter extends BaseReporter implements Reporter {
             this.currentLoop = info.loop;
             this.currentConcurrency = info.concurrency;
             task.title = this.headerTitle();
-            while (this.finished < this.fixTotal) {
-              const tick = await this.race(this.fixTicks.take());
-              if (tick === CLOSED) return;
+            while (true) {
+              const tickOrComplete = await this.race(
+                Promise.race([
+                  this.fixTicks.take().then(() => "tick" as const),
+                  this.loopCompletions.take().then(() => "complete" as const),
+                ]),
+              );
+              if (tickOrComplete === CLOSED) return;
               task.title = this.headerTitle();
+              if (tickOrComplete === "complete") break;
             }
           },
         },
@@ -251,11 +297,22 @@ export class LiveReporter extends BaseReporter implements Reporter {
   }
 
   private scanTitle(loop: number): string {
+    const detail = this.scannerDetail();
     return this.theme.dim(
       loop === 1
-        ? "initial audit: scanning…"
-        : `re-audit after fix pass ${loop - 1}: scanning…`,
+        ? `initial audit: scanning…${detail}`
+        : `re-audit after fix pass ${loop - 1}: scanning…${detail}`,
     );
+  }
+
+  private scannerDetail(): string {
+    const entries = [...this.scannerStates.entries()];
+    if (entries.length === 0) return "";
+    const running = entries.filter(([, info]) => info.status === "running");
+    const done = entries.length - running.length;
+    if (running.length === 0) return ` ${this.theme.glyph.bullet} scanners ${done}/${entries.length} done`;
+    const runningTools = running.map(([tool]) => tool).join(", ");
+    return ` ${this.theme.glyph.bullet} running ${runningTools} ${this.theme.glyph.bullet} ${done}/${entries.length} done`;
   }
 
   private headerTitle(): string {
@@ -277,13 +334,20 @@ export class LiveReporter extends BaseReporter implements Reporter {
     if (this.header) this.header.title = this.headerTitle();
   }
 
+  private refreshScanHeader(): void {
+    if (this.scanHeader && this.currentScanLoop !== undefined)
+      this.scanHeader.title = this.scanTitle(this.currentScanLoop);
+  }
+
   private fileLabel(file: string): string {
     return basename(file).padEnd(this.labelWidth);
   }
 
   private fileTitle(file: string): string {
     const rule = this.rules.get(file);
-    const suffix = rule ? `  ${this.theme.dim(rule)}` : "";
+    const stage = this.stages.get(file);
+    const detail = [rule, stage ? fixStageLabel(stage) : undefined].filter(Boolean).join(" · ");
+    const suffix = detail ? `  ${this.theme.dim(detail)}` : "";
     return `${this.fileLabel(file)}${suffix}`;
   }
 }

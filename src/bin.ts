@@ -124,14 +124,16 @@ async function makeProductionFixUnit(
   // path-scoped run inside a monorepo gates against the owning package, not the repo
   // root. Defaults to the repo cwd for whole-repo / root-package runs.
   ownerRoot: string = cwd,
+  bus?: EventBus,
+  detected?: { typescript: boolean; runner: "vitest" | "jest" | null },
 ): Promise<{
   fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   typescript: boolean;
   runner: "vitest" | "jest" | null;
 }> {
-  const typescript = detectTypeScript(ownerRoot);
-  const runner = detectTestRunner(ownerRoot) ?? null;
+  const typescript = detected?.typescript ?? detectTypeScript(ownerRoot);
+  const runner = detected?.runner ?? detectTestRunner(ownerRoot) ?? null;
   const buildArgs = detectBuildCommand(ownerRoot);
   const pm = detectPackageManager(ownerRoot);
   const baseline = new Set<string>(
@@ -221,6 +223,7 @@ async function makeProductionFixUnit(
       ...gateDeps,
       session,
       maxRepairs: 3,
+      onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
     }),
     deterministicFixUnit: makeDeterministicFixUnit(gateDeps),
   };
@@ -249,6 +252,8 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   const theme = makeTheme(env);
   const reporter = createReporter({ env, theme, write: out });
   reporter.start();
+  const bus = new EventBus();
+  bus.on((e) => reporter.onEvent(e));
 
   const git = createGit(cwd);
   await assertGitRepo(git);
@@ -313,11 +318,8 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // For a path-scoped run, resolve the package that owns the scoped files and gate against
   // it. Whole-repo runs (`--all`, scope === null) stay rooted at the repo cwd.
   const ownerRoot = scope ? resolveOwnerRoot(cwd, scope) : cwd;
-  const { fixUnit, deterministicFixUnit, runner, typescript } = await makeProductionFixUnit(
-    config,
-    baselineTargets,
-    ownerRoot,
-  );
+  const typescript = detectTypeScript(ownerRoot);
+  const runner = detectTestRunner(ownerRoot) ?? null;
   // Package manager stays repo-rooted: the lockfile lives at the workspace root, not the
   // owning package.
   const pm = detectPackageManager(cwd);
@@ -327,9 +329,18 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
 
   const scopeNote = describeScopeNote(opts.all, paths, scope);
   reporter.note(`${scopeNote} · ${plural(available.length, "scanner")}`);
-
-  const bus = new EventBus();
-  bus.on((e) => reporter.onEvent(e));
+  if (runner && baselineTargets.length > 0) {
+    reporter.note(
+      `baseline: ${runner} related ${describeScopeNote(opts.all, paths, scope)} (one-time)`,
+    );
+  }
+  const { fixUnit, deterministicFixUnit } = await makeProductionFixUnit(
+    config,
+    baselineTargets,
+    ownerRoot,
+    bus,
+    { typescript, runner },
+  );
 
   // The live view draws concurrently with the orchestration; both share this event loop.
   const start = Date.now();
@@ -344,6 +355,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
         spawn: realSpawn,
         scope,
         timeoutMs: 120_000,
+        bus,
       }),
       fixUnit,
       deterministicFixUnit,
