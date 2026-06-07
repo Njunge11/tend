@@ -94,6 +94,14 @@ export class Snapshot {
     return { cwd: this.cwd, root: this.root, sha: this.sha };
   }
 
+  commitSha(): string {
+    return this.sha;
+  }
+
+  repoRoot(): string {
+    return this.root;
+  }
+
   static fromJSON(data: { cwd: string; root: string; sha: string }): Snapshot {
     return new Snapshot(data.cwd, data.root, data.sha);
   }

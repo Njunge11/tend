@@ -155,6 +155,14 @@ function classFromOutcome(outcome: FixOutcome): FailureClass | undefined {
       return "suppression";
     case "needs-lockfile-update":
       return "needs-lockfile-update";
+    case "sandbox-setup-failed":
+      return "sandbox-setup-failed";
+    case "patch-conflict":
+      return "patch-conflict";
+    case "unowned-patch":
+      return "unowned-patch";
+    case "final-integration-failed":
+      return "final-integration-failed";
     case "session-error":
       return "model-tool-failure";
     default:

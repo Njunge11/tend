@@ -9,6 +9,10 @@ export const FAILURE_CLASSES = [
   "tool-timeout",
   "rate-limit",
   "model-tool-failure",
+  "sandbox-setup-failed",
+  "patch-conflict",
+  "unowned-patch",
+  "final-integration-failed",
   "no-edit",
   "no-op",
   "regression",
@@ -55,7 +59,18 @@ export const FindingSchema = z.object({
   status: z.enum(["pending", "fixing", "fixed", "reverted", "unfixable", "skipped"]),
   attempts: z.number(),
   revertReason: z
-    .enum(["broke-test", "suppression", "regression", "typecheck", "session-error", "needs-lockfile-update"])
+    .enum([
+      "broke-test",
+      "suppression",
+      "regression",
+      "typecheck",
+      "session-error",
+      "needs-lockfile-update",
+      "sandbox-setup-failed",
+      "patch-conflict",
+      "unowned-patch",
+      "final-integration-failed",
+    ])
     .optional(),
   revertDetail: z.string().optional(),
   finalFailureClass: z.enum(FAILURE_CLASSES).optional(),

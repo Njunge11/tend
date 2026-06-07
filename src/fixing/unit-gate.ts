@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Finding } from "../findings/finding.js";
+import type { Finding, Tool } from "../findings/finding.js";
 import { antiRegression } from "../gate/checks/anti-regression.js";
 import { antiSuppression } from "../gate/checks/anti-suppression.js";
 import { typecheck } from "../gate/checks/typecheck.js";
@@ -17,7 +17,7 @@ export type UnitGateDeps = {
   runBuild?: () => Promise<{ exitCode: number; output: string }>;
   hasTestRunner: boolean;
   runRelated: (files: string[]) => Promise<TestOutcome[]>;
-  scanFindings: (files: string[]) => Promise<Finding[]>;
+  scanFindings: (files: string[], tools?: Tool[]) => Promise<Finding[]>;
   baseline: Set<string>;
 };
 
@@ -89,6 +89,7 @@ export async function gateUnitChanges(
 ): Promise<FixOutcome> {
   const usage = opts.usage ?? zeroUsage();
   const after = snapshotUnitNow(deps.cwd, unit.files);
+  const scannerTools = [...new Set(unit.findings.map((finding) => finding.tool))];
 
   opts.onProgress?.("anti-suppression");
   const supp = antiSuppression(buildDiff(before, after), {
@@ -137,7 +138,7 @@ export async function gateUnitChanges(
 
   const verificationTargets = unit.verificationTargets ?? unit.files;
   opts.onProgress?.("rescan");
-  const afterFindings = await deps.scanFindings(verificationTargets);
+  const afterFindings = await deps.scanFindings(verificationTargets, scannerTools);
   opts.onProgress?.("regression-check");
   const regression = antiRegression(unit.findings, afterFindings, {
     requireResolved: opts.requireResolved || unit.strategy === "multi-file-duplicate-refactor",

@@ -131,4 +131,32 @@ describe("scanFiles", () => {
     expect(result.scanned).toBe(1);
     runEslintSonarjs.mockReset();
   });
+
+  it("runs only requested scanner tools for targeted verification rescans", async () => {
+    const inScope = makeFinding({ tool: "sonarjs", file: "src/a.ts" });
+    runEslintSonarjs.mockResolvedValueOnce({
+      tool: "sonarjs",
+      findings: [inScope],
+      skipped: false,
+    });
+    const which = vi.fn(async () => {
+      throw new Error("external scanners should not be queried");
+    });
+
+    const result = await scanFiles(
+      {
+        cwd: "/repo",
+        which,
+        spawn: vi.fn(),
+        tools: ["sonarjs"],
+      },
+      ["src/a.ts"],
+      1,
+    );
+
+    expect(result.findings).toStrictEqual([inScope]);
+    expect(result.scannerStatuses).toStrictEqual([{ tool: "sonarjs", status: "ran" }]);
+    expect(which).not.toHaveBeenCalled();
+    runEslintSonarjs.mockReset();
+  });
 });

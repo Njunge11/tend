@@ -240,9 +240,18 @@ function renderPlainSummary(
         `sessionErrors=${report.failureSummary.sessionErrors}`,
         `regressions=${report.failureSummary.regressions}`,
         `typecheckFailures=${report.failureSummary.typecheckFailures}`,
-        `testFailures=${report.failureSummary.testFailures}`,
-      ].join(" "),
+      `testFailures=${report.failureSummary.testFailures}`,
+      `sandboxSetupFailures=${report.failureSummary.sandboxSetupFailures}`,
+      `patchConflicts=${report.failureSummary.patchConflicts}`,
+      `unownedPatches=${report.failureSummary.unownedPatches}`,
+      `finalIntegrationFailures=${report.failureSummary.finalIntegrationFailures}`,
+    ].join(" "),
+  );
+  if (report.finalIntegration && !report.finalIntegration.ok) {
+    lines.push(
+      `final-integration status=failed files=${report.finalIntegration.files.length} detail=${JSON.stringify(firstLine(report.finalIntegration.detail ?? ""))}`,
     );
+  }
   }
 
   const counts = inScopeByTool(report);
@@ -370,6 +379,9 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
   const rows = [
     ["status", status],
     ["fix passes", String(report.loops)],
+    ...(report.finalIntegration && !report.finalIntegration.ok
+      ? ([["final integration", theme.error(firstLine(report.finalIntegration.detail ?? "failed"))]] as string[][])
+      : []),
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
     [
@@ -441,6 +453,10 @@ function hasFailureSummary(report: Report): boolean {
     summary.regressions > 0 ||
     summary.typecheckFailures > 0 ||
     summary.testFailures > 0
+    || summary.sandboxSetupFailures > 0
+    || summary.patchConflicts > 0
+    || summary.unownedPatches > 0
+    || summary.finalIntegrationFailures > 0
   );
 }
 
@@ -612,6 +628,10 @@ function findingReason(f: Finding): string {
   if (f.finalFailureClass === "tool-timeout") return "timeout/session error";
   if (f.finalFailureClass === "rate-limit") return "rate limited";
   if (f.finalFailureClass === "no-op") return "no-op";
+  if (f.finalFailureClass === "sandbox-setup-failed") return "sandbox setup failed";
+  if (f.finalFailureClass === "patch-conflict") return "patch conflict";
+  if (f.finalFailureClass === "unowned-patch") return "unowned patch";
+  if (f.finalFailureClass === "final-integration-failed") return "final integration failed";
   switch (f.revertReason) {
     case "session-error":
       return "timeout/session error";
@@ -633,6 +653,9 @@ function retryTarget(f: Finding): string {
 }
 
 type CouldntFixReason =
+  | "sandbox setup failed"
+  | "patch conflict"
+  | "unowned patch"
   | "session error"
   | "regression"
   | "typecheck failed"
@@ -646,6 +669,9 @@ type CouldntFixReasonGroup = {
 };
 
 const COULDNT_FIX_REASON_ORDER: CouldntFixReason[] = [
+  "sandbox setup failed",
+  "patch conflict",
+  "unowned patch",
   "session error",
   "regression",
   "typecheck failed",
@@ -656,6 +682,9 @@ const COULDNT_FIX_REASON_ORDER: CouldntFixReason[] = [
 
 function couldntFixReason(f: Finding): CouldntFixReason {
   if (f.track === "report-only") return "unsupported / report-only";
+  if (f.finalFailureClass === "sandbox-setup-failed") return "sandbox setup failed";
+  if (f.finalFailureClass === "patch-conflict") return "patch conflict";
+  if (f.finalFailureClass === "unowned-patch") return "unowned patch";
   if (
     f.revertReason === "session-error" ||
     f.finalFailureClass === "tool-timeout" ||

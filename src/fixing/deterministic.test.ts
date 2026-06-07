@@ -87,7 +87,7 @@ describe("deterministic fixers", () => {
     expect(outcome.kept).toBe(true);
     expect(outcome.usage?.sessions).toBe(0);
     expect(read("src/a.ts")).toBe("import { readFileSync } from 'node:fs';\n\nexport const x = readFileSync;\n");
-    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts"]);
+    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts"], ["sonarjs"]);
   });
 
   it("removes an exact unused dependency from package.json when no lockfile is present", async () => {

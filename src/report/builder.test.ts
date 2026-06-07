@@ -195,6 +195,10 @@ describe("ReportBuilder", () => {
       regressions: 0,
       typecheckFailures: 0,
       testFailures: 0,
+      sandboxSetupFailures: 0,
+      patchConflicts: 0,
+      unownedPatches: 0,
+      finalIntegrationFailures: 0,
     });
     expect(parsed.unresolvedEligibleCount).toBe(0);
   });

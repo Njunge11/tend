@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Finding } from "../findings/finding.js";
+import type { Finding, Tool } from "../findings/finding.js";
 import type { FixOutcome } from "../orchestrator.js";
 import { addUsage, zeroUsage, type FailureClass, type SessionRunner } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
@@ -262,7 +262,8 @@ export function makeFixUnit(deps: FixUnitDeps) {
     async function scanNewFindings(): Promise<Finding[]> {
       progress("rescan");
       const verificationTargets = unit.verificationTargets ?? unit.files;
-      const afterFindings = await deps.scanFindings(verificationTargets);
+      const scannerTools = [...new Set(unit.findings.map((finding) => finding.tool))] satisfies Tool[];
+      const afterFindings = await deps.scanFindings(verificationTargets, scannerTools);
       const originalIds = new Set(unit.findings.map((f) => f.id));
       return afterFindings.filter((f) => !originalIds.has(f.id));
     }

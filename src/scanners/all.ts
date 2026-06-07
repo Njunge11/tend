@@ -1,4 +1,4 @@
-import type { Finding } from "../findings/finding.js";
+import type { Finding, Tool } from "../findings/finding.js";
 import type { AuditResult } from "../orchestrator.js";
 import type { EventBus } from "../output/events.js";
 import { filterToChanged } from "./scope.js";
@@ -47,6 +47,7 @@ type AuditDeps = {
   scope: string[] | null;
   timeoutMs?: number;
   bus?: EventBus;
+  tools?: Tool[];
 };
 
 type ScanFilesDeps = {
@@ -55,6 +56,7 @@ type ScanFilesDeps = {
   spawn: Spawn;
   timeoutMs?: number;
   bus?: EventBus;
+  tools?: Tool[];
 };
 
 async function runScanners(
@@ -66,6 +68,8 @@ async function runScanners(
   scannerStatuses: ScannerStatus[];
 }> {
   const ctx = { cwd: deps.cwd, files, loop };
+  const requested = deps.tools ? new Set<Tool>(deps.tools) : undefined;
+  const shouldRun = (tool: Tool): boolean => requested === undefined || requested.has(tool);
   const runWithEvents = async (scanner: Scanner): Promise<ScanResult> => {
     deps.bus?.emit({ type: "scanner-start", loop, tool: scanner.tool });
     const result = await runScanner(scanner, ctx, {
@@ -85,23 +89,26 @@ async function runScanners(
     return result;
   };
 
-  const spawnedPromise = Promise.all(SPAWN_SCANNERS.map(runWithEvents));
+  const spawnedPromise = Promise.all(SPAWN_SCANNERS.filter((scanner) => shouldRun(scanner.tool)).map(runWithEvents));
   // eslint+sonarjs is bundled → always runs (via the Node API), never "missing"
-  deps.bus?.emit({ type: "scanner-start", loop, tool: "sonarjs" });
-  const eslintPromise = runEslintSonarjs(ctx).then((result) => {
-    const status = scannerStatus(result);
-    deps.bus?.emit({
-      type: "scanner-result",
-      loop,
-      tool: "sonarjs",
-      status: status.status,
-      findings: result.findings.length,
-      reason: status.reason,
-    });
-    return result;
-  });
+  const eslintPromise = shouldRun("sonarjs")
+    ? (async () => {
+        deps.bus?.emit({ type: "scanner-start", loop, tool: "sonarjs" });
+        const result = await runEslintSonarjs(ctx);
+        const status = scannerStatus(result);
+        deps.bus?.emit({
+          type: "scanner-result",
+          loop,
+          tool: "sonarjs",
+          status: status.status,
+          findings: result.findings.length,
+          reason: status.reason,
+        });
+        return result;
+      })()
+    : Promise.resolve(undefined);
   const [spawned, eslint] = await Promise.all([spawnedPromise, eslintPromise]);
-  const results = [...spawned, eslint];
+  const results = eslint ? [...spawned, eslint] : spawned;
 
   return {
     results,

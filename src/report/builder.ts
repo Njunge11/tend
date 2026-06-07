@@ -7,6 +7,7 @@ import {
   type AiUsage,
   type BehaviorChange,
   type FailureSummary,
+  type FinalIntegration,
   type FixPolicy,
   type Report,
   type RunScope,
@@ -86,6 +87,10 @@ export function deriveReportFields(
     ).length,
     testFailures: blockingUnresolved.filter((f) => f.revertReason === "broke-test")
       .length,
+    sandboxSetupFailures: blockingUnresolved.filter((f) => f.finalFailureClass === "sandbox-setup-failed").length,
+    patchConflicts: blockingUnresolved.filter((f) => f.finalFailureClass === "patch-conflict").length,
+    unownedPatches: blockingUnresolved.filter((f) => f.finalFailureClass === "unowned-patch").length,
+    finalIntegrationFailures: blockingUnresolved.filter((f) => f.finalFailureClass === "final-integration-failed").length,
   };
 
   return {
@@ -139,6 +144,7 @@ export class ReportBuilder {
     aiUsage?: AiUsage;
     runScope?: RunScope;
     fixPolicy?: FixPolicy;
+    finalIntegration?: FinalIntegration;
   }): Report {
     const findings = assignRetryIds([...this.outcomes.values()], this.generateRetryId);
     const fixPolicy = meta.fixPolicy ?? DEFAULT_FIX_POLICY;
@@ -155,6 +161,7 @@ export class ReportBuilder {
       fixPolicy,
       aiUsage: meta.aiUsage ?? ZERO_AI_USAGE,
       failureSummary: derived.failureSummary,
+      finalIntegration: meta.finalIntegration,
       unresolvedEligibleCount: derived.unresolvedEligibleCount,
       loops: meta.loops,
       durationMs: meta.durationMs,

@@ -571,7 +571,7 @@ describe("makeFixUnit — disk is the source of truth", () => {
 
     expect(outcome.kept).toBe(false);
     expect(outcome.reason).toBe("regression");
-    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts"]);
+    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts"], ["sonarjs"]);
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
@@ -610,7 +610,7 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(outcome.kept).toBe(false);
     expect(outcome.reason).toBe("regression");
     expect(outcome.detail).toContain("Fix did not clear target finding");
-    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts", "src/b.ts"]);
+    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts", "src/b.ts"], ["jscpd"]);
     expect(read("src/a.ts")).toBe("export function a(items) { return items.map((x) => x.id); }\n");
     expect(read("src/b.ts")).toBe("export function b(items) { return items.map((x) => x.id); }\n");
   });
@@ -647,7 +647,7 @@ describe("makeFixUnit — disk is the source of truth", () => {
     const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
 
     expect(outcome.kept).toBe(true);
-    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts", "src/b.ts"]);
+    expect(scanFindings).toHaveBeenCalledWith(["src/a.ts", "src/b.ts"], ["jscpd"]);
     expect(read("src/a.ts")).toContain("ids(items)");
     expect(read("src/b.ts")).toContain("export function ids");
   });
@@ -676,7 +676,7 @@ describe("makeFixUnit — disk is the source of truth", () => {
 
     expect(outcome.kept).toBe(true);
     expect(build).toHaveBeenCalledOnce();
-    expect(scanFindings).toHaveBeenCalledWith(["dist/client.js", "src/client.ts"]);
+    expect(scanFindings).toHaveBeenCalledWith(["dist/client.js", "src/client.ts"], ["sonarjs"]);
     expect(read("src/client.ts")).toContain("2");
     expect(read("dist/client.js")).toContain("2");
   });

@@ -64,6 +64,16 @@ export const FailureSummarySchema = z.object({
   regressions: z.number().int().nonnegative(),
   typecheckFailures: z.number().int().nonnegative(),
   testFailures: z.number().int().nonnegative(),
+  sandboxSetupFailures: z.number().int().nonnegative().default(0),
+  patchConflicts: z.number().int().nonnegative().default(0),
+  unownedPatches: z.number().int().nonnegative().default(0),
+  finalIntegrationFailures: z.number().int().nonnegative().default(0),
+});
+
+export const FinalIntegrationSchema = z.object({
+  ok: z.boolean(),
+  files: z.array(z.string()).default([]),
+  detail: z.string().optional(),
 });
 
 const ZERO_AI_USAGE = {
@@ -84,6 +94,10 @@ const ZERO_FAILURE_SUMMARY = {
   regressions: 0,
   typecheckFailures: 0,
   testFailures: 0,
+  sandboxSetupFailures: 0,
+  patchConflicts: 0,
+  unownedPatches: 0,
+  finalIntegrationFailures: 0,
 };
 
 export const ReportSchema = z.object({
@@ -99,6 +113,7 @@ export const ReportSchema = z.object({
   // Default to zero so reports written before usage tracking still parse.
   aiUsage: AiUsageSchema.default(ZERO_AI_USAGE),
   failureSummary: FailureSummarySchema.default(ZERO_FAILURE_SUMMARY),
+  finalIntegration: FinalIntegrationSchema.optional(),
   unresolvedEligibleCount: z.number().int().nonnegative().default(0),
   loops: z.number().int().nonnegative(),
   durationMs: z.number().nonnegative(),
@@ -112,3 +127,4 @@ export type AiUsage = z.infer<typeof AiUsageSchema>;
 export type RunScope = z.infer<typeof RunScopeSchema>;
 export type FixPolicy = z.infer<typeof FixPolicySchema>;
 export type FailureSummary = z.infer<typeof FailureSummarySchema>;
+export type FinalIntegration = z.infer<typeof FinalIntegrationSchema>;

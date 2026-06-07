@@ -9,6 +9,10 @@ export const FIX_STAGES = [
   "rescan",
   "regression-check",
   "regression-repair",
+  "patch-apply",
+  "patch-conflict",
+  "sandbox-setup",
+  "final-integration",
 ] as const;
 
 export type FixStage = (typeof FIX_STAGES)[number];
@@ -31,6 +35,10 @@ const LABELS: Record<FixStage, string> = {
   rescan: "rescan",
   "regression-check": "regression check",
   "regression-repair": "regression repair",
+  "patch-apply": "patch apply",
+  "patch-conflict": "patch conflict",
+  "sandbox-setup": "sandbox setup",
+  "final-integration": "final integration",
 };
 
 export function fixStageLabel(stage: FixStage): string {

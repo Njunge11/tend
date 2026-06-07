@@ -34,6 +34,14 @@ export function reasonLabel(reason: string | undefined): string {
       return "introduced a new issue";
     case "session-error":
       return "the fix session failed";
+    case "sandbox-setup-failed":
+      return "sandbox setup failed";
+    case "patch-conflict":
+      return "patch conflict";
+    case "unowned-patch":
+      return "unowned patch";
+    case "final-integration-failed":
+      return "final integration failed";
     case "needs-lockfile-update":
       return "needs lockfile update";
     default:

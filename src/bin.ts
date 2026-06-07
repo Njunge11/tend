@@ -17,8 +17,15 @@ import { makeFixUnit } from "./fixing/fix-unit.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
+import type { Tool } from "./findings/finding.js";
 import { planWorkFromRepairs } from "./fixing/dispatch.js";
 import { planRepair } from "./fixing/repair-strategy.js";
+import {
+  mapOwnerRoot,
+  SandboxSetupError,
+  WorkerSandboxPool,
+  type WorkerSandbox,
+} from "./fixing/worker-sandbox.js";
 import { ClaudeSession } from "./session/claude.js";
 import { orchestrate } from "./orchestrator.js";
 import type { FixOutcome } from "./orchestrator.js";
@@ -39,6 +46,7 @@ import {
 } from "./config/config.js";
 import type { TestOutcome } from "./gate/checks/tests.js";
 import { reasonLabel } from "./output/format.js";
+import { zeroUsage } from "./session/types.js";
 
 const cwd = process.cwd();
 const TEND_DIR = join(cwd, ".tend");
@@ -80,8 +88,9 @@ async function runTests(
   runner: "vitest" | "jest",
   files: string[],
   root: string,
+  repoRoot: string = cwd,
 ): Promise<TestOutcome[]> {
-  const targets = toOwnerRelative(files, cwd, root);
+  const targets = toOwnerRelative(files, repoRoot, root);
   const args =
     runner === "vitest"
       ? ["vitest", "related", ...targets, "--run", "--reporter=json"]
@@ -126,9 +135,13 @@ async function makeProductionFixUnit(
   ownerRoot: string = cwd,
   bus?: EventBus,
   detected?: { typescript: boolean; runner: "vitest" | "jest" | null },
+  sandboxPool?: WorkerSandboxPool,
 ): Promise<{
   fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
+  finalIntegration: () => Promise<
+    { ok: true; files: string[] } | { ok: false; files: string[]; detail: string }
+  >;
   typescript: boolean;
   runner: "vitest" | "jest" | null;
 }> {
@@ -138,94 +151,183 @@ async function makeProductionFixUnit(
   const pm = detectPackageManager(ownerRoot);
   const baseline = new Set<string>(
     runner && baselineTargets.length > 0
-      ? (await runTests(runner, baselineTargets, ownerRoot))
+      ? (await runTests(runner, baselineTargets, ownerRoot, cwd))
           .filter((t) => t.status === "pass")
           .map((t) => t.name)
       : [],
   );
-  const session = new ClaudeSession({
-    spawn: async (req) => {
-      const r = await execa(
-        "claude",
-        [
-          "-p",
-          req.prompt,
-          "--model",
-          config.model,
-          ...(config.effort ? ["--effort", config.effort] : []),
-          "--output-format",
-          "stream-json",
-          "--verbose",
-          "--allowedTools",
-          "Read,Write,Edit",
-        ],
-        { cwd, reject: false, timeout: CLAUDE_TIMEOUT_MS },
-      );
-      // On timeout/kill exitCode is often undefined; preserve that as the conventional
-      // SIGTERM exit so session classification can treat it as a tool timeout.
-      const exitCode = r.exitCode ?? (r.timedOut ? 143 : r.failed ? 1 : 0);
-      return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode };
-    },
-  });
+  const makeGateDeps = (sandbox?: WorkerSandbox) => {
+    const repoRoot = sandbox?.cwd ?? cwd;
+    const gateOwnerRoot = sandbox ? mapOwnerRoot(cwd, ownerRoot, sandbox.cwd) : ownerRoot;
+    const session = new ClaudeSession({
+      spawn: async (req) => {
+        const r = await execa(
+          "claude",
+          [
+            "-p",
+            req.prompt,
+            "--model",
+            config.model,
+            ...(config.effort ? ["--effort", config.effort] : []),
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--allowedTools",
+            "Read,Write,Edit",
+          ],
+          { cwd: repoRoot, reject: false, timeout: CLAUDE_TIMEOUT_MS },
+        );
+        // On timeout/kill exitCode is often undefined; preserve that as the conventional
+        // SIGTERM exit so session classification can treat it as a tool timeout.
+        const exitCode = r.exitCode ?? (r.timedOut ? 143 : r.failed ? 1 : 0);
+        return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode };
+      },
+    });
 
-  const gateDeps = {
-    cwd,
-    typescript,
-    runTsc: async () => {
-      const r = await execa("npx", ["tsc", "--noEmit"], {
-        // tsc picks up the owning package's tsconfig from its cwd.
-        cwd: ownerRoot,
-        reject: false,
-        timeout: TSC_TIMEOUT_MS,
-      });
-      // exitCode is undefined on timeout/spawn failure → treat as a typecheck failure (revert).
-      return {
-        exitCode: r.exitCode ?? 1,
-        output: `${r.stdout}\n${r.stderr}`,
-      };
-    },
-    runBuild: buildArgs
-      ? async () => {
-          const r = await execa(pm, buildArgs, {
-            cwd: ownerRoot,
-            reject: false,
-            timeout: BUILD_TIMEOUT_MS,
-          });
+    return {
+      cwd: repoRoot,
+      typescript,
+      runTsc: async () => {
+        const r = await execa("npx", ["tsc", "--noEmit"], {
+          // tsc picks up the owning package's tsconfig from its cwd.
+          cwd: gateOwnerRoot,
+          reject: false,
+          timeout: TSC_TIMEOUT_MS,
+        });
+        // exitCode is undefined on timeout/spawn failure → treat as a typecheck failure (revert).
+        return {
+          exitCode: r.exitCode ?? 1,
+          output: `${r.stdout}\n${r.stderr}`,
+        };
+      },
+      runBuild: buildArgs
+        ? async () => {
+            const r = await execa(pm, buildArgs, {
+              cwd: gateOwnerRoot,
+              reject: false,
+              timeout: BUILD_TIMEOUT_MS,
+            });
+            return {
+              exitCode: r.exitCode ?? 1,
+              output: `${r.stdout}\n${r.stderr}`,
+            };
+          }
+        : undefined,
+      hasTestRunner: Boolean(runner),
+      runRelated: (files: string[]) =>
+        runner ? runTests(runner, files, gateOwnerRoot, repoRoot) : Promise.resolve([]),
+      scanFindings: async (files: string[], tools?: Tool[]) =>
+        (
+          await scanFiles(
+            {
+              cwd: repoRoot,
+              which: realWhich,
+              spawn: realSpawn,
+              timeoutMs: 120_000,
+              tools,
+            },
+            files,
+            0,
+          )
+        ).findings,
+      baseline,
+      session,
+    };
+  };
+
+  const mainGateDeps = makeGateDeps();
+  const acceptedFiles = new Set<string>();
+  const acceptedTools = new Set<Tool>();
+  const buildFixUnit = (sandbox?: WorkerSandbox) =>
+    makeFixUnit({
+      ...makeGateDeps(sandbox),
+      maxRepairs: 3,
+      onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
+    });
+
+  const fixUnit = async (unit: WorkUnit, loop: number): Promise<FixOutcome> => {
+    if (!sandboxPool) return buildFixUnit()(unit, loop);
+    try {
+      return await sandboxPool.withSandbox(async (sandbox) => {
+        const outcome = await buildFixUnit(sandbox)(unit, loop);
+        if (!outcome.kept) return outcome;
+
+        bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-apply" });
+        const patch = await sandbox.collectPatch(unit);
+        if (!patch.ok) {
           return {
-            exitCode: r.exitCode ?? 1,
-            output: `${r.stdout}\n${r.stderr}`,
+            kept: false,
+            reason: "unowned-patch",
+            detail: patch.detail,
+            failureClass: "unowned-patch",
+            usage: outcome.usage,
           };
         }
-      : undefined,
-    hasTestRunner: Boolean(runner),
-    runRelated: (files: string[]) =>
-      runner ? runTests(runner, files, ownerRoot) : Promise.resolve([]),
-    scanFindings: async (files: string[]) =>
-      (
-        await scanFiles(
-          {
-            cwd,
-            which: realWhich,
-            spawn: realSpawn,
-            timeoutMs: 120_000,
-          },
-          files,
-          0,
-        )
-      ).findings,
-    baseline,
+        const applied = await sandboxPool.applyPatchToMain(patch.patch);
+        if (!applied.ok) {
+          bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
+          return {
+            kept: false,
+            reason: "patch-conflict",
+            detail: applied.detail,
+            failureClass: "patch-conflict",
+            usage: outcome.usage,
+          };
+        }
+        for (const file of patch.changedFiles) acceptedFiles.add(file);
+        for (const finding of unit.findings) acceptedTools.add(finding.tool);
+        return outcome;
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const setupFailed = error instanceof SandboxSetupError;
+      return {
+        kept: false,
+        reason: setupFailed ? "sandbox-setup-failed" : "session-error",
+        detail,
+        failureClass: setupFailed ? "sandbox-setup-failed" : "model-tool-failure",
+        usage: zeroUsage(),
+      };
+    }
   };
 
   return {
     typescript,
     runner,
-    fixUnit: makeFixUnit({
-      ...gateDeps,
-      session,
-      maxRepairs: 3,
-      onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
-    }),
-    deterministicFixUnit: makeDeterministicFixUnit(gateDeps),
+    fixUnit,
+    deterministicFixUnit: makeDeterministicFixUnit(mainGateDeps),
+    finalIntegration: async () => {
+      const files = [...acceptedFiles].sort();
+      if (files.length === 0) return { ok: true, files };
+      if (typescript) {
+        const tc = await mainGateDeps.runTsc();
+        if (tc.exitCode !== 0)
+          return { ok: false, files, detail: `final integration typecheck failed: ${tc.output}` };
+      }
+      if (runner) {
+        const tests = await mainGateDeps.runRelated(files);
+        const failed = tests.filter((test) => test.status === "fail");
+        if (failed.length > 0) {
+          return {
+            ok: false,
+            files,
+            detail: `final integration related tests failed: ${failed.map((test) => test.name).join(", ")}`,
+          };
+        }
+      }
+      const tools = [...acceptedTools];
+      if (tools.length > 0) {
+        const findings = await mainGateDeps.scanFindings(files, tools);
+        if (findings.length > 0) {
+          return {
+            ok: false,
+            files,
+            detail: `final integration scanner rescan found ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
+          };
+        }
+      }
+      return { ok: true, files };
+    },
   };
 }
 
@@ -334,18 +436,29 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       `baseline: ${runner} related ${describeScopeNote(opts.all, paths, scope)} (one-time)`,
     );
   }
-  const { fixUnit, deterministicFixUnit } = await makeProductionFixUnit(
+  const sandboxPool = new WorkerSandboxPool({
+    mainRoot: snapshot.repoRoot(),
+    snapshotSha: snapshot.commitSha(),
+    maxSandboxes: config.maxSessions,
+    packageManager: pm,
+  });
+  const { fixUnit, deterministicFixUnit, finalIntegration } = await makeProductionFixUnit(
     config,
     baselineTargets,
     ownerRoot,
     bus,
     { typescript, runner },
+    sandboxPool,
   );
 
   // The live view draws concurrently with the orchestration; both share this event loop.
   const start = Date.now();
   const drawing = reporter.run();
   let result;
+  let finalIntegrationResult:
+    | { ok: true; files: string[] }
+    | { ok: false; files: string[]; detail: string }
+    | undefined;
   try {
     result = await orchestrate({
       cwd,
@@ -363,7 +476,10 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
       bus,
     });
+    finalIntegrationResult = await finalIntegration();
+    if (!finalIntegrationResult.ok) result.exitStatus = 1;
   } finally {
+    await sandboxPool.dispose();
     reporter.close(); // unblock the view if orchestration threw before emitting `done`
   }
   await drawing;
@@ -385,6 +501,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       includeGenerated: config.fix.includeGenerated,
       includeFixtures: config.fix.includeFixtures,
     },
+    finalIntegration: finalIntegrationResult,
   });
   persist(REPORT_PATH, report);
 
@@ -413,6 +530,7 @@ async function runRetry(id: string): Promise<void> {
 
   const config = await loadConfig(cwd);
   let snapshotSaved = false;
+  let retrySandboxPool: WorkerSandboxPool | undefined;
 
   const result = await retryCommand(id, {
     report,
@@ -429,6 +547,12 @@ async function runRetry(id: string): Promise<void> {
       if (!snapshotSaved) {
         const snapshot = await Snapshot.capture(git, cwd);
         persist(SNAPSHOT_PATH, snapshot.toJSON());
+        retrySandboxPool = new WorkerSandboxPool({
+          mainRoot: snapshot.repoRoot(),
+          snapshotSha: snapshot.commitSha(),
+          maxSandboxes: config.maxSessions,
+          packageManager: detectPackageManager(cwd),
+        });
         snapshotSaved = true;
       }
       // Gate the retry against the package that owns the target's files, same as `run`.
@@ -437,9 +561,14 @@ async function runRetry(id: string): Promise<void> {
         config,
         unit.files,
         ownerRoot,
+        undefined,
+        undefined,
+        retrySandboxPool,
       );
       return fixUnit(unit, 1);
     },
+  }).finally(async () => {
+    await retrySandboxPool?.dispose();
   });
 
   if ("error" in result) {
