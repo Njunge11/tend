@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.6.1...tend-cli-v0.7.0) (2026-06-07)
+
+
+### Features
+
+* **fixing:** run fixes in isolated worker sandboxes with a final integration pass ([3451c5d](https://github.com/Njunge11/tend/commit/3451c5de382df335ffdf684d1355951c42ad8267))
+
+
+### Bug Fixes
+
+* **output:** show real scanner and repair progress ([0631369](https://github.com/Njunge11/tend/commit/0631369f32e2ad98d47eeb3c17257257a97c3fd4))
+
 ## [0.6.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.6.0...tend-cli-v0.6.1) (2026-06-05)
 
 
