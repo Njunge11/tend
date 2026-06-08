@@ -1,7 +1,7 @@
 type ContentBlock = { type?: string; name?: string; input?: Record<string, unknown> };
 type StreamEvent = { type?: string; message?: { content?: ContentBlock[] } };
 
-export type StreamActivityScanner = {
+type StreamActivityScanner = {
   /** Feed a raw stdout chunk; complete NDJSON lines are parsed as they arrive. */
   push(chunk: string): void;
   /** Signal end-of-stream; attempts to parse any trailing partial line. */

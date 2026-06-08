@@ -62,7 +62,7 @@ export class ClaudeSession implements SessionRunner {
 
 const TIMEOUT_OR_KILLED_RE = /\b(timed?\s*out|timeout|killed|terminated|sigterm|sigkill|exit\s+143)\b/i;
 
-export function classifySessionFailure(error: string, exitCode?: number): "tool-timeout" | "rate-limit" | "model-tool-failure" {
+function classifySessionFailure(error: string, exitCode?: number): "tool-timeout" | "rate-limit" | "model-tool-failure" {
   if (/rate.?limit|overloaded|\b429\b/i.test(error)) return "rate-limit";
   if (exitCode === 143 || exitCode === 124 || TIMEOUT_OR_KILLED_RE.test(error)) return "tool-timeout";
   return "model-tool-failure";
