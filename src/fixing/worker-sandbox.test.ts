@@ -153,7 +153,7 @@ describe("WorkerSandboxPool", () => {
     expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 1;\n");
   });
 
-  it("checks a patch with git apply --check --3way before applying and leaves main unchanged on conflict", async () => {
+  it("leaves the main working tree untouched (no conflict markers) when a patch genuinely conflicts", async () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);
 
@@ -165,13 +165,78 @@ describe("WorkerSandboxPool", () => {
       return result.patch;
     });
 
+    // Main tree diverged at the same line the patch rewrites → a real 3-way conflict.
     writeFileSync(join(repo.dir, "src/a.ts"), "export const a = 99;\n");
-    const applied = await pool.applyPatchToMain(patch);
+    const applied = await pool.applyPatchToMain(patch, ["src/a.ts", "src/b.ts"]);
 
     expect(applied.ok).toBe(false);
     expect(applied).toMatchObject({ reason: "patch-conflict" });
+    // No conflict markers, no partial application of the clean half of the patch.
     expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("export const a = 99;\n");
     expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 1;\n");
+  });
+
+  it("applies a snapshot-relative patch onto a DIRTY working tree (index ≠ worktree) without 'does not match index'", async () => {
+    const { repo } = await setupRepo();
+    // A multi-line file so the user's edit and the fix sit in non-overlapping regions.
+    repo.write("src/a.ts", "L1\nL2\nL3\nL4\nL5\n");
+    await repo.commit("widen a.ts");
+    const snapshotSha = (await repo.git.revparse(["HEAD"])).trim();
+    const pool = makePool(snapshotSha, 1);
+
+    // Fix rewrites the LAST line, captured against the snapshot.
+    const patch = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "L1\nL2\nL3\nL4\nL5-fixed\n");
+      const result = await sandbox.collectPatch(unit(["src/a.ts"]));
+      if (!result.ok) throw new Error(result.detail);
+      return result.patch;
+    });
+
+    // Make the main repo dirty in a FAR-AWAY region (line 1): an uncommitted user edit.
+    // Now the index (committed L1) ≠ working tree — the exact condition that broke `--3way`.
+    writeFileSync(join(repo.dir, "src/a.ts"), "L1-user\nL2\nL3\nL4\nL5\n");
+    const applied = await pool.applyPatchToMain(patch, ["src/a.ts"]);
+
+    expect(applied.ok).toBe(true);
+    // Both the user's uncommitted edit AND the fix survive the 3-way merge.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1-user\nL2\nL3\nL4\nL5-fixed\n");
+    // The user's real index was never touched: a.ts is still staged at its committed content.
+    const staged = await createGit(repo.dir).raw(["show", ":src/a.ts"]);
+    expect(staged).toBe("L1\nL2\nL3\nL4\nL5\n");
+  });
+
+  it("applies sequential snapshot-relative patches to the same file (patch 2 merges onto patch 1's result)", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+    // a.ts starts as a 3-line file so the two patches touch non-adjacent lines.
+    repo.write("src/a.ts", "L1\nL2\nL3\n");
+    await repo.commit("widen a.ts");
+    const base = (await repo.git.revparse(["HEAD"])).trim();
+    const seqPool = new WorkerSandboxPool({
+      mainRoot: repo.dir,
+      snapshotSha: base,
+      maxSandboxes: 1,
+      packageManager: "pnpm",
+      prepareDependencies: false,
+    });
+    pools.push(seqPool);
+
+    const make = async (content: string): Promise<string> =>
+      seqPool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+        writeFileSync(join(sandbox.cwd, "src/a.ts"), content);
+        const result = await sandbox.collectPatch(unit(["src/a.ts"]));
+        if (!result.ok) throw new Error(result.detail);
+        return result.patch;
+      });
+
+    const p1 = await make("L1-edit\nL2\nL3\n"); // both vs the SAME snapshot
+    const p2 = await make("L1\nL2\nL3-edit\n");
+
+    expect((await seqPool.applyPatchToMain(p1, ["src/a.ts"])).ok).toBe(true);
+    const second = await seqPool.applyPatchToMain(p2, ["src/a.ts"]);
+    expect(second.ok).toBe(true);
+    // p2 was diffed against the snapshot (L1/L2/L3) yet merges onto p1's already-applied result.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1-edit\nL2\nL3-edit\n");
   });
 
   it("reuses the main repo's node_modules without running an install command", async () => {

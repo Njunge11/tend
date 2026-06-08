@@ -27,7 +27,7 @@ export type PatchResult =
   | { ok: true; patch: string; changedFiles: string[] }
   | { ok: false; reason: "unowned-patch"; detail: string; changedFiles: string[] };
 
-export type ApplyPatchResult =
+type ApplyPatchResult =
   | { ok: true }
   | { ok: false; reason: "patch-conflict"; detail: string };
 
@@ -97,7 +97,7 @@ function isGeneratedRepair(unit: WorkUnit): boolean {
   return unit.strategy === "generated-source-repair" || unit.strategies?.includes("generated-source-repair") === true;
 }
 
-export function allowedPatchFiles(unit: WorkUnit): string[] {
+function allowedPatchFiles(unit: WorkUnit): string[] {
   return unique([
     ...unit.files,
     ...(isGeneratedRepair(unit) ? (unit.verificationTargets ?? []) : []),
@@ -183,7 +183,7 @@ class GitWorkerSandbox implements WorkerSandbox {
     });
     if ((result.exitCode ?? 1) !== 0) {
       throw new SandboxSetupError(
-        `sandbox dependency install failed: ${result.stderr || result.stdout || `exit ${result.exitCode ?? 1}`}`,
+        `sandbox dependency install failed: ${result.stderr || result.stdout || ("exit " + (result.exitCode ?? 1))}`,
       );
     }
   }
@@ -250,9 +250,8 @@ export class WorkerSandboxPool {
         await sandbox.prepare(unit);
       } catch (error) {
         this.idle.push(sandbox);
-        throw error instanceof SandboxSetupError
-          ? error
-          : new SandboxSetupError(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        throw error instanceof SandboxSetupError ? error : new SandboxSetupError(message);
       }
       try {
         return await run(sandbox);
@@ -262,40 +261,97 @@ export class WorkerSandboxPool {
     }) as Promise<T>;
   }
 
-  async applyPatchToMain(patch: string): Promise<ApplyPatchResult> {
+  /**
+   * Apply a snapshot-relative patch onto the main working tree with 3-way-merge fallback,
+   * tolerating a dirty repo (index ≠ working tree) and sequential patches to the same file.
+   *
+   * Why not plain `git apply --3way`: `--3way` implies `--index` (git-apply docs; apply.c
+   * `try_threeway`), and `--index` "expects index entries and working tree copies for relevant
+   * paths to be identical … and will raise an error if they are not". Tend's normal case is a
+   * dirty tree, so the index never matches the working tree and the apply fails with
+   * "src/…: does not match index" — emitted by apply.c `check_preimage`:
+   *   `if (!state->cached && verify_index_match(state, *ce, st)) return error("%s: does not match index")`
+   * The guard is `!state->cached`, so `--cached` bypasses the index/worktree match entirely.
+   *
+   * Approach: run the merge against a *throwaway* index (GIT_INDEX_FILE) seeded from the current
+   * working-tree content of the target files, so "ours" in the 3-way merge is the live tree
+   * (correct for sequential patches: patch N merges onto patch N-1's result). `--3way --cached`
+   * writes only to that temp index, never the working tree, so a conflict can never leave conflict
+   * markers behind. Conflicts surface as a non-zero exit (apply.c prints "Applied patch … with
+   * conflicts.") plus unmerged stages; we abort before materializing, leaving the tree untouched.
+   * On a clean merge we materialize just the target paths from the temp index via checkout-index
+   * (deleting any the patch removed). The user's real index is never touched.
+   */
+  async applyPatchToMain(patch: string, files: string[]): Promise<ApplyPatchResult> {
     return this.applyQueue.add(async () => {
       if (patch.trim() === "") return { ok: true };
-      // Refresh the index's stat cache so --3way (which implies --index) doesn't
-      // reject patches because a file was rewritten (e.g. by restoreSnapshot).
-      await this.exec("git", ["update-index", "--refresh"], {
-        cwd: this.deps.mainRoot,
-        reject: false,
-      });
-      const check = await this.exec("git", ["apply", "--check", "--3way"], {
-        cwd: this.deps.mainRoot,
-        input: patch,
-        reject: false,
-      });
-      if ((check.exitCode ?? 1) !== 0) {
-        return {
-          ok: false,
-          reason: "patch-conflict",
-          detail: check.stderr || check.stdout || "git apply --check --3way failed",
-        };
+      const main = this.deps.mainRoot;
+      const targets = unique(files);
+      const tmpIndex = join(tmpdir(), `${WORKTREE_PREFIX}apply-${process.pid}.index`);
+      const tmpEnv = { GIT_INDEX_FILE: tmpIndex };
+      rmSync(tmpIndex, { force: true });
+      rmSync(`${tmpIndex}.lock`, { force: true });
+      try {
+        // Seed the throwaway index with the live working-tree content of the target files so the
+        // 3-way merge's "ours" side is the current tree (handles uncommitted changes + prior patches).
+        // New files in the patch don't exist yet, so only stage the ones already on disk.
+        const existing = targets.filter((file) => existsSync(join(main, file)));
+        if (existing.length > 0) {
+          const seed = await this.exec("git", ["add", "--force", "--", ...existing], {
+            cwd: main,
+            env: tmpEnv,
+            reject: false,
+          });
+          if ((seed.exitCode ?? 1) !== 0) {
+            return { ok: false, reason: "patch-conflict", detail: seed.stderr || "failed to stage target files" };
+          }
+        }
+        // Apply only into the temp index. The working tree is never written here, so a conflict
+        // leaves it clean — no markers, nothing partial.
+        const applied = await this.exec("git", ["apply", "--3way", "--cached", "--binary"], {
+          cwd: main,
+          input: patch,
+          env: tmpEnv,
+          reject: false,
+        });
+        const unmerged = await this.exec("git", ["ls-files", "--unmerged"], {
+          cwd: main,
+          env: tmpEnv,
+          reject: false,
+        });
+        if ((applied.exitCode ?? 1) !== 0 || unmerged.stdout.trim() !== "") {
+          return {
+            ok: false,
+            reason: "patch-conflict",
+            detail: applied.stderr || applied.stdout || "git apply --3way --cached conflicted",
+          };
+        }
+        // Clean merge: materialize the result onto the working tree. Files the patch deleted are
+        // gone from the temp index; remove them from disk. The rest are written from the index.
+        const survivorsRaw = await this.exec("git", ["ls-files", "--", ...targets], {
+          cwd: main,
+          env: tmpEnv,
+          reject: false,
+        });
+        const survivors = new Set(lines(survivorsRaw.stdout));
+        for (const file of targets) {
+          if (!survivors.has(normalizeRel(file))) rmSync(join(main, file), { force: true });
+        }
+        if (survivors.size > 0) {
+          const out = await this.exec("git", ["checkout-index", "-f", "--", ...survivors], {
+            cwd: main,
+            env: tmpEnv,
+            reject: false,
+          });
+          if ((out.exitCode ?? 1) !== 0) {
+            return { ok: false, reason: "patch-conflict", detail: out.stderr || "failed to materialize merged files" };
+          }
+        }
+        return { ok: true };
+      } finally {
+        rmSync(tmpIndex, { force: true });
+        rmSync(`${tmpIndex}.lock`, { force: true });
       }
-      const applied = await this.exec("git", ["apply", "--3way"], {
-        cwd: this.deps.mainRoot,
-        input: patch,
-        reject: false,
-      });
-      if ((applied.exitCode ?? 1) !== 0) {
-        return {
-          ok: false,
-          reason: "patch-conflict",
-          detail: applied.stderr || applied.stdout || "git apply --3way failed",
-        };
-      }
-      return { ok: true };
     }) as Promise<ApplyPatchResult>;
   }
 
@@ -306,7 +362,8 @@ export class WorkerSandboxPool {
    * the signal handler's process.exit() race ahead and leak a worktree.
    */
   dispose(): Promise<void> {
-    return (this.disposing ??= this.runDispose());
+    this.disposing ??= this.runDispose();
+    return this.disposing;
   }
 
   private async runDispose(): Promise<void> {

@@ -297,7 +297,7 @@ async function makeProductionFixUnit(
             usage: outcome.usage,
           };
         }
-        const applied = await sandboxPool.applyPatchToMain(patch.patch);
+        const applied = await sandboxPool.applyPatchToMain(patch.patch, patch.changedFiles);
         if (!applied.ok) {
           bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
           return {
