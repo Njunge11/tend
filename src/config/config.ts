@@ -34,6 +34,8 @@ export const ConfigSchema = z.object({
   model: z.string().default("sonnet"),
   /** Reasoning effort for fixes; unset → claude's own default. */
   effort: z.enum(EFFORT_LEVELS).optional(),
+  /** Extended-thinking token budget per fix session; unset → per-finding policy decides. */
+  thinkingBudget: z.number().int().nonnegative().optional(),
   /** Report/fix scope policy. Reports stay broad; fixes default away from generated/tooling paths. */
   fix: FixScopeConfigSchema,
   tools: z.record(z.string(), ToolConfigSchema).default({}),

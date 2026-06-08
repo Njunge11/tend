@@ -14,6 +14,7 @@ import { detectTestRunner } from "./detect/test-runner.js";
 import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
 import { makeFixUnit } from "./fixing/fix-unit.js";
+import { thinkingEnv } from "./fixing/thinking-budget.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
@@ -126,7 +127,7 @@ async function runTests(
 }
 
 async function makeProductionFixUnit(
-  config: { model: string; effort?: Effort },
+  config: { model: string; effort?: Effort; thinkingBudget?: number },
   baselineTargets: string[],
   // The package root that owns the scoped files. Detection (TypeScript/test runner),
   // the test baseline, typecheck, and related-test runs all execute here so a
@@ -175,7 +176,14 @@ async function makeProductionFixUnit(
             "--allowedTools",
             "Read,Write,Edit",
           ],
-          { cwd: repoRoot, reject: false, timeout: CLAUDE_TIMEOUT_MS },
+          {
+            cwd: repoRoot,
+            reject: false,
+            timeout: CLAUDE_TIMEOUT_MS,
+            // Per-finding thinking budget: mechanical fixes run with thinking off,
+            // reasoning fixes with a bounded cap, or a configured override.
+            env: { ...process.env, ...thinkingEnv(req.findings, config) },
+          },
         );
         // On timeout/kill exitCode is often undefined; preserve that as the conventional
         // SIGTERM exit so session classification can treat it as a tool timeout.
