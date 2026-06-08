@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.1...tend-cli-v0.9.2) (2026-06-08)
+
+
+### Bug Fixes
+
+* **bin:** align AI-session timeout so the enforced cap matches the intent ([5d1384b](https://github.com/Njunge11/tend/commit/5d1384b1682de09949e97a36b3ae5007ec10780a))
+
 ## [0.9.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.0...tend-cli-v0.9.1) (2026-06-08)
 
 
