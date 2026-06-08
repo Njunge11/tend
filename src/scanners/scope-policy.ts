@@ -8,12 +8,12 @@ export type FixScopeConfig = {
   includeTests?: boolean;
 };
 
-export type ScopePolicyOptions = FixScopeConfig & {
+type ScopePolicyOptions = FixScopeConfig & {
   /** Changed-file/path scope. `false` means the finding is report-visible but not fixable. */
   inChangedScope?: boolean;
 };
 
-export type ScopeDecision = {
+type ScopeDecision = {
   inReportScope: boolean;
   inFixScope: boolean;
   scopeExclusionReason?: ScopeExclusionReason;

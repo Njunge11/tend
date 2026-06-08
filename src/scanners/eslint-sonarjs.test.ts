@@ -6,8 +6,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SpawnResult } from "./scanner.js";
 import { ctx, fixture } from "./_test-helpers.js";
 import { eslintSonarjsScanner, runEslintSonarjs } from "./eslint-sonarjs.js";
-// Type-only import makes the fixture reachable in the module graph (knip).
-import type { Greeter as _Greeter } from "../../test/fixtures/monorepo/apps/dashboard/sample.js";
 
 const raw = (stdout: string, exitCode = 1): SpawnResult => ({ stdout, stderr: "", exitCode });
 

@@ -141,7 +141,7 @@ async function fixGroup(group: LintGroup, findings: Finding[]): Promise<EslintRe
   return (await eslint.lintFiles(group.targets)) as EslintResult[];
 }
 
-export type EslintFixResult = { changed: boolean; error?: string };
+type EslintFixResult = { changed: boolean; error?: string };
 
 /**
  * Apply ESLint's own autofixes for the exact findings Tend has assigned to the current unit.
