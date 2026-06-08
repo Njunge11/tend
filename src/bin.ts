@@ -23,11 +23,15 @@ import { planWorkFromRepairs } from "./fixing/dispatch.js";
 import { planRepair } from "./fixing/repair-strategy.js";
 import {
   mapOwnerRoot,
+  pruneStaleWorktrees,
   SandboxSetupError,
   WorkerSandboxPool,
   type WorkerSandbox,
 } from "./fixing/worker-sandbox.js";
+import { onTerminationSignals } from "./process/signals.js";
 import { ClaudeSession } from "./session/claude.js";
+import { createStreamActivityScanner } from "./session/stream-activity.js";
+import { runIncrementalTsc, tscCacheFile } from "./fixing/typecheck-cache.js";
 import { orchestrate } from "./orchestrator.js";
 import type { FixOutcome } from "./orchestrator.js";
 import { ReportBuilder } from "./report/builder.js";
@@ -53,6 +57,9 @@ const cwd = process.cwd();
 const TEND_DIR = join(cwd, ".tend");
 const SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
 const REPORT_PATH = join(TEND_DIR, "report.json");
+// tend-owned, outside any sandbox worktree → the tsc build-info survives worktree
+// reset/clean and is reused across iterations (Fix 5).
+const TEND_CACHE_DIR = join(TEND_DIR, "cache");
 
 // Upper bounds so a hung child can't stall the run forever — execa kills it on timeout.
 const CLAUDE_TIMEOUT_MS = 10 * 60_000; // one file-fix session
@@ -162,7 +169,7 @@ async function makeProductionFixUnit(
     const gateOwnerRoot = sandbox ? mapOwnerRoot(cwd, ownerRoot, sandbox.cwd) : ownerRoot;
     const session = new ClaudeSession({
       spawn: async (req) => {
-        const r = await execa(
+        const child = execa(
           "claude",
           [
             "-p",
@@ -185,6 +192,13 @@ async function makeProductionFixUnit(
             env: { ...process.env, ...thinkingEnv(req.findings, config) },
           },
         );
+        // Surface live progress from the stream while the session runs. execa still
+        // buffers the full stdout for the authoritative post-session parse — this
+        // listener only decorates progress and must never affect the outcome.
+        const scanner = createStreamActivityScanner((activity) => req.onActivity?.(activity));
+        child.stdout?.on("data", (chunk: Buffer | string) => scanner.push(chunk.toString()));
+        child.stdout?.on("end", () => scanner.end());
+        const r = await child;
         // On timeout/kill exitCode is often undefined; preserve that as the conventional
         // SIGTERM exit so session classification can treat it as a tool timeout.
         const exitCode = r.exitCode ?? (r.timedOut ? 143 : r.failed ? 1 : 0);
@@ -195,19 +209,17 @@ async function makeProductionFixUnit(
     return {
       cwd: repoRoot,
       typescript,
-      runTsc: async () => {
-        const r = await execa("npx", ["tsc", "--noEmit"], {
-          // tsc picks up the owning package's tsconfig from its cwd.
+      runTsc: async () =>
+        // Cache the build-info in the MAIN repo's .tend/cache (never inside a sandbox
+        // worktree) so it survives reset()/git clean and is reused across iterations. tsc
+        // resolves the owning package's tsconfig from gateOwnerRoot, so semantics are
+        // unchanged — only caching flags are added.
+        runIncrementalTsc({
+          exec: execa,
           cwd: gateOwnerRoot,
-          reject: false,
-          timeout: TSC_TIMEOUT_MS,
-        });
-        // exitCode is undefined on timeout/spawn failure → treat as a typecheck failure (revert).
-        return {
-          exitCode: r.exitCode ?? 1,
-          output: `${r.stdout}\n${r.stderr}`,
-        };
-      },
+          cacheFile: tscCacheFile(TEND_CACHE_DIR, cwd, ownerRoot),
+          timeoutMs: TSC_TIMEOUT_MS,
+        }),
       runBuild: buildArgs
         ? async () => {
             const r = await execa(pm, buildArgs, {
@@ -256,7 +268,7 @@ async function makeProductionFixUnit(
   const fixUnit = async (unit: WorkUnit, loop: number): Promise<FixOutcome> => {
     if (!sandboxPool) return buildFixUnit()(unit, loop);
     try {
-      return await sandboxPool.withSandbox(async (sandbox) => {
+      return await sandboxPool.withSandbox(unit, async (sandbox) => {
         const outcome = await buildFixUnit(sandbox)(unit, loop);
         if (!outcome.kept) return outcome;
 
@@ -444,6 +456,9 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       `baseline: ${runner} related ${describeScopeNote(opts.all, paths, scope)} (one-time)`,
     );
   }
+  // Self-heal: clear any tend worktrees a crashed/cancelled prior run left registered before
+  // this run adds its own.
+  await pruneStaleWorktrees(snapshot.repoRoot());
   const sandboxPool = new WorkerSandboxPool({
     mainRoot: snapshot.repoRoot(),
     snapshotSha: snapshot.commitSha(),
@@ -458,6 +473,15 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     { typescript, runner },
     sandboxPool,
   );
+
+  // On Ctrl-C / SIGTERM, tear down sandboxes (remove worktrees) before exiting so a cancelled run
+  // leaves the repo exactly as a clean completion would. dispose() is memoized, so this and the
+  // finally path below await the same teardown — neither races process.exit ahead of removal.
+  const stopSignals = onTerminationSignals((signal) => {
+    void sandboxPool
+      .dispose()
+      .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  });
 
   // The live view draws concurrently with the orchestration; both share this event loop.
   const start = Date.now();
@@ -487,6 +511,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     finalIntegrationResult = await finalIntegration();
     if (!finalIntegrationResult.ok) result.exitStatus = 1;
   } finally {
+    stopSignals();
     await sandboxPool.dispose();
     reporter.close(); // unblock the view if orchestration threw before emitting `done`
   }

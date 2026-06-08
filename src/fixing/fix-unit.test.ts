@@ -187,6 +187,44 @@ describe("fix progress", () => {
     ]);
     expect(progress.every((event) => event.loop === 7 && event.file === "src/a.ts")).toBe(true);
   });
+
+  it("surfaces session activity as multiple progress updates while the AI edit runs", async () => {
+    write("src/a.ts", "export const value = 1;\n");
+    const progress: FixProgressEvent[] = [];
+    const session: SessionRunner = {
+      async run(request) {
+        request.onActivity?.("Read src/a.ts");
+        request.onActivity?.("Edit src/a.ts");
+        write("src/a.ts", "export const value = 2;\n");
+        return { ok: true, edits: [] };
+      },
+    };
+    const fix = makeFixUnit(deps(session, { onProgress: (event) => progress.push(event) }));
+
+    const outcome = await fix(unit("src/a.ts"), 1);
+
+    expect(outcome.kept).toBe(true);
+    const aiEdit = progress.filter((event) => event.stage === "ai-edit");
+    expect(aiEdit.length).toBeGreaterThan(1);
+    expect(aiEdit.some((event) => event.detail?.includes("src/a.ts"))).toBe(true);
+  });
+
+  it("still completes with start and end stages when the session reports no activity", async () => {
+    write("src/a.ts", "export const value = 1;\n");
+    const progress: FixProgressEvent[] = [];
+    const fix = makeFixUnit(
+      deps(diskSession({ "src/a.ts": "export const value = 2;\n" }, { ok: true, edits: [] }), {
+        onProgress: (event) => progress.push(event),
+      }),
+    );
+
+    const outcome = await fix(unit("src/a.ts"), 1);
+
+    expect(outcome.kept).toBe(true);
+    const stages = progress.map((event) => event.stage);
+    expect(stages[0]).toBe("ai-edit");
+    expect(stages).toContain("regression-check");
+  });
 });
 
 describe("makeFixUnit — disk is the source of truth", () => {
@@ -209,6 +247,27 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(prompt).toContain("- src/a.test.ts");
     expect(prompt).toContain("Do not edit any other file.");
     expect(prompt).not.toContain("sibling test");
+  });
+
+  it("supplies the target file's current source in the session input for a single-file fix", async () => {
+    const source = "export const distinctiveMarker = a == b; // SENTINEL_8675309\n";
+    write("src/a.ts", source);
+    const session = fakeSession({ ok: true, edits: [] });
+
+    await makeFixUnit(deps(session))(unit("src/a.ts"));
+
+    const prompt = session.calls[0]?.prompt ?? "";
+    expect(prompt).toContain("SENTINEL_8675309");
+    expect(prompt).toContain(source.trim());
+  });
+
+  it("fails cleanly without crashing when the target file is missing", async () => {
+    // No write() — the file the unit targets does not exist on disk.
+    const session = fakeSession({ ok: true, edits: [] });
+
+    const outcome = await makeFixUnit(deps(session))(unit("src/gone.ts"));
+
+    expect(outcome.kept).toBe(false);
   });
 
   it("renders findings as delimited JSON data with behavior-preservation rules", async () => {

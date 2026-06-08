@@ -13,6 +13,10 @@ afterEach(() => repo.cleanup());
 
 const read = (p: string) => readFileSync(join(repo.dir, p), "utf8");
 const write = (p: string, c: string) => writeFileSync(join(repo.dir, p), c);
+const lines = (raw: string) => raw.split("\n").map((l) => l.trim()).filter(Boolean);
+const staged = async () => lines(await repo.git.raw(["diff", "--cached", "--name-only"]));
+const unstaged = async () => lines(await repo.git.raw(["diff", "--name-only"]));
+const porcelain = async () => lines(await repo.git.raw(["status", "--porcelain"]));
 
 describe("Snapshot", () => {
   it("T-078 / T-081: capture includes tracked + untracked files", async () => {
@@ -76,6 +80,67 @@ describe("Snapshot", () => {
     const changed = await snap.changedSince(repo.git);
 
     expect(changed).toStrictEqual(["src/a.ts", "src/added.ts"]);
+  });
+
+  describe("restore returns the index to the captured state (working tree AND index)", () => {
+    it("preserves a pre-existing staged change", async () => {
+      repo.write("a.ts", "A\n");
+      await repo.commit("init");
+      write("a.ts", "S\n");
+      await repo.git.add(["a.ts"]); // staged before the run
+
+      const snap = await Snapshot.capture(repo.git, repo.dir);
+      // Something stages a different version after capture (e.g. the run, or the user).
+      write("a.ts", "TOOL\n");
+      await repo.git.add(["a.ts"]);
+
+      await snap.restore(repo.git);
+
+      expect(await staged()).toStrictEqual(["a.ts"]);
+      expect(await unstaged()).toStrictEqual([]);
+      expect(read("a.ts")).toBe("S\n");
+    });
+
+    it("preserves a pre-existing unstaged change", async () => {
+      repo.write("a.ts", "A\n");
+      await repo.commit("init");
+      write("a.ts", "U\n"); // unstaged worktree edit; index still A
+
+      const snap = await Snapshot.capture(repo.git, repo.dir);
+      write("a.ts", "TOOL\n");
+      await repo.git.add(["a.ts"]);
+
+      await snap.restore(repo.git);
+
+      expect(await staged()).toStrictEqual([]);
+      expect(await unstaged()).toStrictEqual(["a.ts"]);
+      expect(read("a.ts")).toBe("U\n");
+    });
+
+    it("leaves a clean repo clean — no staged/unstaged split", async () => {
+      repo.write("a.ts", "A\n");
+      await repo.commit("init");
+
+      const snap = await Snapshot.capture(repo.git, repo.dir);
+      // Stage something after capture; undo must return to the clean pre-run state.
+      write("a.ts", "STAGED_AFTER\n");
+      await repo.git.add(["a.ts"]);
+
+      await snap.restore(repo.git);
+
+      expect(await porcelain()).toStrictEqual([]);
+      expect(read("a.ts")).toBe("A\n");
+    });
+  });
+
+  it("keeps .tend/ artifacts out of git status (not reported as untracked)", async () => {
+    repo.write("a.ts", "A\n");
+    await repo.commit("init");
+    repo.write(".tend/report.json", "{}\n");
+
+    await Snapshot.capture(repo.git, repo.dir);
+
+    expect((await porcelain()).some((l) => l.includes(".tend"))).toBe(false);
   });
 
   it("ignores unsafe pager/editor env while capturing, diffing, and restoring", async () => {

@@ -76,30 +76,47 @@ function renderFileList(files: string[]): string {
   return files.map((file) => `- ${file}`).join("\n");
 }
 
+/**
+ * Render the editable files' current source as labelled fenced blocks, so the model can
+ * edit without a preliminary Read (Fix 6). Templates that don't reference `{{fileContents}}`
+ * are unaffected; an empty map renders a neutral note so the placeholder is never left raw.
+ */
+function renderFileContents(contents: Map<string, string>): string {
+  if (contents.size === 0) return "(file content not supplied — read the file before editing)";
+  return [...contents]
+    .map(([file, source]) => `### ${file}\n\n\`\`\`\n${source}\n\`\`\``)
+    .join("\n\n");
+}
+
 function renderCommonTemplate(input: {
   template: string;
   strategyName: FixPromptStrategy;
   findings: string;
   editableFiles: string[];
   verificationTargets: string[];
+  fileContents?: Map<string, string>;
 }): string {
   return replaceAllLiteral(
     replaceAllLiteral(
       replaceAllLiteral(
-        replaceAllLiteral(input.template, "{{strategyName}}", input.strategyName),
-        "{{findings}}",
-        input.findings,
+        replaceAllLiteral(
+          replaceAllLiteral(input.template, "{{strategyName}}", input.strategyName),
+          "{{findings}}",
+          input.findings,
+        ),
+        "{{editableFiles}}",
+        renderFileList(input.editableFiles),
       ),
-      "{{editableFiles}}",
-      renderFileList(input.editableFiles),
+      "{{verificationTargets}}",
+      renderFileList(input.verificationTargets),
     ),
-    "{{verificationTargets}}",
-    renderFileList(input.verificationTargets),
+    "{{fileContents}}",
+    renderFileContents(input.fileContents ?? new Map()),
   ).trim();
 }
 
-/** Render the fix prompt for a unit's findings. */
-export function renderPrompt(unit: WorkUnit): string {
+/** Render the fix prompt for a unit's findings. `fileContents` supplies on-disk source. */
+export function renderPrompt(unit: WorkUnit, fileContents?: Map<string, string>): string {
   const strategyName = promptStrategyFor(unit);
   return renderCommonTemplate({
     template: templateForStrategy(strategyName),
@@ -107,6 +124,7 @@ export function renderPrompt(unit: WorkUnit): string {
     findings: renderFindingsJson(unit.findings),
     editableFiles: unit.files,
     verificationTargets: unit.verificationTargets ?? unit.files,
+    fileContents,
   });
 }
 
@@ -163,8 +181,8 @@ function renderRegressionRepairPrompt(input: {
   ).trim();
 }
 
-function renderNoEditRetryPrompt(unit: WorkUnit): string {
-  return `${renderPrompt(unit)}
+function renderNoEditRetryPrompt(unit: WorkUnit, fileContents?: Map<string, string>): string {
+  return `${renderPrompt(unit, fileContents)}
 
 The previous session completed without changing any owned file. Retry once with a smaller, concrete edit:
 - Make the minimal behavior-preserving code change that clears the finding.
@@ -205,12 +223,29 @@ export function makeFixUnit(deps: FixUnitDeps) {
     const restore = (): void => restoreSnapshot(deps.cwd, before);
     const changedOnDisk = () => unitChanged(deps.cwd, unit.files, before);
 
+    // Supply the editable files' current source to the session so it can edit without a
+    // preliminary Read (Fix 6). Reuse the pre-session snapshot; missing files are skipped.
+    const fileContents = new Map<string, string>();
+    for (const file of unit.files) {
+      const source = before.get(file);
+      if (typeof source === "string") fileContents.set(file, source);
+    }
+
     // Estimated AI cost/usage accumulates across the initial session and any repair
     // sessions — even when the unit ends up reverted or unfixable, the tokens were spent.
     let usage = zeroUsage();
 
+    // Sessions stream activity while they run; surface it as detail on the live stage so
+    // long AI edits show ongoing progress instead of a single static label.
+    const activity = (stage: FixStage) => (detail: string) => progress(stage, detail);
+
     progress("ai-edit");
-    const res = await deps.session.run({ file: unit.file, findings: unit.findings, prompt: renderPrompt(unit) });
+    const res = await deps.session.run({
+      file: unit.file,
+      findings: unit.findings,
+      prompt: renderPrompt(unit, fileContents),
+      onActivity: activity("ai-edit"),
+    });
     if (res.usage) usage = addUsage(usage, res.usage);
 
     // Files changed but the session errored/crashed → never leave a half-applied edit
@@ -233,7 +268,8 @@ export function makeFixUnit(deps: FixUnitDeps) {
       const retry = await deps.session.run({
         file: unit.file,
         findings: unit.findings,
-        prompt: renderNoEditRetryPrompt(unit),
+        prompt: renderNoEditRetryPrompt(unit, fileContents),
+        onActivity: activity("ai-no-edit-retry"),
       });
       if (retry.usage) usage = addUsage(usage, retry.usage);
       if (!retry.ok) {
@@ -282,6 +318,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
           gateReason: outcome.reason,
           gateOutput: outcome.detail ?? "",
         }),
+        onActivity: activity("regression-repair"),
       });
       if (repair.usage) usage = addUsage(usage, repair.usage);
       if (!repair.ok) {
@@ -309,6 +346,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
               gateReason: "broke-test",
               gateOutput: `Fix left previously-green test(s) red:\n${regressed.map((test) => test.name).join("\n")}`,
             }),
+            onActivity: activity("test-repair"),
           });
           if (repair.usage) usage = addUsage(usage, repair.usage);
           if (!repair.ok) repairFailureDetail = `Repair session failed: ${repair.error}`;

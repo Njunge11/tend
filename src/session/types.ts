@@ -8,6 +8,12 @@ export type SessionRequest = {
   findings: Finding[];
   /** The fully-rendered prompt for the AI. */
   prompt: string;
+  /**
+   * Live progress hook: called with a short label (e.g. "Edit src/a.ts") as activity
+   * streams from the running session. Decoration only — outcomes are still judged
+   * from the disk after the session ends.
+   */
+  onActivity?: (activity: string) => void;
 };
 
 export type FailureClass =

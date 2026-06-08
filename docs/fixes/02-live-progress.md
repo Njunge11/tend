@@ -12,11 +12,11 @@ While a session runs, tend surfaces ongoing progress derived from the model's ev
 Emitted events (via `EventBus`) / CLI output. **Not** exact wording, ANSI, counts tied to chunking, or chunk boundaries.
 
 ## Test cases
-- [ ] stream with N activity events → more than one progress update emitted during the run
-- [ ] stream with zero activity events → run still completes; start + end stages emitted
-- [ ] malformed/garbage stream line → does not throw; final outcome unchanged
-- [ ] truncated stream (closes mid-event) → no crash; final outcome still computed from disk
-- [ ] plain/non-interactive mode → progress written line-by-line (no ANSI required)
+- [x] stream with N activity events → more than one progress update emitted during the run
+- [x] stream with zero activity events → run still completes; start + end stages emitted
+- [x] malformed/garbage stream line → does not throw; final outcome unchanged
+- [x] truncated stream (closes mid-event) → no crash; final outcome still computed from disk
+- [x] plain/non-interactive mode → progress written line-by-line (no ANSI required)
 
 ## Likely touch points
 `src/bin.ts` (session spawn — consume stdout incrementally instead of buffering), `src/session/claude.ts`, `src/output/events.ts` + reporters. Keep the disk-is-source-of-truth outcome logic unchanged.

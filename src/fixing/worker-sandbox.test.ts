@@ -1,12 +1,13 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGit } from "../git/client.js";
 import { tmpRepo, type TmpRepo } from "../../test/helpers/tmp-repo.js";
 import { makeFinding } from "../../test/helpers/make-finding.js";
+import type { PackageManager } from "../detect/package-manager.js";
 import type { WorkUnit } from "./dispatch.js";
-import { WorkerSandboxPool } from "./worker-sandbox.js";
+import { pruneStaleWorktrees, shouldReinstall, WorkerSandboxPool } from "./worker-sandbox.js";
 
 let repo: TmpRepo | undefined;
 const pools: WorkerSandboxPool[] = [];
@@ -50,16 +51,74 @@ function makePool(snapshotSha: string, maxSandboxes = 2): WorkerSandboxPool {
   return pool;
 }
 
+/** An exec that records package-manager install invocations and delegates git to real execa. */
+function installRecordingExec() {
+  const installCalls: { pm: PackageManager; args: string[] }[] = [];
+  const fn = vi.fn(async (file: string, args: string[], options?: { cwd?: string; input?: string; reject?: boolean }) => {
+    if (file !== "git") {
+      installCalls.push({ pm: file as PackageManager, args });
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+    const { execa } = await import("execa");
+    return execa(file, args, { ...options, reject: false });
+  });
+  return Object.assign(fn, { installCalls });
+}
+
+function makeInstallPool(snapshotSha: string, exec: ReturnType<typeof installRecordingExec>): WorkerSandboxPool {
+  if (!repo) throw new Error("repo not set");
+  const pool = new WorkerSandboxPool({
+    mainRoot: repo.dir,
+    snapshotSha,
+    maxSandboxes: 1,
+    packageManager: "pnpm",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    exec: exec as any,
+  });
+  pools.push(pool);
+  return pool;
+}
+
+describe("shouldReinstall — reuse vs reinstall decision", () => {
+  const manifestUnit = (file: string): WorkUnit => ({
+    file,
+    files: [file],
+    findings: [makeFinding({ file })],
+  });
+
+  it("reuses deps when the unit touches no dependency manifest", () => {
+    expect(shouldReinstall(unit(["src/a.ts"]))).toBe(false);
+    expect(shouldReinstall(unit(["src/a.ts", "src/a.test.ts"]))).toBe(false);
+  });
+
+  it.each(["package.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "package-lock.json", "npm-shrinkwrap.json"])(
+    "reinstalls when the unit includes %s",
+    (manifest) => {
+      expect(shouldReinstall(manifestUnit(manifest))).toBe(true);
+      expect(shouldReinstall(manifestUnit(`packages/app/${manifest}`))).toBe(true);
+    },
+  );
+
+  it("decides identically across package managers (decision is manifest-driven, not pm-driven)", () => {
+    // The matrix: a source-only unit reuses, a manifest unit reinstalls — for every pm.
+    const pms: PackageManager[] = ["npm", "pnpm", "yarn", "bun"];
+    for (const _pm of pms) {
+      expect(shouldReinstall(unit(["src/a.ts"]))).toBe(false);
+      expect(shouldReinstall(manifestUnit("package.json"))).toBe(true);
+    }
+  });
+});
+
 describe("WorkerSandboxPool", () => {
   it("gives concurrent workers unique cwd values outside the main worktree", async () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 2);
     const seen = await Promise.all([
-      pool.withSandbox(async (sandbox) => {
+      pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
         await delay(25);
         return sandbox.cwd;
       }),
-      pool.withSandbox(async (sandbox) => sandbox.cwd),
+      pool.withSandbox(unit(["src/b.ts"]), async (sandbox) => sandbox.cwd),
     ]);
 
     expect(seen[0]).not.toBe(seen[1]);
@@ -71,7 +130,7 @@ describe("WorkerSandboxPool", () => {
     const pool = makePool(snapshotSha, 1);
 
     await expect(
-      pool.withSandbox(async (sandbox) => {
+      pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
         writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
         throw new Error("gate failed");
       }),
@@ -84,7 +143,7 @@ describe("WorkerSandboxPool", () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);
 
-    const result = await pool.withSandbox(async (sandbox) => {
+    const result = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
       writeFileSync(join(sandbox.cwd, "src/b.ts"), "export const b = 2;\n");
       return sandbox.collectPatch(unit(["src/a.ts"]));
     });
@@ -98,7 +157,7 @@ describe("WorkerSandboxPool", () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);
 
-    const patch = await pool.withSandbox(async (sandbox) => {
+    const patch = await pool.withSandbox(unit(["src/a.ts", "src/b.ts"]), async (sandbox) => {
       writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
       writeFileSync(join(sandbox.cwd, "src/b.ts"), "export const b = 2;\n");
       const result = await sandbox.collectPatch(unit(["src/a.ts", "src/b.ts"]));
@@ -115,14 +174,86 @@ describe("WorkerSandboxPool", () => {
     expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 1;\n");
   });
 
+  it("reuses the main repo's node_modules without running an install command", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    // Main checkout has installed deps.
+    mkdirSync(join(repo.dir, "node_modules", ".bin"), { recursive: true });
+    writeFileSync(join(repo.dir, "node_modules", "marker.txt"), "from-main\n");
+
+    const exec = installRecordingExec();
+    const pool = makeInstallPool(snapshotSha, exec);
+    const sandboxCwd = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd);
+
+    // No package-manager install was executed…
+    expect(exec.installCalls).toHaveLength(0);
+    // …and the worktree's node_modules resolves to the main checkout's.
+    const link = join(sandboxCwd, "node_modules");
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(realpathSync(link)).toBe(realpathSync(join(repo.dir, "node_modules")));
+  });
+
+  it("runs an install when the unit changes a dependency manifest", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    mkdirSync(join(repo.dir, "node_modules"), { recursive: true });
+
+    const exec = installRecordingExec();
+    const pool = makeInstallPool(snapshotSha, exec);
+    await pool.withSandbox(
+      { file: "package.json", files: ["package.json"], findings: [makeFinding({ file: "package.json" })] },
+      async (sandbox) => sandbox.cwd,
+    );
+
+    expect(exec.installCalls).toHaveLength(1);
+    expect(exec.installCalls[0]).toEqual({ pm: "pnpm", args: expect.arrayContaining(["install"]) });
+  });
+
+  it("falls back to install (no crash) when the main repo has no node_modules", async () => {
+    const { snapshotSha } = await setupRepo();
+    // No node_modules in main.
+    const exec = installRecordingExec();
+    const pool = makeInstallPool(snapshotSha, exec);
+
+    await expect(
+      pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd),
+    ).resolves.toBeTruthy();
+    expect(exec.installCalls).toHaveLength(1);
+  });
+
+  it("dispose is idempotent — safe to call more than once (signal + finally paths)", async () => {
+    const { snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+    await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd);
+
+    await pool.dispose();
+    await expect(pool.dispose()).resolves.toBeUndefined();
+  });
+
+  it("concurrent dispose() calls each resolve only after worktrees are actually removed", async () => {
+    // The SIGINT handler and the run's finally path can call dispose() at the same time.
+    // Every caller must await the real teardown — not return early while removal is in flight,
+    // or the handler's process.exit() races ahead and leaks the worktree.
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+    const cwd = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd);
+    expect(existsSync(cwd)).toBe(true);
+
+    const first = pool.dispose();
+    const second = pool.dispose();
+    await second; // resolving the *second* caller must mean teardown is done
+
+    expect(existsSync(cwd)).toBe(false);
+    expect(await createGit(repo.dir).raw(["worktree", "list", "--porcelain"])).not.toContain(cwd);
+    await first;
+  });
+
   it("removes worktrees after success and failure paths", async () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 2);
-    const successCwd = await pool.withSandbox(async (sandbox) => sandbox.cwd);
+    const successCwd = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd);
     let failureCwd = "";
 
     await expect(
-      pool.withSandbox(async (sandbox) => {
+      pool.withSandbox(unit(["src/b.ts"]), async (sandbox) => {
         failureCwd = sandbox.cwd;
         throw new Error("failed");
       }),
@@ -134,5 +265,36 @@ describe("WorkerSandboxPool", () => {
     expect(worktrees).not.toContain(failureCwd);
     expect(existsSync(successCwd)).toBe(false);
     expect(existsSync(failureCwd)).toBe(false);
+  });
+});
+
+describe("pruneStaleWorktrees", () => {
+  it("removes a stale tend-worker worktree left by a crashed prior run", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const stale = join(repo.dir, "..", `tend-worker-${process.pid}-stale`);
+    await repo.git.raw(["worktree", "add", "--detach", stale, snapshotSha]);
+    expect(await repo.git.raw(["worktree", "list", "--porcelain"])).toContain(stale);
+
+    await pruneStaleWorktrees(repo.dir);
+
+    expect(await repo.git.raw(["worktree", "list", "--porcelain"])).not.toContain(stale);
+    expect(existsSync(stale)).toBe(false);
+  });
+
+  it("leaves a non-tend worktree untouched", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const mine = join(repo.dir, "..", `feature-branch-${process.pid}`);
+    await repo.git.raw(["worktree", "add", "--detach", mine, snapshotSha]);
+
+    await pruneStaleWorktrees(repo.dir);
+
+    expect(await repo.git.raw(["worktree", "list", "--porcelain"])).toContain(mine);
+    expect(existsSync(mine)).toBe(true);
+    await repo.git.raw(["worktree", "remove", "--force", mine]);
+  });
+
+  it("does not throw on a repo with no worktrees", async () => {
+    const { repo } = await setupRepo();
+    await expect(pruneStaleWorktrees(repo.dir)).resolves.toBeUndefined();
   });
 });

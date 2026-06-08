@@ -1,6 +1,9 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { relative } from "node:path";
+import { basename, join, relative } from "node:path";
+
+/** Prefix every tend sandbox worktree directory carries, so we can recognize our own. */
+const WORKTREE_PREFIX = "tend-worker-";
 import { execa, type Options as ExecaOptions } from "execa";
 import PQueue from "p-queue";
 import { createGit } from "../git/client.js";
@@ -31,10 +34,35 @@ export type ApplyPatchResult =
 export type WorkerSandbox = {
   readonly cwd: string;
   reset(): Promise<void>;
-  prepare(): Promise<void>;
+  prepare(unit: WorkUnit): Promise<void>;
   collectPatch(unit: WorkUnit): Promise<PatchResult>;
   dispose(): Promise<void>;
 };
+
+/**
+ * Files whose presence in a unit means the install graph may have changed, so a sandbox
+ * must reinstall rather than reuse the main checkout's node_modules. Matched by basename,
+ * so nested-package manifests (e.g. `packages/app/package.json`) count too.
+ */
+const DEPENDENCY_MANIFESTS = new Set([
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "bun.lockb",
+  "bun.lock",
+]);
+
+/**
+ * The reuse decision (Fix 4): a sandbox can reuse the main repo's installed deps unless
+ * the unit edits a dependency manifest, in which case it must reinstall. Package-manager-
+ * agnostic — driven entirely by which files the unit may change.
+ */
+export function shouldReinstall(unit: WorkUnit): boolean {
+  return allowedPatchFiles(unit).some((file) => DEPENDENCY_MANIFESTS.has(basename(normalizeRel(file))));
+}
 
 type SandboxPoolDeps = {
   mainRoot: string;
@@ -90,7 +118,9 @@ function installArgs(pm: PackageManager): string[] {
 }
 
 class GitWorkerSandbox implements WorkerSandbox {
-  private prepared = false;
+  // Tracks how deps were last set up so a recycled sandbox doesn't redo equivalent work:
+  // "reuse" symlinks the main node_modules; "install" is a real per-worktree install.
+  private preparedMode: "none" | "reuse" | "install" = "none";
 
   constructor(
     readonly cwd: string,
@@ -100,11 +130,51 @@ class GitWorkerSandbox implements WorkerSandbox {
   async reset(): Promise<void> {
     const git = createGit(this.cwd);
     await git.raw(["reset", "--hard", this.deps.snapshotSha]);
+    // node_modules is preserved across resets (excluded from clean), so a reused symlink
+    // or prior install survives for the next unit on this recycled sandbox.
     await git.raw(["clean", "-ffdx", ...cleanExcludes.flatMap((pattern) => ["-e", pattern])]);
   }
 
-  async prepare(): Promise<void> {
-    if (this.prepared || this.deps.prepareDependencies === false) return;
+  async prepare(unit: WorkUnit): Promise<void> {
+    if (this.deps.prepareDependencies === false) return;
+
+    // A unit that touches a dependency manifest needs a real, isolated install — never a
+    // symlink that would mutate the main checkout's node_modules. Anything else can reuse.
+    if (shouldReinstall(unit)) {
+      if (this.preparedMode === "install") return;
+      this.removeNodeModulesLink();
+      await this.install();
+      this.preparedMode = "install";
+      return;
+    }
+
+    if (this.preparedMode !== "none") return;
+    if (this.tryReuseMainDeps()) {
+      this.preparedMode = "reuse";
+      return;
+    }
+    // No main node_modules to borrow → fall back to a real install.
+    await this.install();
+    this.preparedMode = "install";
+  }
+
+  /** Symlink the main repo's node_modules into this worktree. Returns false if main has none. */
+  private tryReuseMainDeps(): boolean {
+    const mainModules = join(this.deps.mainRoot, "node_modules");
+    if (!existsSync(mainModules)) return false;
+    const link = join(this.cwd, "node_modules");
+    if (existsSync(link)) return true;
+    symlinkSync(mainModules, link, "junction");
+    return true;
+  }
+
+  private removeNodeModulesLink(): void {
+    const link = join(this.cwd, "node_modules");
+    // Only ever remove a symlink we created; never recurse into a real installed tree.
+    rmSync(link, { force: true });
+  }
+
+  private async install(): Promise<void> {
     const args = installArgs(this.deps.packageManager);
     const result = await this.deps.exec(this.deps.packageManager, args, {
       cwd: this.cwd,
@@ -116,7 +186,6 @@ class GitWorkerSandbox implements WorkerSandbox {
         `sandbox dependency install failed: ${result.stderr || result.stdout || `exit ${result.exitCode ?? 1}`}`,
       );
     }
-    this.prepared = true;
   }
 
   async collectPatch(unit: WorkUnit): Promise<PatchResult> {
@@ -160,7 +229,7 @@ export class WorkerSandboxPool {
   private readonly idle: GitWorkerSandbox[] = [];
   private readonly sandboxes = new Set<GitWorkerSandbox>();
   private counter = 0;
-  private disposed = false;
+  private disposing?: Promise<void>;
   private readonly exec: Exec;
 
   constructor(private readonly deps: SandboxPoolDeps) {
@@ -168,7 +237,7 @@ export class WorkerSandboxPool {
     this.exec = (deps.exec ?? execa) as Exec;
   }
 
-  async withSandbox<T>(run: (sandbox: WorkerSandbox) => Promise<T>): Promise<T> {
+  async withSandbox<T>(unit: WorkUnit, run: (sandbox: WorkerSandbox) => Promise<T>): Promise<T> {
     return this.queue.add(async () => {
       let sandbox: GitWorkerSandbox;
       try {
@@ -178,7 +247,7 @@ export class WorkerSandboxPool {
       }
       try {
         await sandbox.reset();
-        await sandbox.prepare();
+        await sandbox.prepare(unit);
       } catch (error) {
         this.idle.push(sandbox);
         throw error instanceof SandboxSetupError
@@ -224,9 +293,17 @@ export class WorkerSandboxPool {
     }) as Promise<ApplyPatchResult>;
   }
 
-  async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
+  /**
+   * Tear down every sandbox (remove worktrees). Idempotent and concurrency-safe: the SIGINT
+   * handler and the run's finally path may both call this at once, so all callers share — and
+   * await — the same in-flight teardown. Without this, a second caller returning early would let
+   * the signal handler's process.exit() race ahead and leak a worktree.
+   */
+  dispose(): Promise<void> {
+    return (this.disposing ??= this.runDispose());
+  }
+
+  private async runDispose(): Promise<void> {
     await this.queue.onIdle();
     await Promise.all([...this.sandboxes].map((sandbox) => sandbox.dispose()));
     this.idle.length = 0;
@@ -238,12 +315,45 @@ export class WorkerSandboxPool {
     if (existing) return existing;
     const parent = this.deps.tempRoot ?? tmpdir();
     mkdirSync(parent, { recursive: true });
-    const path = `${parent}/tend-worker-${process.pid}-${this.counter++}`;
+    const path = `${parent}/${WORKTREE_PREFIX}${process.pid}-${this.counter++}`;
     const mainGit = createGit(this.deps.mainRoot);
     await mainGit.raw(["worktree", "add", "--detach", path, this.deps.snapshotSha]);
     const sandbox = new GitWorkerSandbox(path, { ...this.deps, exec: this.exec });
     this.sandboxes.add(sandbox);
     return sandbox;
+  }
+}
+
+/** Paths of every worktree currently registered for the repo at `mainRoot`. */
+async function registeredWorktrees(mainRoot: string): Promise<string[]> {
+  const raw = await createGit(mainRoot).raw(["worktree", "list", "--porcelain"]);
+  return raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => line.slice("worktree ".length).trim());
+}
+
+/**
+ * Self-heal after a crashed or cancelled prior run: force-remove any leftover `tend-worker-*`
+ * worktrees still registered for `mainRoot`, then `git worktree prune` to clear stale admin
+ * records. Best-effort and idempotent — never throws (a run must start even if cleanup hiccups).
+ */
+export async function pruneStaleWorktrees(mainRoot: string): Promise<void> {
+  const git = createGit(mainRoot);
+  try {
+    for (const path of await registeredWorktrees(mainRoot)) {
+      if (!basename(path).startsWith(WORKTREE_PREFIX)) continue;
+      try {
+        await git.raw(["worktree", "remove", "--force", path]);
+      } catch {
+        /* already gone or unremovable — fall through to filesystem cleanup + prune */
+      }
+      rmSync(path, { recursive: true, force: true });
+    }
+    await git.raw(["worktree", "prune"]);
+  } catch {
+    /* best-effort: never block the run on cleanup */
   }
 }
 

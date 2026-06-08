@@ -64,6 +64,10 @@ export class Snapshot {
     private readonly cwd: string,
     private readonly root: string,
     private readonly sha: string,
+    // The staged tree (real index) at capture time, so `undo` restores the index — not just
+    // the working tree — to the exact pre-run state. null when no index could be captured
+    // (e.g. unmerged entries, or an older snapshot.json without this field).
+    private readonly indexTree: string | null = null,
   ) {}
 
   static async capture(_git: SimpleGit, cwd: string): Promise<Snapshot> {
@@ -74,6 +78,14 @@ export class Snapshot {
 
     const rg = createGit(root);
     const tree = await writeWorkingTree(root);
+    // Capture the real staging area as a tree. Tolerate failure (e.g. mid-merge unmerged
+    // entries) — without it, undo falls back to restoring the working tree only.
+    let indexTree: string | null = null;
+    try {
+      indexTree = (await rg.raw(["write-tree"])).trim();
+    } catch {
+      indexTree = null;
+    }
     // Parent the snapshot on HEAD when there is one (nicer `git diff`); tolerate a repo with no commits.
     let parent: string | null = null;
     try {
@@ -86,12 +98,12 @@ export class Snapshot {
       : ["commit-tree", tree, "-m", SNAP_MSG];
     const sha = (await rg.raw(commitArgs)).trim();
     await rg.raw(["update-ref", SNAP_REF, sha]);
-    return new Snapshot(cwd, root, sha);
+    return new Snapshot(cwd, root, sha, indexTree);
   }
 
   /** Serialize to a tiny object for `.tend/snapshot.json` (powers `undo` across invocations). */
-  toJSON(): { cwd: string; root: string; sha: string } {
-    return { cwd: this.cwd, root: this.root, sha: this.sha };
+  toJSON(): { cwd: string; root: string; sha: string; indexTree: string | null } {
+    return { cwd: this.cwd, root: this.root, sha: this.sha, indexTree: this.indexTree };
   }
 
   commitSha(): string {
@@ -102,8 +114,8 @@ export class Snapshot {
     return this.root;
   }
 
-  static fromJSON(data: { cwd: string; root: string; sha: string }): Snapshot {
-    return new Snapshot(data.cwd, data.root, data.sha);
+  static fromJSON(data: { cwd: string; root: string; sha: string; indexTree?: string | null }): Snapshot {
+    return new Snapshot(data.cwd, data.root, data.sha, data.indexTree ?? null);
   }
 
   /** Files whose contents differ from the snapshot, or that are new/deleted since it (sorted). */
@@ -128,5 +140,8 @@ export class Snapshot {
     for (const rel of await currentFiles(this.root)) {
       if (!inSnapshot.has(rel)) rmSync(join(this.root, rel), { force: true });
     }
+    // Restore the staging area to its captured state so the index matches pre-run exactly
+    // (no staged/unstaged mirror split). Skipped when no index tree was captured.
+    if (this.indexTree) await rg.raw(["read-tree", this.indexTree]);
   }
 }

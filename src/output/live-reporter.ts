@@ -73,6 +73,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private currentConcurrency?: number;
   private readonly rules = new Map<string, string>();
   private readonly stages = new Map<string, FixStage>();
+  private readonly stageDetails = new Map<string, string>();
   private readonly scannerStates = new Map<Tool, ScannerInfo>();
   private currentScanLoop?: number;
   private header?: { title: string };
@@ -128,6 +129,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.currentConcurrency = event.concurrency;
         this.rules.clear();
         this.stages.clear();
+        this.stageDetails.clear();
         this.labelWidth = Math.max(
           0,
           ...event.files.map((f) => basename(f).length),
@@ -147,6 +149,9 @@ export class LiveReporter extends BaseReporter implements Reporter {
       case "file-stage":
         this.currentFile = event.file;
         this.stages.set(event.file, event.stage);
+        // Keep only the latest streamed detail; a stage change without detail clears it.
+        if (event.detail) this.stageDetails.set(event.file, event.detail);
+        else this.stageDetails.delete(event.file);
         this.refreshHeader();
         break;
       case "file-result":
@@ -346,7 +351,9 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private fileTitle(file: string): string {
     const rule = this.rules.get(file);
     const stage = this.stages.get(file);
-    const detail = [rule, stage ? fixStageLabel(stage) : undefined].filter(Boolean).join(" · ");
+    const detail = [rule, stage ? fixStageLabel(stage) : undefined, this.stageDetails.get(file)]
+      .filter(Boolean)
+      .join(" · ");
     const suffix = detail ? `  ${this.theme.dim(detail)}` : "";
     return `${this.fileLabel(file)}${suffix}`;
   }

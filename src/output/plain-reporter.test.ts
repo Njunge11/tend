@@ -51,6 +51,21 @@ describe("PlainReporter", () => {
     expect(lines.some((l) => l.includes("a.ts") && l.includes("cognitive-complexity"))).toBe(false);
   });
 
+  it("writes streamed session activity line-by-line during a long AI edit", () => {
+    const { reporter, lines } = harness();
+    const events: TendEvent[] = [
+      { type: "file-stage", loop: 1, file: "a.ts", stage: "ai-edit" },
+      { type: "file-stage", loop: 1, file: "a.ts", stage: "ai-edit", detail: "Read a.ts" },
+      { type: "file-stage", loop: 1, file: "a.ts", stage: "ai-edit", detail: "Edit a.ts" },
+    ];
+    for (const e of events) reporter.onEvent(e);
+
+    expect(lines.length).toBeGreaterThan(1);
+    expect(lines.join("\n")).not.toMatch(new RegExp(String.fromCharCode(27)));
+    expect(lines.some((l) => l.includes("Read a.ts"))).toBe(true);
+    expect(lines.some((l) => l.includes("Edit a.ts"))).toBe(true);
+  });
+
   it("labels an unknown scanned-file count as a repo audit (whole-repo / --all)", () => {
     const { reporter, lines } = harness();
     reporter.onEvent({ type: "audit", loop: 1, findings: 3, files: 2 });
