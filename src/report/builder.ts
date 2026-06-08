@@ -31,7 +31,7 @@ const DEFAULT_FIX_POLICY: FixPolicy = {
   includeFixtures: false,
 };
 
-export type DerivedReportFields = {
+type DerivedReportFields = {
   secrets: Finding[];
   reportOnly: Finding[];
   depBumps: Report["depBumps"];
@@ -39,7 +39,7 @@ export type DerivedReportFields = {
   unresolvedEligibleCount: number;
 };
 
-export function isUnresolvedEligibleFinding(
+function isUnresolvedEligibleFinding(
   finding: Finding,
   fixPolicy: FixPolicy = DEFAULT_FIX_POLICY,
 ): boolean {
