@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.2...tend-cli-v0.9.3) (2026-06-08)
+
+
+### Bug Fixes
+
+* **fixing:** report-only for ALL test-file duplicates, incl same-file ([cc0f863](https://github.com/Njunge11/tend/commit/cc0f863a64934e29e7e03c9a9139afd59bfb7437))
+
 ## [0.9.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.1...tend-cli-v0.9.2) (2026-06-08)
 
 
