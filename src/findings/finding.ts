@@ -5,7 +5,7 @@ import type { FailureClass } from "../session/types.js";
 
 export const TOOLS = ["sonarjs", "knip", "jscpd", "semgrep", "osv", "gitleaks"] as const;
 export const SCOPE_EXCLUSION_REASONS = ["generated", "fixtures", "tests", "out-of-scope"] as const;
-export const FAILURE_CLASSES = [
+const FAILURE_CLASSES = [
   "tool-timeout",
   "rate-limit",
   "model-tool-failure",
