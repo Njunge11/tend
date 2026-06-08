@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.7.0...tend-cli-v0.8.0) (2026-06-08)
+
+
+### Features
+
+* **fixing:** apply per-finding extended-thinking budget ([94c5bad](https://github.com/Njunge11/tend/commit/94c5bad794732859756450265ca9a8d6c14c8488))
+
 ## [0.7.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.6.1...tend-cli-v0.7.0) (2026-06-07)
 
 
