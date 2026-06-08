@@ -175,13 +175,19 @@ export function planRepair(input: RepairPlannerInput): RepairPlan {
     return unsupported(input, "report-only");
   }
 
+  // Never auto-deduplicate test files. Test setup is meant to repeat (DAMP, not DRY); refactoring
+  // it almost always trades one clone for another, an unwinnable regression loop. This guards both
+  // same-file and cross-file duplicates that touch a test, so neither reaches an AI strategy.
+  if (isJscpdDuplicate(input) && involvesTestFile(input)) {
+    return unsupported(input, "report-only");
+  }
+
   if (isCrossFileDuplicate(input)) {
     if (scope.inScope === false) return unsupported(input, "out-of-scope");
     const excluded = firstExcludedReason(files, input.config);
     if (excluded) return unsupported(input, excluded);
     if (scope.inFixScope === false) return unsupported(input, scope.scopeExclusionReason ?? "out-of-scope");
     if (duplicateLineCount(input) < MIN_DUPLICATE_LINES) return unsupported(input, "report-only");
-    if (involvesTestFile(input)) return unsupported(input, "report-only");
     const sharedModule = computeSharedModulePath(files);
     const editableFiles = files.includes(sharedModule) ? files : [...files, sharedModule];
     return {

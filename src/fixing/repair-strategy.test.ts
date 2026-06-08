@@ -95,6 +95,26 @@ describe("planRepair", () => {
     });
   });
 
+  it("skips same-file duplicates inside a test file as report-only", () => {
+    // The summary.test.ts case: both clone sites in one test file. Pre-fix this fell through to
+    // single-file-ai-edit and the AI thrashed (deduping test boilerplate spawns new clones).
+    const finding = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.test.ts",
+      flowPath: [
+        { file: "src/a.test.ts", line: 166, range: { startLine: 166, startCol: 0, endLine: 173, endCol: 0 } },
+        { file: "src/a.test.ts", line: 491, range: { startLine: 491, startCol: 0, endLine: 497, endCol: 0 } },
+      ],
+    });
+
+    expect(planRepair({ finding })).toMatchObject({
+      strategy: "unsupported",
+      reason: "report-only",
+    });
+  });
+
   it("returns the exact exclusion reason for cross-file jscpd when a clone file is excluded", () => {
     const finding = makeFinding({
       tool: "jscpd",
