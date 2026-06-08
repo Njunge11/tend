@@ -52,6 +52,15 @@ import {
 import type { TestOutcome } from "./gate/checks/tests.js";
 import { reasonLabel } from "./output/format.js";
 import { zeroUsage } from "./session/types.js";
+import type { Finding } from "./findings/finding.js";
+
+function effortForFindings(findings: Pick<Finding, "category" | "autofixable">[]): Effort {
+  if (findings.length === 0) return "medium";
+  const allMechanical = findings.every(
+    (f) => f.category === "dead-code" || f.autofixable === true,
+  );
+  return allMechanical ? "low" : "medium";
+}
 
 const cwd = process.cwd();
 const TEND_DIR = join(cwd, ".tend");
@@ -62,7 +71,7 @@ const REPORT_PATH = join(TEND_DIR, "report.json");
 const TEND_CACHE_DIR = join(TEND_DIR, "cache");
 
 // Upper bounds so a hung child can't stall the run forever — execa kills it on timeout.
-const CLAUDE_TIMEOUT_MS = 10 * 60_000; // one file-fix session
+const CLAUDE_TIMEOUT_MS = 3 * 60_000; // one file-fix session
 const BUILD_TIMEOUT_MS = 5 * 60_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = 5 * 60_000;
@@ -169,17 +178,23 @@ async function makeProductionFixUnit(
     const gateOwnerRoot = sandbox ? mapOwnerRoot(cwd, ownerRoot, sandbox.cwd) : ownerRoot;
     const session = new ClaudeSession({
       spawn: async (req) => {
+        const unitEffort = config.effort ?? effortForFindings(req.findings);
         const child = execa(
           "claude",
           [
+            ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
+            "--no-session-persistence",
             "-p",
             req.prompt,
             "--model",
             config.model,
-            ...(config.effort ? ["--effort", config.effort] : []),
+            "--effort",
+            unitEffort,
             "--output-format",
             "stream-json",
             "--verbose",
+            "--tools",
+            "Read,Write,Edit",
             "--allowedTools",
             "Read,Write,Edit",
           ],
@@ -187,8 +202,7 @@ async function makeProductionFixUnit(
             cwd: repoRoot,
             reject: false,
             timeout: CLAUDE_TIMEOUT_MS,
-            // Per-finding thinking budget: mechanical fixes run with thinking off,
-            // reasoning fixes with a bounded cap, or a configured override.
+            cancelSignal: req.signal,
             env: { ...process.env, ...thinkingEnv(req.findings, config) },
           },
         );

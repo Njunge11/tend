@@ -17,7 +17,7 @@ describe("fingerprint", () => {
     expect(a).toBe(b);
   });
 
-  it("T-002: changing any one component → different fingerprint", () => {
+  it("T-002: changing tool, rule, file, or message → different fingerprint", () => {
     const base = {
       tool: "sonarjs",
       rule: "no-identical-expressions",
@@ -30,8 +30,34 @@ describe("fingerprint", () => {
     expect(fingerprint({ ...base, tool: "knip" })).not.toBe(baseId);
     expect(fingerprint({ ...base, rule: "no-dead-code" })).not.toBe(baseId);
     expect(fingerprint({ ...base, file: "src/auth/logout.ts" })).not.toBe(baseId);
-    expect(fingerprint({ ...base, line: 43 })).not.toBe(baseId);
     expect(fingerprint({ ...base, message: "Something else" })).not.toBe(baseId);
+  });
+
+  it("T-002b: shifting line within a 5-line bucket does NOT change fingerprint", () => {
+    const base = {
+      tool: "sonarjs",
+      rule: "no-identical-expressions",
+      file: "src/auth/login.ts",
+      line: 42,
+      message: "Identical sub-expressions",
+    } as const;
+
+    expect(fingerprint({ ...base, line: 40 })).toBe(fingerprint({ ...base, line: 42 }));
+    expect(fingerprint({ ...base, line: 43 })).toBe(fingerprint({ ...base, line: 44 }));
+  });
+
+  it("T-002c: shifting line across a bucket boundary changes fingerprint", () => {
+    const base = {
+      tool: "sonarjs",
+      rule: "eqeqeq",
+      file: "src/a.ts",
+      line: 44,
+      message: "Expected '===' and instead saw '=='.",
+    } as const;
+
+    expect(fingerprint({ ...base, line: 44 })).not.toBe(
+      fingerprint({ ...base, line: 46 }),
+    );
   });
 
   it("T-003: same logical issue reported by two different tools → different fingerprints", () => {
@@ -46,5 +72,33 @@ describe("fingerprint", () => {
     const fromSonar = fingerprint({ ...sharedLocation, tool: "sonarjs" });
 
     expect(fromJscpd).not.toBe(fromSonar);
+  });
+
+  it("T-004: message line:col references are normalized so position drift is ignored", () => {
+    const base = {
+      tool: "jscpd",
+      rule: "duplicate-code",
+      file: "src/a.ts",
+      line: 10,
+    } as const;
+
+    const a = fingerprint({ ...base, message: "Duplicated 15 lines, also at src/b.ts:10-25" });
+    const b = fingerprint({ ...base, message: "Duplicated 15 lines, also at src/b.ts:12-27" });
+
+    expect(a).toBe(b);
+  });
+
+  it("T-005: normalizes 'line N' references in messages", () => {
+    const base = {
+      tool: "semgrep",
+      rule: "some-rule",
+      file: "src/a.ts",
+      line: 10,
+    } as const;
+
+    const a = fingerprint({ ...base, message: "issue at line 42 column 5" });
+    const b = fingerprint({ ...base, message: "issue at line 50 column 5" });
+
+    expect(a).toBe(b);
   });
 });

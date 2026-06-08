@@ -49,14 +49,24 @@ export function unitChanged(cwd: string, files: string[], before: FileSnapshot):
   return files.some((f) => snapshotFile(join(cwd, f)) !== before.get(f));
 }
 
-/** Build a minimal unified diff from captured before/after contents. */
+/** Build a minimal multiset diff from captured before/after contents. */
 export function buildDiff(before: FileSnapshot, after: FileSnapshot): string {
   const out: string[] = [];
   for (const [path, afterContent] of after) {
     const beforeLines = (before.get(path) ?? "").split("\n");
     const afterLines = (afterContent ?? "").split("\n");
-    for (const l of beforeLines) if (!afterLines.includes(l)) out.push(`-${l}`);
-    for (const l of afterLines) if (!beforeLines.includes(l)) out.push(`+${l}`);
+    const beforeCounts = new Map<string, number>();
+    for (const l of beforeLines) beforeCounts.set(l, (beforeCounts.get(l) ?? 0) + 1);
+    const afterCounts = new Map<string, number>();
+    for (const l of afterLines) afterCounts.set(l, (afterCounts.get(l) ?? 0) + 1);
+    for (const [l, count] of beforeCounts) {
+      const removed = count - (afterCounts.get(l) ?? 0);
+      for (let i = 0; i < removed; i++) out.push(`-${l}`);
+    }
+    for (const [l, count] of afterCounts) {
+      const added = count - (beforeCounts.get(l) ?? 0);
+      for (let i = 0; i < added; i++) out.push(`+${l}`);
+    }
   }
   return out.join("\n");
 }

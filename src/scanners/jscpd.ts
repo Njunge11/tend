@@ -34,7 +34,8 @@ export const DEFAULT_JSCPD_IGNORE_PATTERNS = [
  * so `buildArgs` (which creates it) and `parse` (which reads it) agree without shared state.
  */
 export function jscpdReportPath(ctx: ScanContext): { dir: string; file: string } {
-  const dir = join(tmpdir(), `tend-jscpd-${process.pid}-loop${ctx.loop}`);
+  const id = ctx.scanId ?? `${process.pid}-loop${ctx.loop}`;
+  const dir = join(tmpdir(), `tend-jscpd-${id}`);
   return { dir, file: join(dir, "jscpd-report.json") };
 }
 

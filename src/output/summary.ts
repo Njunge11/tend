@@ -156,7 +156,7 @@ export function renderSummary(
 
   lines.push("");
   lines.push(theme.bold("scanner breakdown"));
-  lines.push(renderScannerBreakdownTable(report, theme));
+  lines.push(renderScannerBreakdownTable(report, theme, opts.verbose));
 
   const couldntFix = couldntFixFindings(b);
   if (couldntFix.length > 0) {
@@ -378,6 +378,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
       : theme.error(`needs attention (exit ${report.exitStatus})`);
   const rows = [
     ["status", status],
+    ["scope", scopeLabel(report)],
     ["fix passes", String(report.loops)],
     ...(report.finalIntegration && !report.finalIntegration.ok
       ? ([["final integration", theme.error(firstLine(report.finalIntegration.detail ?? "failed"))]] as string[][])
@@ -521,31 +522,14 @@ function inScopeByTool(report: Report): Map<Tool, ScopeCounts> {
   return counts;
 }
 
-function renderScannerBreakdownTable(report: Report, theme: Theme): string {
+function renderScannerBreakdownTable(report: Report, theme: Theme, verbose = false): string {
   const counts = inScopeByTool(report);
   const statusByTool = new Map(report.scannerStatuses.map((s) => [s.tool, s]));
   const tools = TOOLS.filter((t) => statusByTool.has(t) || counts.has(t));
   if (tools.length === 0) {
-    return renderTable(
-      scannerBreakdownHeaders(),
-      [
-        [
-          "(none)",
-          "not recorded",
-          scopeLabel(report),
-          "0",
-          "0",
-          "0",
-          "0",
-          "0",
-          "0",
-          "0",
-          "0",
-          "0",
-          "",
-        ],
-      ],
-    );
+    const headers = scannerBreakdownHeaders(verbose);
+    const emptyRow = Array.from({ length: headers.length }, (_, i) => (i === 0 ? "(none)" : i === 1 ? "not recorded" : "0"));
+    return renderTable(headers, [emptyRow]);
   }
 
   const rows = tools.map((tool) => {
@@ -576,41 +560,17 @@ function renderScannerBreakdownTable(report: Report, theme: Theme): string {
         : status?.status === "skipped"
           ? "not installed"
           : "";
-    return [
-      label,
-      statusText,
-      scopeLabel(report),
-      String(c.total),
-      String(c.fixed),
-      String(c.couldntFix),
-      String(c.skippedTests),
-      String(c.reportOnly),
-      String(c.left),
-      String(c.generated),
-      String(c.fixtures),
-      String(c.outOfScope),
-      reason,
-    ];
+    const base = [label, statusText, String(c.total), String(c.fixed), String(c.couldntFix), String(c.left), reason];
+    if (verbose) return [...base.slice(0, -1), String(c.skippedTests), String(c.reportOnly), String(c.generated), String(c.fixtures), String(c.outOfScope), reason];
+    return base;
   });
-  return renderTable(scannerBreakdownHeaders(), rows);
+  return renderTable(scannerBreakdownHeaders(verbose), rows);
 }
 
-function scannerBreakdownHeaders(): string[] {
-  return [
-    "scanner",
-    "status",
-    "scope",
-    "total",
-    "fixed",
-    "couldn't fix",
-    "skipped tests",
-    "report only",
-    "unresolved eligible",
-    "generated",
-    "fixtures",
-    "out of scope",
-    "reason",
-  ];
+function scannerBreakdownHeaders(verbose: boolean): string[] {
+  const base = ["scanner", "status", "total", "fixed", "couldn't fix", "left", "reason"];
+  if (verbose) return [...base.slice(0, -1), "skipped tests", "report only", "generated", "fixtures", "out of scope", "reason"];
+  return base;
 }
 
 function scopeLabel(report: Report): string {

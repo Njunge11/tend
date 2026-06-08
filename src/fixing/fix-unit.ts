@@ -3,9 +3,17 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Finding, Tool } from "../findings/finding.js";
 import type { FixOutcome } from "../orchestrator.js";
-import { addUsage, zeroUsage, type FailureClass, type SessionRunner } from "../session/types.js";
+import {
+  addUsage,
+  zeroUsage,
+  type AiUsage,
+  type FailureClass,
+  type SessionRequest,
+  type SessionResult,
+  type SessionRunner,
+} from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
-import type { FixProgressEvent, FixStage } from "./progress.js";
+import { fixStageLabel, type FixProgressEvent, type FixStage } from "./progress.js";
 import type { RepairStrategy } from "./repair-strategy.js";
 import {
   buildDiff,
@@ -21,7 +29,14 @@ export type FixUnitDeps = UnitGateDeps & {
   session: SessionRunner;
   maxRepairs: number;
   onProgress?: (event: FixProgressEvent) => void;
+  /** Hard cap for one AI session. Defaults to the production child-process timeout. */
+  sessionTimeoutMs?: number;
+  /** Hard cap for a gate pass. Individual subprocesses also have their own timeouts. */
+  gateTimeoutMs?: number;
 };
+
+const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60_000;
+const DEFAULT_GATE_TIMEOUT_MS = 30 * 60_000;
 
 function readPromptTemplate(name: string): string {
   const path =
@@ -47,12 +62,32 @@ function replaceAllLiteral(input: string, search: string, replacement: string): 
 
 type FixPromptStrategy = RepairStrategy | "regression-repair";
 
+function formatDuration(ms: number): string {
+  if (ms >= 60_000 && ms % 60_000 === 0) return `${ms / 60_000}m`;
+  if (ms >= 1_000 && ms % 1_000 === 0) return `${ms / 1_000}s`;
+  return `${ms}ms`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function timeoutEnabled(ms: number | undefined): ms is number {
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0;
+}
+
 function isDeadCodeUnit(unit: WorkUnit): boolean {
   return (
     unit.findings.length > 0 &&
     unit.findings.every(
       (finding) => finding.category === "dead-code" || (finding.tool === "knip" && finding.rule.startsWith("unused-")),
     )
+  );
+}
+
+function isMechanicalUnit(unit: WorkUnit): boolean {
+  return unit.findings.every(
+    (f) => f.category === "dead-code" || f.autofixable === true,
   );
 }
 
@@ -201,6 +236,100 @@ function classFromOutcome(reason: FixOutcome["reason"], fallback?: FailureClass)
   return undefined;
 }
 
+async function runSessionWithTimeout(
+  deps: FixUnitDeps,
+  request: SessionRequest,
+): Promise<SessionResult> {
+  const timeoutMs = deps.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
+  const controller = new AbortController();
+  const run = deps.session
+    .run({ ...request, signal: controller.signal })
+    .catch((error): SessionResult => ({
+      ok: false,
+      error: errorMessage(error),
+      rateLimited: false,
+      failureClass: controller.signal.aborted ? "tool-timeout" : "model-tool-failure",
+      usage: zeroUsage(),
+    }));
+
+  if (!timeoutEnabled(timeoutMs)) return run;
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<SessionResult>((resolve) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      resolve({
+        ok: false,
+        error: `AI session timed out after ${formatDuration(timeoutMs)}`,
+        rateLimited: false,
+        failureClass: "tool-timeout",
+        usage: zeroUsage(),
+      });
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([run, timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+async function runGateWithTimeout(
+  deps: FixUnitDeps,
+  currentStage: () => FixStage | undefined,
+  usage: () => AiUsage,
+  run: () => Promise<FixOutcome>,
+): Promise<FixOutcome> {
+  const timeoutMs = deps.gateTimeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
+  const work = run();
+  // If the deadline wins, keep a rejection from the underlying promise from surfacing
+  // as an unhandled rejection later. Production subprocesses have their own kill timeouts.
+  work.catch(() => undefined);
+
+  if (!timeoutEnabled(timeoutMs)) {
+    try {
+      return await work;
+    } catch (error) {
+      return {
+        kept: false,
+        reason: "session-error",
+        detail: errorMessage(error),
+        failureClass: "model-tool-failure",
+        usage: usage(),
+      };
+    }
+  }
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<FixOutcome>((resolve) => {
+    timeout = setTimeout(() => {
+      const stage = currentStage();
+      resolve({
+        kept: false,
+        reason: "session-error",
+        detail: `Gate timed out${stage ? ` during ${fixStageLabel(stage)}` : ""} after ${formatDuration(timeoutMs)}`,
+        failureClass: "tool-timeout",
+        usage: usage(),
+      });
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([work, timedOut]);
+  } catch (error) {
+    return {
+      kept: false,
+      reason: "session-error",
+      detail: errorMessage(error),
+      failureClass: "model-tool-failure",
+      usage: usage(),
+    };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 /**
  * Production fix worker. The session edits files directly on disk (`claude -p
  * --allowedTools Read,Write,Edit`), so the **disk is the source of truth** — we
@@ -212,7 +341,9 @@ function classFromOutcome(reason: FixOutcome["reason"], fallback?: FailureClass)
  */
 export function makeFixUnit(deps: FixUnitDeps) {
   return async (unit: WorkUnit, loop = 0): Promise<FixOutcome> => {
+    let currentStage: FixStage | undefined;
     const progress = (stage: FixStage, detail?: string): void => {
+      currentStage = stage;
       deps.onProgress?.({ loop, file: unit.file, stage, detail });
     };
     const snapshotFiles =
@@ -240,7 +371,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     const activity = (stage: FixStage) => (detail: string) => progress(stage, detail);
 
     progress("ai-edit");
-    const res = await deps.session.run({
+    const res = await runSessionWithTimeout(deps, {
       file: unit.file,
       findings: unit.findings,
       prompt: renderPrompt(unit, fileContents),
@@ -261,11 +392,20 @@ export function makeFixUnit(deps: FixUnitDeps) {
       };
     }
 
-    // No-edit sessions get one stricter retry. If that still does not edit, classify it
-    // as a no-op so the orchestrator can stop spending ordinary issue attempts on it.
+    // No-edit sessions get one stricter retry — unless the unit is mechanical (dead-code,
+    // autofixable), where a second attempt won't help and just wastes time.
     if (!changedOnDisk()) {
+      if (isMechanicalUnit(unit)) {
+        return {
+          kept: false,
+          reason: "session-error",
+          detail: "Mechanical fix session completed without edits",
+          failureClass: "no-op",
+          usage,
+        };
+      }
       progress("ai-no-edit-retry");
-      const retry = await deps.session.run({
+      const retry = await runSessionWithTimeout(deps, {
         file: unit.file,
         findings: unit.findings,
         prompt: renderNoEditRetryPrompt(unit, fileContents),
@@ -308,7 +448,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
       if (outcome.reason !== "regression" && outcome.reason !== "typecheck") return false;
       const after = snapshotUnitNow(deps.cwd, snapshotFiles);
       progress("regression-repair");
-      const repair = await deps.session.run({
+      const repair = await runSessionWithTimeout(deps, {
         file: unit.file,
         findings: unit.findings,
         prompt: renderRegressionRepairPrompt({
@@ -336,7 +476,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
         // The repair session also edits the disk directly — just re-run it.
         repair: async (_attempt, regressed) => {
           const after = snapshotUnitNow(deps.cwd, snapshotFiles);
-          const repair = await deps.session.run({
+          const repair = await runSessionWithTimeout(deps, {
             file: unit.file,
             findings: unit.findings,
             prompt: renderRegressionRepairPrompt({
@@ -356,9 +496,9 @@ export function makeFixUnit(deps: FixUnitDeps) {
       });
     }
 
-    let outcome = await gateCurrent();
+    let outcome = await runGateWithTimeout(deps, () => currentStage, () => usage, gateCurrent);
     if (!outcome.kept && (await runRegressionRepair(outcome))) {
-      outcome = await gateCurrent();
+      outcome = await runGateWithTimeout(deps, () => currentStage, () => usage, gateCurrent);
     }
 
     if (!outcome.kept) {

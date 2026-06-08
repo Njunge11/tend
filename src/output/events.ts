@@ -24,8 +24,8 @@ export type TendEvent =
   | { type: "loop-start"; loop: number; files: string[]; concurrency: number }
   | { type: "file-start"; loop: number; file: string; rule?: string }
   | { type: "file-stage"; loop: number; file: string; stage: FixStage; detail?: string }
-  | { type: "file-result"; loop: number; file: string; outcome: FileOutcome; reason?: string }
-  | { type: "loop-complete"; loop: number; fixed: number }
+  | { type: "file-result"; loop: number; file: string; outcome: FileOutcome; reason?: string; detail?: string }
+  | { type: "loop-complete"; loop: number; fixed: number; reverted: number; remaining: number; estimatedCostUsd: number }
   | { type: "done"; exitStatus: number };
 
 type Listener = (event: TendEvent) => void;

@@ -14,6 +14,8 @@ export type SessionRequest = {
    * from the disk after the session ends.
    */
   onActivity?: (activity: string) => void;
+  /** Aborted when tend's own session deadline expires. Session implementations should kill children. */
+  signal?: AbortSignal;
 };
 
 export type FailureClass =

@@ -28,17 +28,26 @@ function splitDiff(diff: string): DiffLines {
 
 const nonBlank = (lines: string[]) => lines.filter((l) => l.trim().length > 0);
 
+function stripStringLiterals(line: string): string {
+  return line
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+}
+
 /**
  * Reject a change-set that cheats the scanner rather than fixing the code:
  * newly-added suppression comments / any-casts, or code deleted instead of fixed.
  * Only NEW (added) lines are inspected — pre-existing suppressions in context are ignored.
+ * String literal contents are stripped so patterns inside strings don't trigger false rejections.
  */
 export function antiSuppression(diff: string, options: AntiSuppressionOptions = {}): CheckResult {
   const { added, removed } = splitDiff(diff);
 
   for (const line of added) {
+    const code = stripStringLiterals(line);
     for (const { re, what } of SUPPRESSION_PATTERNS) {
-      if (re.test(line)) return reject("suppression", `Fix added ${what}`);
+      if (re.test(code)) return reject("suppression", `Fix added ${what}`);
     }
   }
 

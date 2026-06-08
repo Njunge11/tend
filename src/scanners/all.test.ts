@@ -53,11 +53,9 @@ describe("buildAudit", () => {
 
     const result = await audit(1);
 
-    expect(runEslintSonarjs).toHaveBeenCalledWith({
-      cwd: "/repo",
-      files: ["src/a.ts"],
-      loop: 1,
-    });
+    expect(runEslintSonarjs).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/repo", files: ["src/a.ts"], loop: 1 }),
+    );
     expect(spawn).not.toHaveBeenCalled();
     expect(result.allScannersMissing).toBe(false);
     expect(result.findings).toStrictEqual([sonarFinding]);
@@ -98,11 +96,9 @@ describe("buildAudit", () => {
 
     await audit(1);
 
-    expect(runEslintSonarjs).toHaveBeenCalledWith({
-      cwd: "/repo",
-      files: ["."],
-      loop: 1,
-    });
+    expect(runEslintSonarjs).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/repo", files: ["."], loop: 1 }),
+    );
     runEslintSonarjs.mockReset();
   });
 });

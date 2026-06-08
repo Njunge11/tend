@@ -6,6 +6,8 @@ export type ScanContext = {
   /** Files in scope (e.g. changed vs HEAD); a scanner may ignore this if it scans wide. */
   files: string[];
   loop: number;
+  /** Unique id for this scanner batch; used by scanners that exchange data through temp files. */
+  scanId?: string;
 };
 
 export type SpawnResult = {

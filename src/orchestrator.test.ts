@@ -244,6 +244,9 @@ describe("orchestrate", () => {
     const first = ai("src/a.ts", "r1", 1);
     const second = ai("src/a.ts", "r2", 2);
     const audit = vi.fn(scriptedAudit([[first, second], []]));
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
     const fixUnit = vi.fn(async (unit: WorkUnit): Promise<FixOutcome> => {
       if (unit.findings.length > 1) {
         return {
@@ -256,13 +259,18 @@ describe("orchestrate", () => {
       return { kept: true };
     });
 
-    const res = await orchestrate({ audit, fixUnit, config });
+    const res = await orchestrate({ audit, fixUnit, config, bus });
 
     expect(fixUnit).toHaveBeenCalledTimes(3);
     expect(fixUnit.mock.calls.map((call) => call[0].findings.map((f) => f.rule))).toEqual([
       ["r1", "r2"],
       ["r1"],
       ["r2"],
+    ]);
+    expect(events.flatMap((event) => (event.type === "file-result" ? [event.outcome] : []))).toEqual([
+      "left",
+      "fixed",
+      "fixed",
     ]);
     expect(res.findings.every((f) => f.attempts === 0)).toBe(true);
     expect(res.findings.every((f) => f.status === "fixed")).toBe(true);

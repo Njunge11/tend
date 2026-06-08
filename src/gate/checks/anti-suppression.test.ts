@@ -55,4 +55,15 @@ describe("antiSuppression", () => {
     const diff = [" // eslint-disable-next-line no-eval", "-const x = 1;", "+const x = 2;"].join("\n");
     expect(antiSuppression(diff).ok).toBe(true);
   });
+
+  it("allows suppression patterns inside string literals", () => {
+    expect(antiSuppression('+console.log("use eslint-disable to suppress");').ok).toBe(true);
+    expect(antiSuppression("+const msg = '@ts-ignore is deprecated';").ok).toBe(true);
+    expect(antiSuppression("+const s = `cast as any`;").ok).toBe(true);
+  });
+
+  it("still rejects suppression patterns outside strings on the same line", () => {
+    expect(antiSuppression('+const x = val as any; // "quoted"').ok).toBe(false);
+    expect(antiSuppression('+// eslint-disable-next-line "reason"').ok).toBe(false);
+  });
 });

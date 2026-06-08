@@ -33,6 +33,7 @@ describe("PlainReporter", () => {
       { type: "file-stage", loop: 1, file: "a.ts", stage: "typecheck" },
       { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed" },
       { type: "file-result", loop: 1, file: "b.ts", outcome: "reverted", reason: "broke-test" },
+      { type: "loop-complete", loop: 1, fixed: 1, reverted: 1, remaining: 0, estimatedCostUsd: 0.42 },
       { type: "done", exitStatus: 0 },
     ];
     for (const e of events) reporter.onEvent(e);
@@ -47,7 +48,9 @@ describe("PlainReporter", () => {
     expect(lines).toContain("progress a.ts: typecheck");
     expect(lines.some((l) => l.includes("fixed a.ts"))).toBe(true);
     expect(lines.some((l) => l.includes("reverted b.ts") && l.includes("broke tests"))).toBe(true);
-    // file-start, loop-complete, done produce no standalone lines.
+    // loop-complete now renders an intermediate summary line.
+    expect(lines.some((l) => l.includes("loop 1:") && l.includes("1 fixed") && l.includes("1 reverted") && l.includes("$0.42"))).toBe(true);
+    // file-start and done produce no standalone lines.
     expect(lines.some((l) => l.includes("a.ts") && l.includes("cognitive-complexity"))).toBe(false);
   });
 

@@ -1,6 +1,6 @@
 import { FindingStore } from "./findings/store.js";
 import { route } from "./findings/router.js";
-import type { Finding } from "./findings/finding.js";
+import type { Finding, Tool } from "./findings/finding.js";
 import type { ScannerStatus } from "./scanners/scanner.js";
 import type { RevertReason } from "./gate/check.js";
 import { dispatch, planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
@@ -33,8 +33,8 @@ export type FixOutcome = {
 
 export type OrchestrateDeps = {
   cwd?: string;
-  /** Run the scanners for a loop and return normalized findings. */
-  audit: (loop: number) => Promise<AuditResult>;
+  /** Run the scanners for a loop and return normalized findings. `tools` limits re-audit to only the listed scanners. */
+  audit: (loop: number, tools?: Tool[]) => Promise<AuditResult>;
   /** Fix one work unit (session + gate); returns whether the fix was kept. */
   fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   /** Fix one deterministic work unit without AI usage. */
@@ -238,7 +238,8 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
   while (true) {
     loop++;
     bus.emit({ type: "scan-start", loop });
-    const audited = await deps.audit(loop);
+    const relevantTools = loop > 1 ? ([...new Set(store.all().map((f) => f.tool))] as Tool[]) : undefined;
+    const audited = await deps.audit(loop, relevantTools);
     scannerStatuses = audited.scannerStatuses ?? scannerStatuses;
     if (loop === 1) {
       runScope =
@@ -331,7 +332,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
         type: "loop-start",
         loop,
         files: deterministicWork.map((u) => u.file),
-        concurrency: 1,
+        concurrency: config.maxSessions,
       });
       const deterministicFixUnit =
         deps.deterministicFixUnit ??
@@ -341,24 +342,37 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
           detail: "No deterministic fixer configured",
           usage: zeroUsage(),
         }));
-      const outcomes = [];
-      for (const unit of deterministicWork) {
-        bus.emit({ type: "file-start", loop, file: unit.file, rule: unit.findings[0]?.rule });
-        const outcome = await deterministicFixUnit(unit, loop);
-        bus.emit({
-          type: "file-result",
-          loop,
-          file: unit.file,
-          outcome: outcome.kept ? "fixed" : "reverted",
-          reason: outcome.reason,
-        });
-        outcomes.push({ unit, outcome });
-      }
+      const outcomes = await dispatch(
+        deterministicWork,
+        async (unit) => {
+          bus.emit({ type: "file-start", loop, file: unit.file, rule: unit.findings[0]?.rule });
+          const outcome = await deterministicFixUnit(unit, loop);
+          bus.emit({
+            type: "file-result",
+            loop,
+            file: unit.file,
+            outcome: outcome.kept ? "fixed" : "reverted",
+            reason: outcome.reason,
+            detail: outcome.detail,
+          });
+          return { unit, outcome };
+        },
+        { concurrency: config.maxSessions },
+      );
       for (const { unit, outcome } of outcomes) {
         applyOutcome(store, unit, outcome, config.perIssueBudget);
         if (outcome.usage) usage = addUsage(usage, outcome.usage);
       }
-      bus.emit({ type: "loop-complete", loop, fixed: outcomes.filter((o) => o.outcome.kept).length });
+      const detFixed = outcomes.filter((o) => o.outcome.kept).length;
+      const detReverted = outcomes.filter((o) => !o.outcome.kept).length;
+      bus.emit({
+        type: "loop-complete",
+        loop,
+        fixed: detFixed,
+        reverted: detReverted,
+        remaining: pendingUnderBudget(store, config.perIssueBudget).length,
+        estimatedCostUsd: usage.estimatedCostUsd,
+      });
     }
 
     const units = dispatchableUnits(plannedRepairs(pendingUnderBudget(store, config.perIssueBudget), config, deps.cwd));
@@ -381,15 +395,27 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
       async (unit): Promise<{ unit: WorkUnit; outcome: FixOutcome; apply: boolean }[]> => {
         bus.emit({ type: "file-start", loop, file: unit.file, rule: unit.findings[0]?.rule });
         const outcome = await deps.fixUnit(unit, loop);
+        const smaller = shouldSplitAfterFailure(unit, outcome) ? splitUnit(unit) : [];
+        if (smaller.length === 0) {
+          bus.emit({
+            type: "file-result",
+            loop,
+            file: unit.file,
+            outcome: outcome.kept ? "fixed" : "reverted",
+            reason: outcome.reason,
+            detail: outcome.detail,
+          });
+          return [{ unit, outcome, apply: true }];
+        }
+
         bus.emit({
           type: "file-result",
           loop,
           file: unit.file,
-          outcome: outcome.kept ? "fixed" : "reverted",
+          outcome: "left",
           reason: outcome.reason,
+          detail: outcome.detail,
         });
-        const smaller = shouldSplitAfterFailure(unit, outcome) ? splitUnit(unit) : [];
-        if (smaller.length === 0) return [{ unit, outcome, apply: true }];
 
         const splitOutcomes: { unit: WorkUnit; outcome: FixOutcome; apply: boolean }[] = [
           { unit, outcome, apply: false },
@@ -403,6 +429,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
             file: split.file,
             outcome: splitOutcome.kept ? "fixed" : "reverted",
             reason: splitOutcome.reason,
+            detail: splitOutcome.detail,
           });
           splitOutcomes.push({ unit: split, outcome: splitOutcome, apply: true });
           if (splitOutcome.failureClass === "rate-limit") break;
@@ -417,7 +444,16 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
       if (outcome.usage) usage = addUsage(usage, outcome.usage);
     }
 
-    bus.emit({ type: "loop-complete", loop, fixed: outcomes.filter((o) => o.apply && o.outcome.kept).length });
+    const aiFixed = outcomes.filter((o) => o.apply && o.outcome.kept).length;
+    const aiReverted = outcomes.filter((o) => o.apply && !o.outcome.kept).length;
+    bus.emit({
+      type: "loop-complete",
+      loop,
+      fixed: aiFixed,
+      reverted: aiReverted,
+      remaining: pendingUnderBudget(store, config.perIssueBudget).length,
+      estimatedCostUsd: usage.estimatedCostUsd,
+    });
 
     if (outcomes.some((o) => o.outcome.failureClass === "rate-limit")) {
       termination = "retryable-infrastructure";
@@ -487,7 +523,7 @@ function result(
     secrets: [...secrets.values()],
     reportOnly: [...reportOnly.values()],
     deterministic: [...deterministic.values()],
-    depBumps: [...deterministic.values()],
+    depBumps: [...deterministic.values()].filter((f) => f.category === "vuln-dep"),
     scannerStatuses,
     runScope,
     usage,

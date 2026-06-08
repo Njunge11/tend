@@ -1,6 +1,6 @@
 import { BaseReporter } from "./base-reporter.js";
 import type { TendEvent } from "./events.js";
-import { reasonLabel } from "./format.js";
+import { formatClock, reasonLabel } from "./format.js";
 import { fixStageLabel } from "../fixing/progress.js";
 import type { Reporter, ReporterDeps } from "./reporter.js";
 
@@ -10,6 +10,8 @@ import type { Reporter, ReporterDeps } from "./reporter.js";
  * grep or pipe into another tool. The final summary is rendered separately by the caller.
  */
 export class PlainReporter extends BaseReporter implements Reporter {
+  private readonly fileStartTimes = new Map<string, number>();
+
   constructor(deps: ReporterDeps) {
     super(deps);
   }
@@ -42,20 +44,34 @@ export class PlainReporter extends BaseReporter implements Reporter {
       case "loop-start":
         this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
         break;
-      case "file-result":
-        if (event.outcome === "fixed") this.write(`${glyph.fixed} fixed ${event.file}`);
-        else if (event.outcome === "reverted") this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}`);
-        else this.write(`${glyph.left} not attempted ${event.file}`);
+      case "file-start":
+        this.fileStartTimes.set(event.file, Date.now());
         break;
+      case "file-result": {
+        const startTime = this.fileStartTimes.get(event.file);
+        const elapsed = startTime ? ` (${formatClock(Date.now() - startTime)})` : "";
+        this.fileStartTimes.delete(event.file);
+        if (event.outcome === "fixed") {
+          this.write(`${glyph.fixed} fixed ${event.file}${elapsed}`);
+        } else if (event.outcome === "reverted") {
+          const detail = event.detail ? ` — ${event.detail.split("\n")[0]}` : "";
+          this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}${detail}${elapsed}`);
+        } else {
+          this.write(`${glyph.left} not attempted ${event.file}`);
+        }
+        break;
+      }
       case "file-stage":
         this.write(`progress ${event.file}: ${fixStageLabel(event.stage)}${event.detail ? ` (${event.detail})` : ""}`);
         break;
-      // file-start is folded into file-stage/file-result; snapshot/detected arrive as start() notes;
-      // loop-complete/done are covered by the final summary.
+      case "loop-complete": {
+        const cost = event.estimatedCostUsd > 0 ? ` ${glyph.bullet} $${event.estimatedCostUsd.toFixed(2)}` : "";
+        this.write(`loop ${event.loop}: ${event.fixed} fixed ${glyph.bullet} ${event.reverted} reverted ${glyph.bullet} ${event.remaining} remaining${cost}`);
+        break;
+      }
+      // snapshot/detected arrive as start() notes; done is covered by the final summary.
       case "snapshot":
       case "detected":
-      case "file-start":
-      case "loop-complete":
       case "done":
         break;
     }

@@ -428,12 +428,12 @@ describe("renderSummary", () => {
     const out = renderSummary(report);
     expect(out).toContain("in your changes");
     expect(out).toMatch(
-      /sonarjs \(bundled\)\s+│ ✔ ran\s+│ in your changes\s+│ 2\s+│ 2/,
+      /sonarjs \(bundled\)\s+│ ✔ ran\s+│ 2\s+│ 2/,
     );
     expect(out).toMatch(
-      /jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 0\s+│ 1/,
+      /jscpd\s+│ ✔ ran\s+│ 1\s+│ 0\s+│ 0\s+│ 1/,
     );
-    expect(out).toMatch(/knip\s+│ ✔ ran\s+│ in your changes\s+│ 0/); // clean scanner is explicit, never a vanished 0
+    expect(out).toMatch(/knip\s+│ ✔ ran\s+│ 0/); // clean scanner is explicit, never a vanished 0
   });
 
   it("T-136: out-of-scope findings stay out of the default summary", () => {
@@ -521,7 +521,7 @@ describe("renderSummary", () => {
     const out = renderSummary(report);
     expect(out).toMatch(/skipped tests\s+│ – 0/);
     expect(out).toMatch(/report only\s+│ – 1/);
-    expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ in your changes\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 1\s+│ 0/);
+    expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ 1\s+│ 0\s+│ 0\s+│ 0/);
 
     const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=0 reportOnly=1 left=0");

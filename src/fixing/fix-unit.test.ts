@@ -466,6 +466,45 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
+  it("times out a hung AI session and aborts it without burning a normal fix failure", async () => {
+    write("src/a.ts", "const x = a == b;\n");
+    let signal: AbortSignal | undefined;
+    const session: SessionRunner = {
+      async run(request) {
+        signal = request.signal;
+        return new Promise<SessionResult>(() => {});
+      },
+    };
+
+    const outcome = await makeFixUnit(deps(session, { sessionTimeoutMs: 1 }))(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("session-error");
+    expect(outcome.failureClass).toBe("tool-timeout");
+    expect(outcome.detail).toBe("AI session timed out after 1ms");
+    expect(signal?.aborted).toBe(true);
+    expect(read("src/a.ts")).toBe("const x = a == b;\n");
+  });
+
+  it("times out a hung gate phase and restores the pre-session snapshot", async () => {
+    write("src/a.ts", "const x = a == b;\n");
+    const session = diskSession({ "src/a.ts": "const x = a === b;\n" }, { ok: true, edits: [] });
+
+    const outcome = await makeFixUnit(
+      deps(session, {
+        typescript: true,
+        gateTimeoutMs: 1,
+        runTsc: async () => new Promise<{ exitCode: number; output: string }>(() => {}),
+      }),
+    )(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("session-error");
+    expect(outcome.failureClass).toBe("tool-timeout");
+    expect(outcome.detail).toBe("Gate timed out during typecheck after 1ms");
+    expect(read("src/a.ts")).toBe("const x = a == b;\n");
+  });
+
   it("records repair session failure detail when the repair window still fails", async () => {
     write("src/a.ts", "const x = a == b;\n");
     let runs = 0;

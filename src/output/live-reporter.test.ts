@@ -45,7 +45,7 @@ const ONE_LOOP: TendEvent[] = [
     outcome: "reverted",
     reason: "broke-test",
   },
-  { type: "loop-complete", loop: 1, fixed: 1 },
+  { type: "loop-complete", loop: 1, fixed: 1, reverted: 1, remaining: 1, estimatedCostUsd: 0 },
   { type: "scan-start", loop: 2 },
   { type: "audit", loop: 2, findings: 1, files: 1, scanned: 2 },
   { type: "done", exitStatus: 0 },
@@ -110,7 +110,7 @@ describe("LiveReporter", () => {
           outcome: "fixed",
         });
       }
-      reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 150 });
+      reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 150, reverted: 0, remaining: 0, estimatedCostUsd: 0 });
       reporter.onEvent({ type: "done", exitStatus: 0 });
       reporter.close();
       await drawing;
@@ -123,8 +123,7 @@ describe("LiveReporter", () => {
     expect(output).toContain("in-scope findings 150 across 150 files");
     expect(output).toContain("fix pass 1 150/150");
     expect(output).toContain("150 fixed");
-    expect(output).toContain("0 not attempted");
-    expect(output).not.toContain("left");
+    expect(output).toContain("0 reverted");
     // Regression guard for captured terminals: fixed files should not be emitted as
     // persistent completed Listr rows, one per file, across redraws.
     expect(output.match(/file-\d+\.ts/g) ?? []).toHaveLength(0);
@@ -154,7 +153,7 @@ describe("LiveReporter", () => {
       reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code" });
       reporter.onEvent({ type: "file-stage", loop: 1, file: "src/a.ts", stage: "typecheck" });
       reporter.onEvent({ type: "file-result", loop: 1, file: "src/a.ts", outcome: "fixed" });
-      reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 1 });
+      reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 1, reverted: 1, remaining: 0, estimatedCostUsd: 0 });
       reporter.onEvent({ type: "scan-start", loop: 2 });
       reporter.onEvent({ type: "audit", loop: 2, findings: 0, files: 0, scanned: 1 });
       reporter.onEvent({ type: "done", exitStatus: 0 });

@@ -101,11 +101,19 @@ type FingerprintInput = {
   message: string;
 };
 
+function normalizeMessage(message: string): string {
+  return message
+    .replace(/:\d+(-\d+)?/g, ":_")
+    .replace(/\b(line|col(?:umn)?)\s+\d+/gi, "$1 _");
+}
+
 /**
- * Stable identity for a finding: hash(tool | rule | file | line | message).
- * Same components → same fingerprint, across loops and runs.
+ * Stable identity for a finding. Uses a 5-line bucket instead of the exact line
+ * so small position shifts (from edits above) don't change the fingerprint. The
+ * message is normalized to strip line:col references that drift between scans.
  */
 export function fingerprint(input: FingerprintInput): string {
-  const key = [input.tool, input.rule, input.file, input.line, input.message].join("|");
+  const lineBucket = Math.floor(input.line / 5);
+  const key = [input.tool, input.rule, input.file, lineBucket, normalizeMessage(input.message)].join("|");
   return createHash("sha256").update(key).digest("hex");
 }

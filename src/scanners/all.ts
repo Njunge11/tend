@@ -59,6 +59,8 @@ type ScanFilesDeps = {
   tools?: Tool[];
 };
 
+let scanCounter = 0;
+
 async function runScanners(
   deps: ScanFilesDeps,
   files: string[],
@@ -67,7 +69,7 @@ async function runScanners(
   results: ScanResult[];
   scannerStatuses: ScannerStatus[];
 }> {
-  const ctx = { cwd: deps.cwd, files, loop };
+  const ctx = { cwd: deps.cwd, files, loop, scanId: `${process.pid}-${loop}-${scanCounter++}` };
   const requested = deps.tools ? new Set<Tool>(deps.tools) : undefined;
   const shouldRun = (tool: Tool): boolean => requested === undefined || requested.has(tool);
   const runWithEvents = async (scanner: Scanner): Promise<ScanResult> => {
@@ -138,10 +140,11 @@ export async function scanFiles(
 /** Assemble the six scanners into an audit function for the orchestrator. */
 export function buildAudit(
   deps: AuditDeps,
-): (loop: number) => Promise<AuditResult> {
-  return async (loop) => {
+): (loop: number, tools?: Tool[]) => Promise<AuditResult> {
+  return async (loop, tools) => {
     const files = deps.scope ?? ["."];
-    const { results, scannerStatuses } = await runScanners(deps, files, loop);
+    const scanDeps = tools ? { ...deps, tools } : deps;
+    const { results, scannerStatuses } = await runScanners(scanDeps, files, loop);
 
     const attempted = results.filter((r) => !r.skipped);
     const findings: Finding[] = results.flatMap((r) => r.findings);
