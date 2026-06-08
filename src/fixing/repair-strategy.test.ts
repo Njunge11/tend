@@ -77,6 +77,24 @@ describe("planRepair", () => {
     });
   });
 
+  it("skips source-test mixed duplicates as report-only", () => {
+    const finding = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 20, endCol: 0 } },
+        { file: "src/a.test.ts", line: 10, range: { startLine: 10, startCol: 0, endLine: 29, endCol: 0 } },
+      ],
+    });
+
+    expect(planRepair({ finding, config: { includeTests: true } })).toMatchObject({
+      strategy: "unsupported",
+      reason: "report-only",
+    });
+  });
+
   it("returns the exact exclusion reason for cross-file jscpd when a clone file is excluded", () => {
     const finding = makeFinding({
       tool: "jscpd",

@@ -109,9 +109,9 @@ function duplicateLineCount(input: RepairPlannerInput): number {
   return fp[0].range.endLine - fp[0].range.startLine + 1;
 }
 
-/** True when every file in the clone pair is a test/spec file. */
-function isTestOnlyDuplicate(input: RepairPlannerInput): boolean {
-  return flowFiles(input).every(isTestFile);
+/** True when any file in the clone pair is a test/spec file. */
+function involvesTestFile(input: RepairPlannerInput): boolean {
+  return flowFiles(input).some(isTestFile);
 }
 
 const MIN_DUPLICATE_LINES = 10;
@@ -181,7 +181,7 @@ export function planRepair(input: RepairPlannerInput): RepairPlan {
     if (excluded) return unsupported(input, excluded);
     if (scope.inFixScope === false) return unsupported(input, scope.scopeExclusionReason ?? "out-of-scope");
     if (duplicateLineCount(input) < MIN_DUPLICATE_LINES) return unsupported(input, "report-only");
-    if (isTestOnlyDuplicate(input)) return unsupported(input, "report-only");
+    if (involvesTestFile(input)) return unsupported(input, "report-only");
     const sharedModule = computeSharedModulePath(files);
     const editableFiles = files.includes(sharedModule) ? files : [...files, sharedModule];
     return {
