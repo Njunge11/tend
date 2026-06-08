@@ -354,6 +354,12 @@ export function makeFixUnit(deps: FixUnitDeps) {
     const restore = (): void => restoreSnapshot(deps.cwd, before);
     const changedOnDisk = () => unitChanged(deps.cwd, unit.files, before);
 
+    // The post-fix gate rescans these targets with these tools; cross-file scanners (jscpd)
+    // report clones repo-wide, so we baseline what already exists in this scope BEFORE editing.
+    const verificationTargets = unit.verificationTargets ?? unit.files;
+    const scannerTools = [...new Set(unit.findings.map((finding) => finding.tool))] satisfies Tool[];
+    const preexistingIds = new Set((await deps.scanFindings(verificationTargets, scannerTools)).map((f) => f.id));
+
     // Supply the editable files' current source to the session so it can edit without a
     // preliminary Read (Fix 6). Reuse the pre-session snapshot; missing files are skipped.
     const fileContents = new Map<string, string>();
@@ -437,11 +443,9 @@ export function makeFixUnit(deps: FixUnitDeps) {
 
     async function scanNewFindings(): Promise<Finding[]> {
       progress("rescan");
-      const verificationTargets = unit.verificationTargets ?? unit.files;
-      const scannerTools = [...new Set(unit.findings.map((finding) => finding.tool))] satisfies Tool[];
       const afterFindings = await deps.scanFindings(verificationTargets, scannerTools);
-      const originalIds = new Set(unit.findings.map((f) => f.id));
-      return afterFindings.filter((f) => !originalIds.has(f.id));
+      // Genuinely new findings only — exclude anything that already existed in this scope.
+      return afterFindings.filter((f) => !preexistingIds.has(f.id));
     }
 
     async function runRegressionRepair(outcome: FixOutcome): Promise<boolean> {
@@ -472,6 +476,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     async function gateCurrent(): Promise<FixOutcome> {
       return gateUnitChanges(unit, before, deps, {
         usage,
+        preexistingIds,
         onProgress: progress,
         // The repair session also edits the disk directly — just re-run it.
         repair: async (_attempt, regressed) => {

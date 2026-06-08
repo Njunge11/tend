@@ -658,7 +658,11 @@ describe("makeFixUnit — disk is the source of truth", () => {
       message: "Function has too much cognitive complexity",
       range: { startLine: 2, startCol: 0, endLine: 2, endCol: 10 },
     });
-    const scanFindings = vi.fn(async () => [introduced]);
+    // Pre-edit baseline scan sees the original finding; the post-edit rescan sees the new one.
+    const scanFindings = vi
+      .fn()
+      .mockResolvedValueOnce([before])
+      .mockResolvedValue([introduced]);
     const session = diskSession(
       { "src/a.ts": "if (cond) {\n  doWork();\n}\n" },
       { ok: true, edits: [] },

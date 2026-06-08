@@ -15,7 +15,7 @@ import {
   type UnitGateDeps,
 } from "./unit-gate.js";
 
-export type DeterministicRepairStrategy = Extract<RepairStrategy, `deterministic-${string}`>;
+type DeterministicRepairStrategy = Extract<RepairStrategy, `deterministic-${string}`>;
 
 export interface DeterministicFixer {
   /** Fix a planned repair unit without starting an AI session. */
@@ -186,6 +186,11 @@ export function makeDeterministicFixer(deps: DeterministicFixUnitDeps): Determin
       }
 
       const before = snapshotUnitFiles(deps.cwd, unit.files);
+      // Baseline findings already in the verification scope, so the gate's anti-regression
+      // doesn't blame this fix for pre-existing cross-file (jscpd) duplicates it never touched.
+      const verificationTargets = unit.verificationTargets ?? unit.files;
+      const scannerTools = [...new Set(unit.findings.map((finding) => finding.tool))];
+      const preexistingIds = new Set((await deps.scanFindings(verificationTargets, scannerTools)).map((f) => f.id));
       for (const strategy of strategies) {
         const applied = await applyStrategy(strategy, deps.cwd, unit);
         if (!applied.ok) {
@@ -206,6 +211,7 @@ export function makeDeterministicFixer(deps: DeterministicFixUnitDeps): Determin
       const outcome = await gateUnitChanges(unit, before, deps, {
         usage: ZERO_AI_USAGE,
         requireResolved: true,
+        preexistingIds,
       });
       if (!outcome.kept) {
         restoreSnapshot(deps.cwd, before);

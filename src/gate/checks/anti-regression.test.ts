@@ -30,4 +30,25 @@ describe("antiRegression", () => {
       expect(r.detail).toContain("Fix did not clear target finding");
     }
   });
+
+  // A cross-file scanner (jscpd) reports a pre-existing clone that lives in the verification
+  // scope but was never the unit's target. With the pre-fix baseline supplied, it must NOT be
+  // treated as a regression — this is the bug that stalled the deterministic.ts fix loop.
+  it("does not flag a pre-existing finding (in baseline) as introduced", () => {
+    const preexisting = makeFinding({ tool: "jscpd", rule: "duplicate-code", category: "duplication", file: "src/other.test.ts" });
+    const r = antiRegression([A], [A, preexisting], { baselineIds: new Set([A.id, preexisting.id]) });
+    expect(r).toStrictEqual({ ok: true });
+  });
+
+  it("still rejects a genuinely new finding absent from the baseline", () => {
+    const r = antiRegression([A], [A, B], { baselineIds: new Set([A.id]) });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("regression");
+  });
+
+  it("baseline does not override requireResolved (target must still clear)", () => {
+    const r = antiRegression([A], [A], { requireResolved: true, baselineIds: new Set([A.id]) });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.detail).toContain("Fix did not clear target finding");
+  });
 });

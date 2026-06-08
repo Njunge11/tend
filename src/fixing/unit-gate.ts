@@ -89,6 +89,8 @@ type GateUnitOptions = {
   repairFailureDetail?: () => string | undefined;
   requireResolved?: boolean;
   onProgress?: (stage: FixStage, detail?: string) => void;
+  /** Finding ids present before the fix (same scope as the post-fix rescan); see antiRegression. */
+  preexistingIds?: ReadonlySet<string>;
 };
 
 export async function gateUnitChanges(
@@ -152,6 +154,7 @@ export async function gateUnitChanges(
   opts.onProgress?.("regression-check");
   const regression = antiRegression(unit.findings, afterFindings, {
     requireResolved: opts.requireResolved || unit.strategy === "multi-file-duplicate-refactor",
+    baselineIds: opts.preexistingIds,
   });
   if (!regression.ok) return { kept: false, reason: regression.reason, detail: regression.detail, usage };
 

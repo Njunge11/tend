@@ -4,6 +4,15 @@ import { pass, reject, type CheckResult } from "../check.js";
 export type AntiRegressionOptions = {
   /** Also reject findings from the original target set that remain after the fix. */
   requireResolved?: boolean;
+  /**
+   * Findings already present before the fix, scanned with the same scope as `after`. When
+   * provided, only findings absent from this set count as "introduced". Without it, a
+   * cross-file scanner (e.g. jscpd, which detects clones repo-wide) reports pre-existing
+   * duplicates that merely live in the verification scope, and they get misread as
+   * regressions — reverting good fixes and stalling the loop. Defaults to the target
+   * findings (`before`) for backward compatibility.
+   */
+  baselineIds?: ReadonlySet<string>;
 };
 
 /**
@@ -26,7 +35,10 @@ export function antiRegression(
     }
   }
 
-  const introduced = after.filter((f) => !knownIds.has(f.id));
+  // "Introduced" = present after the fix but not before. The baseline is the pre-fix scan of
+  // the same scope when supplied; otherwise the target findings (legacy behavior).
+  const baseline = opts.baselineIds ?? knownIds;
+  const introduced = after.filter((f) => !baseline.has(f.id));
 
   if (introduced.length > 0) {
     const detail = introduced.map((f) => `${f.file}:${f.range.startLine} ${f.rule}`).join(", ");
