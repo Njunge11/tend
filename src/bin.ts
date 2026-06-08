@@ -71,7 +71,9 @@ const REPORT_PATH = join(TEND_DIR, "report.json");
 const TEND_CACHE_DIR = join(TEND_DIR, "cache");
 
 // Upper bounds so a hung child can't stall the run forever — execa kills it on timeout.
-const CLAUDE_TIMEOUT_MS = 3 * 60_000; // one file-fix session
+// One cap for a single AI fix session. Used both to kill the `claude -p` subprocess and as the
+// fix-unit session-timeout wrapper (passed below), so the enforced limit always matches the intent.
+const CLAUDE_TIMEOUT_MS = 10 * 60_000;
 const BUILD_TIMEOUT_MS = 5 * 60_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = 5 * 60_000;
@@ -276,6 +278,8 @@ async function makeProductionFixUnit(
     makeFixUnit({
       ...makeGateDeps(sandbox),
       maxRepairs: 3,
+      // Share the one cap so the subprocess kill and the session-timeout wrapper never diverge.
+      sessionTimeoutMs: CLAUDE_TIMEOUT_MS,
       onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
     });
 
