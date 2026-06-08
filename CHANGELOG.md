@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.8.0...tend-cli-v0.9.0) (2026-06-08)
+
+
+### Features
+
+* **fixing:** live progress, worktree dep reuse, incremental typecheck, prompt file context, and clean teardown ([e23ab80](https://github.com/Njunge11/tend/commit/e23ab807b32a3b127fad696ca8ba1aab266f6d87))
+
 ## [0.8.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.7.0...tend-cli-v0.8.0) (2026-06-08)
 
 
