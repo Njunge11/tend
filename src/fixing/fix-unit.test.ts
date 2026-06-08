@@ -320,8 +320,8 @@ describe("makeFixUnit — disk is the source of truth", () => {
     await makeFixUnit(deps(session))(work);
 
     const prompt = session.calls[0]?.prompt ?? "";
-    expect(prompt).toContain("# Multi-file duplicate refactor task");
-    expect(prompt).toContain("You must update all clone files listed here");
+    expect(prompt).toContain("# Cross-file duplicate refactor task");
+    expect(prompt).toContain("You must update all clone files so the duplication");
     expect(prompt).toContain("exports stay valid");
     expect(prompt).toContain("Do not delete one clone just to clear jscpd");
     expect(prompt).toContain('"file": "src/a.ts"');

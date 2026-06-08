@@ -1,3 +1,4 @@
+import { dirname, basename, join } from "node:path";
 import type { Finding, ScopeExclusionReason } from "../findings/finding.js";
 import { classifyScope, type FixScopeConfig } from "../scanners/scope-policy.js";
 import { isTestFile } from "./dispatch.js";
@@ -101,6 +102,37 @@ function isCrossFileDuplicate(input: RepairPlannerInput): boolean {
   return isJscpdDuplicate(input) && flowFiles(input).length > 1;
 }
 
+/** Lines in the first clone region (from jscpd's flowPath range). */
+function duplicateLineCount(input: RepairPlannerInput): number {
+  const fp = input.flowPath ?? input.finding.flowPath;
+  if (!fp?.[0]?.range) return 0;
+  return fp[0].range.endLine - fp[0].range.startLine + 1;
+}
+
+/** True when every file in the clone pair is a test/spec file. */
+function isTestOnlyDuplicate(input: RepairPlannerInput): boolean {
+  return flowFiles(input).every(isTestFile);
+}
+
+const MIN_DUPLICATE_LINES = 10;
+
+/**
+ * Compute a shared module path from the common parent of the clone files.
+ * e.g. ["src/a/foo.ts", "src/a/bar.ts"] → "src/a/_shared.ts"
+ *      ["src/a/foo.ts", "src/b/bar.ts"] → "src/_shared.ts"
+ */
+export function computeSharedModulePath(files: string[]): string {
+  if (files.length < 2) return files[0] ?? "_shared.ts";
+  const dirs = files.map((f) => dirname(f).split("/"));
+  const common: string[] = [];
+  for (let i = 0; i < dirs[0]!.length; i++) {
+    if (dirs.every((d) => d[i] === dirs[0]![i])) common.push(dirs[0]![i]!);
+    else break;
+  }
+  const ext = basename(files[0]!).replace(/^.*(\.[cm]?[jt]sx?)$/, "$1");
+  return join(common.length > 0 ? common.join("/") : "src", `_shared${ext}`);
+}
+
 function isPackageJsonUnusedDependency(input: RepairPlannerInput): boolean {
   const file = input.file ?? input.finding.file;
   const rule = input.rule ?? input.finding.rule;
@@ -148,10 +180,14 @@ export function planRepair(input: RepairPlannerInput): RepairPlan {
     const excluded = firstExcludedReason(files, input.config);
     if (excluded) return unsupported(input, excluded);
     if (scope.inFixScope === false) return unsupported(input, scope.scopeExclusionReason ?? "out-of-scope");
+    if (duplicateLineCount(input) < MIN_DUPLICATE_LINES) return unsupported(input, "report-only");
+    if (isTestOnlyDuplicate(input)) return unsupported(input, "report-only");
+    const sharedModule = computeSharedModulePath(files);
+    const editableFiles = files.includes(sharedModule) ? files : [...files, sharedModule];
     return {
       finding: input.finding,
       strategy: "multi-file-duplicate-refactor",
-      editableFiles: files,
+      editableFiles,
       verificationTargets: files,
     };
   }

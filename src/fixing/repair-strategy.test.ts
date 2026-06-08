@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
-import { planRepair } from "./repair-strategy.js";
+import { computeSharedModulePath, planRepair } from "./repair-strategy.js";
 
 describe("planRepair", () => {
   it("classifies same-file jscpd duplicates as a single-file AI edit", () => {
@@ -22,22 +22,58 @@ describe("planRepair", () => {
     });
   });
 
-  it("classifies eligible cross-file jscpd duplicates as a multi-file refactor", () => {
+  it("classifies eligible cross-file jscpd duplicates as a multi-file refactor with shared module", () => {
     const finding = makeFinding({
       tool: "jscpd",
       rule: "duplicate-code",
       category: "duplication",
       file: "src/a.ts",
       flowPath: [
-        { file: "src/a.ts", line: 1 },
-        { file: "src/b.ts", line: 20 },
+        { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 15, endCol: 0 } },
+        { file: "src/b.ts", line: 20, range: { startLine: 20, startCol: 0, endLine: 34, endCol: 0 } },
       ],
     });
 
     expect(planRepair({ finding })).toMatchObject({
       strategy: "multi-file-duplicate-refactor",
-      editableFiles: ["src/a.ts", "src/b.ts"],
+      editableFiles: ["src/a.ts", "src/b.ts", "src/_shared.ts"],
       verificationTargets: ["src/a.ts", "src/b.ts"],
+    });
+  });
+
+  it("skips cross-file duplicates shorter than 10 lines", () => {
+    const finding = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 6, endCol: 0 } },
+        { file: "src/b.ts", line: 20, range: { startLine: 20, startCol: 0, endLine: 25, endCol: 0 } },
+      ],
+    });
+
+    expect(planRepair({ finding })).toMatchObject({
+      strategy: "unsupported",
+      reason: "report-only",
+    });
+  });
+
+  it("skips test-only duplicates as report-only even when tests are included", () => {
+    const finding = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.test.ts",
+      flowPath: [
+        { file: "src/a.test.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 20, endCol: 0 } },
+        { file: "src/b.test.ts", line: 10, range: { startLine: 10, startCol: 0, endLine: 29, endCol: 0 } },
+      ],
+    });
+
+    expect(planRepair({ finding, config: { includeTests: true } })).toMatchObject({
+      strategy: "unsupported",
+      reason: "report-only",
     });
   });
 
@@ -168,5 +204,23 @@ describe("planRepair", () => {
       reason: "generated-source-not-found",
       editableFiles: [],
     });
+  });
+});
+
+describe("computeSharedModulePath", () => {
+  it("uses common parent directory", () => {
+    expect(computeSharedModulePath(["src/a/foo.ts", "src/a/bar.ts"])).toBe("src/a/_shared.ts");
+  });
+
+  it("goes up to the nearest common ancestor", () => {
+    expect(computeSharedModulePath(["src/a/foo.ts", "src/b/bar.ts"])).toBe("src/_shared.ts");
+  });
+
+  it("preserves the file extension", () => {
+    expect(computeSharedModulePath(["lib/a.tsx", "lib/b.tsx"])).toBe("lib/_shared.tsx");
+  });
+
+  it("falls back to src for files with no common directory", () => {
+    expect(computeSharedModulePath(["app/foo.ts", "lib/bar.ts"])).toBe("src/_shared.ts");
   });
 });

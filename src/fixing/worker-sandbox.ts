@@ -265,6 +265,12 @@ export class WorkerSandboxPool {
   async applyPatchToMain(patch: string): Promise<ApplyPatchResult> {
     return this.applyQueue.add(async () => {
       if (patch.trim() === "") return { ok: true };
+      // Refresh the index's stat cache so --3way (which implies --index) doesn't
+      // reject patches because a file was rewritten (e.g. by restoreSnapshot).
+      await this.exec("git", ["update-index", "--refresh"], {
+        cwd: this.deps.mainRoot,
+        reject: false,
+      });
       const check = await this.exec("git", ["apply", "--check", "--3way"], {
         cwd: this.deps.mainRoot,
         input: patch,

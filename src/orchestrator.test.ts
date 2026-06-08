@@ -73,8 +73,8 @@ describe("orchestrate", () => {
       category: "duplication",
       file: "src/a.ts",
       flowPath: [
-        { file: "src/a.ts", line: 1 },
-        { file: "src/b.ts", line: 20 },
+        { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 15, endCol: 0 } },
+        { file: "src/b.ts", line: 20, range: { startLine: 20, startCol: 0, endLine: 34, endCol: 0 } },
       ],
     });
     const audit = vi.fn(scriptedAudit([[duplicate], []]));
@@ -88,7 +88,7 @@ describe("orchestrate", () => {
     expect(fixUnit).toHaveBeenCalledOnce();
     expect(fixUnit.mock.calls[0]?.[0]).toMatchObject({
       file: "src/a.ts",
-      files: ["src/a.ts", "src/b.ts"],
+      files: ["src/a.ts", "src/b.ts", "src/_shared.ts"],
       strategy: "multi-file-duplicate-refactor",
     });
     expect(res.findings[0]?.repairStrategy).toBe("multi-file-duplicate-refactor");
