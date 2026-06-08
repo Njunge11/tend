@@ -1,7 +1,7 @@
 import type { Finding } from "../../findings/finding.js";
 import { pass, reject, type CheckResult } from "../check.js";
 
-export type AntiRegressionOptions = {
+type AntiRegressionOptions = {
   /** Also reject findings from the original target set that remain after the fix. */
   requireResolved?: boolean;
   /**
