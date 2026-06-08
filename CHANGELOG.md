@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.9.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.0...tend-cli-v0.9.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* cancelSignal bug, performance tuning, fingerprint stability, and output improvements ([ecab94a](https://github.com/Njunge11/tend/commit/ecab94aadef1dabadf98e1a433b26aadc3282493))
+* **fixing:** apply patches with a temp-index 3-way merge to survive dirty trees ([7ab5caa](https://github.com/Njunge11/tend/commit/7ab5caafc54136f62750e41cf2f539362eb2dfc1))
+* **fixing:** treat any test-involving cross-file duplicate as report-only ([d78702c](https://github.com/Njunge11/tend/commit/d78702c4b5c7762d472f6e12b944400e76fef14b))
+* **gate:** baseline pre-existing findings so anti-regression stops reverting good fixes ([15ffb72](https://github.com/Njunge11/tend/commit/15ffb729c762b31f82dfb9fb07e2af796e5ef260))
+* improve jscpd duplicate handling and fix worktree patch conflict ([508f373](https://github.com/Njunge11/tend/commit/508f3734ef7616ffb9478a16a275429d46fb25d5))
+
 ## [0.9.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.8.0...tend-cli-v0.9.0) (2026-06-08)
 
 
