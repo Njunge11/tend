@@ -16,7 +16,7 @@ let indexCounter = 0;
  * Returns the tree's object id. Git stores only new blobs and reuses the rest — near-instant,
  * a few KB, not a full copy of every file.
  */
-async function writeWorkingTree(root: string): Promise<string> {
+export async function writeWorkingTree(root: string): Promise<string> {
   const idxPath = join(tmpdir(), `tend-index-${process.pid}-${indexCounter++}`);
   try {
     const g = createGit(root, { GIT_INDEX_FILE: idxPath });
