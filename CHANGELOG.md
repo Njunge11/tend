@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.5](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.4...tend-cli-v0.9.5) (2026-06-09)
+
+
+### Bug Fixes
+
+* bound fix sessions to sequential batches and de-export over deleting ([fc15384](https://github.com/Njunge11/tend/commit/fc153847609ac2d933ef8bb9af469ea90625d1e4))
+* **fixing:** bound fix sessions to sequential batches and de-export over deleting ([1fb180b](https://github.com/Njunge11/tend/commit/1fb180b4c97fd1b588ec6fc1b020bdddd206d81e))
+
 ## [0.9.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.3...tend-cli-v0.9.4) (2026-06-09)
 
 
