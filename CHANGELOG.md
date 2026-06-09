@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.3...tend-cli-v0.9.4) (2026-06-09)
+
+
+### Bug Fixes
+
+* **fixing:** stop test-duplicate collateral and gate-failure retry thrash ([2c1bcac](https://github.com/Njunge11/tend/commit/2c1bcac1b9e16498d3537ee59a934291b949f4d9))
+
 ## [0.9.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.2...tend-cli-v0.9.3) (2026-06-08)
 
 
