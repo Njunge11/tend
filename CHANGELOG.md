@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.0...tend-cli-v0.10.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* **fixing:** make tsc cache slug provably linear (SonarQube S5852) ([caacc8b](https://github.com/Njunge11/tend/commit/caacc8b8808521f9b2ba3e1cd4e7614a1279fb20))
+
 ## [0.10.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.6...tend-cli-v0.10.0) (2026-06-09)
 
 
