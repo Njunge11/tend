@@ -174,6 +174,26 @@ function isTerminalNoBurnFailure(outcome: FixOutcome): boolean {
   return outcome.failureClass === "tool-timeout" || outcome.failureClass === "no-op";
 }
 
+/**
+ * Gate failures (regression/typecheck/broke-test) already ran an in-dispatch repair session
+ * before reverting (see `runRegressionRepair`/the gate's test-repair window in fix-unit.ts).
+ * Re-dispatching the whole unit from scratch repeats that expensive work and almost never
+ * succeeds, so cap these classes at a single re-dispatch instead of burning the full per-issue
+ * budget — bounding worst-case wall-clock from ~budget×(initial+repair) to ~2×.
+ */
+const LIMITED_RETRY_FAILURE_CLASSES: ReadonlySet<FailureClass> = new Set([
+  "regression",
+  "typecheck",
+  "broke-test",
+]);
+const LIMITED_RETRY_BUDGET = 2;
+
+function effectiveBudget(failureClass: FailureClass | undefined, budget: number): number {
+  return failureClass && LIMITED_RETRY_FAILURE_CLASSES.has(failureClass)
+    ? Math.min(LIMITED_RETRY_BUDGET, budget)
+    : budget;
+}
+
 function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, budget: number): void {
   for (const finding of unit.findings) {
     if (outcome.kept) {
@@ -191,7 +211,8 @@ function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, 
         finding.status = "unfixable";
       } else {
         store.recordFailedAttempt(finding.id, reason, outcome.detail, failureClass);
-        if (store.isBudgetExhausted(finding.id, budget)) finding.status = "unfixable";
+        if (store.isBudgetExhausted(finding.id, effectiveBudget(failureClass, budget)))
+          finding.status = "unfixable";
       }
     }
   }

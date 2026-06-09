@@ -677,6 +677,42 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
+  it("keeps a source fix that incidentally clones a sibling test (report-only collateral)", async () => {
+    // jscpd scans the whole repo, so fixing src/a.ts can surface a new clone whose other foot is in
+    // src/a.test.ts. Test duplicates are routed report-only and never fixed, so this must not be
+    // treated as a regression — otherwise the good source fix oscillates until it times out.
+    write("src/a.ts", "const x = a == b;\n");
+    const before = makeFinding({
+      file: "src/a.ts",
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      message: "Duplicated lines",
+      range: { startLine: 1, startCol: 0, endLine: 5, endCol: 0 },
+    });
+    // New clone introduced by the fix: primary site in the source, second site in the sibling test.
+    const testCollateral = makeFinding({
+      file: "src/a.ts",
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      message: "Duplicated lines, also at src/a.test.ts",
+      range: { startLine: 10, startCol: 0, endLine: 15, endCol: 0 },
+      flowPath: [
+        { file: "src/a.ts", line: 10, range: { startLine: 10, startCol: 0, endLine: 15, endCol: 0 } },
+        { file: "src/a.test.ts", line: 3, range: { startLine: 3, startCol: 0, endLine: 8, endCol: 0 } },
+      ],
+    });
+    const scanFindings = vi.fn().mockResolvedValueOnce([before]).mockResolvedValue([testCollateral]);
+    const session = diskSession({ "src/a.ts": "const x = a === b;\n" }, { ok: true, edits: [] });
+    const work: WorkUnit = { file: "src/a.ts", files: ["src/a.ts"], findings: [before] };
+
+    const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
+
+    expect(outcome.kept).toBe(true);
+    expect(read("src/a.ts")).toBe("const x = a === b;\n");
+  });
+
   it("reverts a multi-file duplicate refactor when the original clone remains", async () => {
     write("src/a.ts", "export function a(items) { return items.map((x) => x.id); }\n");
     write("src/b.ts", "export function b(items) { return items.map((x) => x.id); }\n");

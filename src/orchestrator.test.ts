@@ -33,7 +33,13 @@ function scriptedAudit(perLoop: Finding[][]): (loop: number) => Promise<AuditRes
 }
 
 const keep = async (_unit: WorkUnit, _loop: number): Promise<FixOutcome> => ({ kept: true });
-const revert = async (_unit: WorkUnit, _loop: number): Promise<FixOutcome> => ({
+// A non-gate failure: consumes the full per-issue budget (no in-dispatch repair already spent).
+const revertSessionError = async (_unit: WorkUnit, _loop: number): Promise<FixOutcome> => ({
+  kept: false,
+  reason: "session-error",
+});
+// A gate failure: the in-dispatch repair already ran, so it's capped at the limited retry budget.
+const revertGate = async (_unit: WorkUnit, _loop: number): Promise<FixOutcome> => ({
   kept: false,
   reason: "broke-test",
 });
@@ -184,7 +190,7 @@ describe("orchestrate", () => {
   it("T-106: one stubborn issue is attempted until its per-issue budget is exhausted", async () => {
     const stubborn = ai("a.ts");
     const audit = vi.fn(async () => ({ findings: [stubborn] }));
-    const fixUnit = vi.fn(revert);
+    const fixUnit = vi.fn(revertSessionError);
     const events: TendEvent[] = [];
     const bus = new EventBus();
     bus.on((event) => events.push(event));
@@ -197,6 +203,21 @@ describe("orchestrate", () => {
     expect(res.findings.find((f) => f.file === "a.ts")?.status).toBe("unfixable");
     expect(events.filter((event) => event.type === "loop-start")).toHaveLength(config.perIssueBudget);
     expect(events.filter((event) => event.type === "file-result")).toHaveLength(config.perIssueBudget);
+  });
+
+  it("T-106b: gate failures are capped at the limited retry budget, not the full per-issue budget", async () => {
+    // broke-test/regression/typecheck already burned an in-dispatch repair before reverting, so the
+    // orchestrator caps them at one re-dispatch (2 attempts) instead of perIssueBudget (3).
+    const stubborn = ai("a.ts");
+    const audit = vi.fn(async () => ({ findings: [stubborn] }));
+    const fixUnit = vi.fn(revertGate);
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(res.termination).toBe("converged");
+    expect(fixUnit).toHaveBeenCalledTimes(2);
+    expect(res.findings.find((f) => f.file === "a.ts")?.attempts).toBe(2);
+    expect(res.findings.find((f) => f.file === "a.ts")?.status).toBe("unfixable");
   });
 
   it("aggregates estimated AI usage across fix outcomes, including reverted ones", async () => {
