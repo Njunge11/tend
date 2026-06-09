@@ -1,4 +1,4 @@
-export type TerminationSignal = "SIGINT" | "SIGTERM";
+type TerminationSignal = "SIGINT" | "SIGTERM";
 
 const SIGNALS: TerminationSignal[] = ["SIGINT", "SIGTERM"];
 
