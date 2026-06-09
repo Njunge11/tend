@@ -67,6 +67,16 @@ describe("loadConfig", () => {
     expect(merged.model).toBe("claude-haiku-4-5");
   });
 
+  it("duplicationModel: unset by default, overridable by config file and CLI flag", async () => {
+    expect((await loadConfig(dir)).duplicationModel).toBeUndefined();
+
+    writeFileSync(join(dir, ".tendrc.json"), JSON.stringify({ duplicationModel: "claude-opus-4-6" }));
+    expect((await loadConfig(dir)).duplicationModel).toBe("claude-opus-4-6");
+
+    const merged = applyCliOverrides(await loadConfig(dir), { duplicationModel: "claude-opus-4-7" });
+    expect(merged.duplicationModel).toBe("claude-opus-4-7");
+  });
+
   it("effort: optional, accepts valid levels, rejects invalid ones", async () => {
     expect((await loadConfig(dir)).effort).toBeUndefined(); // unset by default
 

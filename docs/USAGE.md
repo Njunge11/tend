@@ -71,6 +71,7 @@ Zero-config by default. `cosmiconfig` discovers `.tendrc`, `tend.config.js`, a `
   "teethCheck": true,   // reject test edits that pass on the old code
   "includeTests": false,
   "model": "sonnet",
+  "duplicationModel": "claude-opus-4-6", // optional; capable model for jscpd dedup fixes
   "effort": "high"
 }
 ```
@@ -78,6 +79,11 @@ Zero-config by default. `cosmiconfig` discovers `.tendrc`, `tend.config.js`, a `
 CLI flags override the config file. `model` is an alias (`sonnet` default, `opus`, `haiku`) or a
 full model id (e.g. `claude-opus-4-8`); `effort` is the reasoning effort (`low | medium | high |
 xhigh | max`, unset → claude's default). Both are passed straight to `claude -p`.
+
+Duplication (jscpd) fixes need more reasoning than localized single-file edits, so a work unit
+containing any duplication finding is fixed with a more capable model — `claude-opus-4-6` by
+default. Override it with `duplicationModel` (an alias or full model id); everything else stays on
+`model`.
 
 ## Scanners
 
