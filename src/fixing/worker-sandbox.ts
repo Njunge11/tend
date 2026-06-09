@@ -7,8 +7,12 @@ const WORKTREE_PREFIX = "tend-worker-";
 import { execa, type Options as ExecaOptions } from "execa";
 import PQueue from "p-queue";
 import { createGit } from "../git/client.js";
+import { writeWorkingTree } from "../git/snapshot.js";
 import type { PackageManager } from "../detect/package-manager.js";
 import type { WorkUnit } from "./dispatch.js";
+
+/** Pins the moving sandbox base commit so `git gc` can't prune it (it's on no branch). */
+const SANDBOX_BASE_REF = "refs/tend/sandbox-base";
 
 type Exec = (
   file: string,
@@ -33,7 +37,8 @@ type ApplyPatchResult =
 
 export type WorkerSandbox = {
   readonly cwd: string;
-  reset(): Promise<void>;
+  /** Reset the worktree to `baseSha` and remember it as the base this sandbox's patch is diffed against. */
+  reset(baseSha: string): Promise<void>;
   prepare(unit: WorkUnit): Promise<void>;
   collectPatch(unit: WorkUnit): Promise<PatchResult>;
   dispose(): Promise<void>;
@@ -121,15 +126,21 @@ class GitWorkerSandbox implements WorkerSandbox {
   // Tracks how deps were last set up so a recycled sandbox doesn't redo equivalent work:
   // "reuse" symlinks the main node_modules; "install" is a real per-worktree install.
   private preparedMode: "none" | "reuse" | "install" = "none";
+  // The commit this sandbox was last reset to. Its patch is diffed against THIS base — never the
+  // pool's current base, which may have advanced under concurrent same-run sandboxes.
+  private baseSha: string;
 
   constructor(
     readonly cwd: string,
     private readonly deps: SandboxPoolDeps & { exec: Exec },
-  ) {}
+  ) {
+    this.baseSha = deps.snapshotSha;
+  }
 
-  async reset(): Promise<void> {
+  async reset(baseSha: string): Promise<void> {
+    this.baseSha = baseSha;
     const git = createGit(this.cwd);
-    await git.raw(["reset", "--hard", this.deps.snapshotSha]);
+    await git.raw(["reset", "--hard", baseSha]);
     // node_modules is preserved across resets (excluded from clean), so a reused symlink
     // or prior install survives for the next unit on this recycled sandbox.
     await git.raw(["clean", "-ffdx", ...cleanExcludes.flatMap((pattern) => ["-e", pattern])]);
@@ -190,7 +201,7 @@ class GitWorkerSandbox implements WorkerSandbox {
 
   async collectPatch(unit: WorkUnit): Promise<PatchResult> {
     const git = createGit(this.cwd);
-    const tracked = lines(await git.raw(["diff", "--name-only", this.deps.snapshotSha]));
+    const tracked = lines(await git.raw(["diff", "--name-only", this.baseSha]));
     const untracked = lines(await git.raw(["ls-files", "--others", "--exclude-standard"]));
     const changedFiles = unique([...tracked, ...untracked]).sort();
     const allowed = new Set(allowedPatchFiles(unit));
@@ -209,7 +220,7 @@ class GitWorkerSandbox implements WorkerSandbox {
     if (untracked.length > 0) {
       await git.raw(["add", "-N", "--", ...untracked.filter((file) => allowed.has(file))]);
     }
-    const patch = await git.raw(["diff", "--binary", this.deps.snapshotSha, "--", ...allowedFiles]);
+    const patch = await git.raw(["diff", "--binary", this.baseSha, "--", ...allowedFiles]);
     return { ok: true, patch, changedFiles };
   }
 
@@ -231,10 +242,16 @@ export class WorkerSandboxPool {
   private counter = 0;
   private disposing?: Promise<void>;
   private readonly exec: Exec;
+  // The base every new sandbox forks from. Starts at the run snapshot and ADVANCES after each
+  // accepted patch (see advanceBase), so a later session forks from main's already-fixed state
+  // instead of the original — the diff-from-frozen-original is what made sequential fixes to the
+  // same file conflict on apply.
+  private currentBase: string;
 
   constructor(private readonly deps: SandboxPoolDeps) {
     this.queue = new PQueue({ concurrency: deps.maxSandboxes });
     this.exec = (deps.exec ?? execa) as Exec;
+    this.currentBase = deps.snapshotSha;
   }
 
   async withSandbox<T>(unit: WorkUnit, run: (sandbox: WorkerSandbox) => Promise<T>): Promise<T> {
@@ -246,7 +263,7 @@ export class WorkerSandboxPool {
         throw new SandboxSetupError(error instanceof Error ? error.message : String(error));
       }
       try {
-        await sandbox.reset();
+        await sandbox.reset(this.currentBase);
         await sandbox.prepare(unit);
       } catch (error) {
         this.idle.push(sandbox);
@@ -347,12 +364,37 @@ export class WorkerSandboxPool {
             return { ok: false, reason: "patch-conflict", detail: out.stderr || "failed to materialize merged files" };
           }
         }
+        // The patch is now on main. Advance the base so the NEXT sandbox forks from this result
+        // instead of the frozen original — otherwise a later fix to the same file would be a
+        // diff-from-original and conflict here on the 3-way merge. Runs inside applyQueue
+        // (concurrency 1), so it can't race another apply.
+        await this.advanceBase();
         return { ok: true };
       } finally {
         rmSync(tmpIndex, { force: true });
         rmSync(`${tmpIndex}.lock`, { force: true });
       }
     }) as Promise<ApplyPatchResult>;
+  }
+
+  /**
+   * Capture main's current working tree as a commit (reusing git's content store — near-instant,
+   * a few KB) parented on the previous base, pin it with a private ref so gc can't prune it, and
+   * make it the base future sandboxes fork from. The commit object is never on any branch and the
+   * user's index/HEAD are untouched, so the editor sees nothing. Best-effort: a failure here just
+   * leaves the base where it was (the next apply may then hit the old conflict, never corruption).
+   */
+  private async advanceBase(): Promise<void> {
+    try {
+      const root = this.deps.mainRoot;
+      const tree = await writeWorkingTree(root);
+      const git = createGit(root);
+      const sha = (await git.raw(["commit-tree", tree, "-p", this.currentBase, "-m", "tend sandbox base"])).trim();
+      await git.raw(["update-ref", SANDBOX_BASE_REF, sha]);
+      this.currentBase = sha;
+    } catch {
+      /* keep the existing base; correctness is preserved, only the conflict-avoidance is skipped */
+    }
   }
 
   /**
@@ -380,7 +422,7 @@ export class WorkerSandboxPool {
     mkdirSync(parent, { recursive: true });
     const path = `${parent}/${WORKTREE_PREFIX}${process.pid}-${this.counter++}`;
     const mainGit = createGit(this.deps.mainRoot);
-    await mainGit.raw(["worktree", "add", "--detach", path, this.deps.snapshotSha]);
+    await mainGit.raw(["worktree", "add", "--detach", path, this.currentBase]);
     const sandbox = new GitWorkerSandbox(path, { ...this.deps, exec: this.exec });
     this.sandboxes.add(sandbox);
     return sandbox;

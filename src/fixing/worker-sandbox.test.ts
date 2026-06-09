@@ -239,6 +239,40 @@ describe("WorkerSandboxPool", () => {
     expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1-edit\nL2\nL3-edit\n");
   });
 
+  it("applies sequential OVERLAPPING fixes to the same line by advancing the base (no patch-conflict)", async () => {
+    // Reproduces the summary.ts stall: a file gets several fixes in sequence. Before the base
+    // advanced, fix 2's sandbox forked from the frozen original, never saw fix 1, and produced a
+    // diff-from-original that conflicted on apply (3-way base = original, ours = main+fix1). Now
+    // each fix forks from main's already-fixed state, so overlapping edits merge cleanly.
+    const { repo } = await setupRepo();
+    repo.write("src/a.ts", "L1\nL2\nL3\n");
+    await repo.commit("widen a.ts");
+    const base = (await repo.git.revparse(["HEAD"])).trim();
+    const pool = makePool(base, 1);
+
+    // Each fix rewrites the SAME line (L2), building on whatever the sandbox currently shows —
+    // exactly what a real AI session does when it edits a line a previous session already touched.
+    const fixL2 = async (transform: (current: string) => string): Promise<void> => {
+      const collected = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+        const file = join(sandbox.cwd, "src/a.ts");
+        const lines = readFileSync(file, "utf8").split("\n");
+        lines[1] = transform(lines[1]!);
+        writeFileSync(file, lines.join("\n"));
+        return sandbox.collectPatch(unit(["src/a.ts"]));
+      });
+      if (!collected.ok) throw new Error(`collect failed: ${collected.detail}`);
+      const applied = await pool.applyPatchToMain(collected.patch, collected.changedFiles);
+      if (!applied.ok) throw new Error(`apply failed: ${applied.detail}`);
+    };
+
+    await fixL2(() => "L2-a"); // fix 1: L2 -> L2-a
+    await fixL2((current) => `${current}-b`); // fix 2 edits the SAME line, building on L2-a -> L2-a-b
+
+    // Both overlapping fixes landed; without the advancing base, fix 2 would have read "L2",
+    // produced "L2-b", and conflicted against main's "L2-a".
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1\nL2-a-b\nL3\n");
+  });
+
   it("reuses the main repo's node_modules without running an install command", async () => {
     const { repo, snapshotSha } = await setupRepo();
     // Main checkout has installed deps.
