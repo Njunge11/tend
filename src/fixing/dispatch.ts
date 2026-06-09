@@ -46,6 +46,45 @@ export function planWork(findings: Finding[]): WorkUnit[] {
   return [...byOwner.values()];
 }
 
+/**
+ * Strategies whose findings must be fixed together in a single session and therefore must
+ * never be chunked: a duplicate refactor edits both clone sites and a shared module at once,
+ * and a generated-source repair edits the source then regenerates the artifact.
+ */
+const ATOMIC_STRATEGIES: ReadonlySet<RepairStrategy> = new Set([
+  "multi-file-duplicate-refactor",
+  "generated-source-repair",
+]);
+
+function isAtomicUnit(unit: WorkUnit): boolean {
+  const strategies = unit.strategies ?? (unit.strategy ? [unit.strategy] : []);
+  return strategies.some((strategy) => ATOMIC_STRATEGIES.has(strategy));
+}
+
+/**
+ * Split one unit's findings into sequential batches of at most `batchSize`, so no single AI
+ * session is ever handed more findings than it can fix inside the session timeout (root cause
+ * A: a 25-finding unit could not finish in the 10-min cap, burning a guaranteed timeout). The
+ * unit is returned unchanged when it is atomic (its findings must be fixed together) or already
+ * within `batchSize`. Every batch keeps the unit's file set, so the batches all own the same
+ * file and MUST run sequentially — running them concurrently would have two sessions edit the
+ * same file and conflict on patch apply (the no-two-sessions-touch-the-same-file invariant).
+ */
+export function chunkUnit(unit: WorkUnit, batchSize: number): WorkUnit[] {
+  if (batchSize < 1 || unit.findings.length <= batchSize || isAtomicUnit(unit)) return [unit];
+  const batches: WorkUnit[] = [];
+  for (let index = 0; index < unit.findings.length; index += batchSize) {
+    batches.push({
+      ...unit,
+      findings: unit.findings.slice(index, index + batchSize),
+      files: [...unit.files],
+      verificationTargets: unit.verificationTargets ? [...unit.verificationTargets] : undefined,
+      strategies: unit.strategies ? [...unit.strategies] : undefined,
+    });
+  }
+  return batches;
+}
+
 function strategyPriority(strategy: RepairStrategy | undefined): number {
   switch (strategy) {
     case "multi-file-duplicate-refactor":

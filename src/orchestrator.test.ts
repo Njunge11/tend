@@ -318,6 +318,63 @@ describe("orchestrate", () => {
     expect(res.findings.every((f) => f.finalFailureClass === "tool-timeout")).toBe(true);
   });
 
+  it("processes a large file's findings in bounded sequential batches (no oversized session)", async () => {
+    const findings = Array.from({ length: 12 }, (_, i) => ai("src/big.ts", `r${i}`, i + 1));
+    const audit = vi.fn(scriptedAudit([findings, []]));
+    const sizes: number[] = [];
+    const fixUnit = vi.fn(async (unit: WorkUnit): Promise<FixOutcome> => {
+      sizes.push(unit.findings.length);
+      return { kept: true };
+    });
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(res.termination).toBe("converged");
+    // 12 findings on one file → batches of 5, 5, 2 run sequentially; never one 12-finding session
+    expect(sizes).toEqual([5, 5, 2]);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(5);
+    expect(res.findings.every((f) => f.status === "fixed")).toBe(true);
+  });
+
+  it("a batch that still times out falls back to a reactive single-finding split", async () => {
+    const findings = Array.from({ length: 6 }, (_, i) => ai("src/big.ts", `r${i}`, i + 1));
+    const audit = vi.fn(scriptedAudit([findings, []]));
+    const fixUnit = vi.fn(async (unit: WorkUnit): Promise<FixOutcome> => {
+      if (unit.findings.length > 1) {
+        return { kept: false, reason: "session-error", detail: "timed out", failureClass: "tool-timeout" };
+      }
+      return { kept: true };
+    });
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    // 6 findings → batches [5, 1]. The 5-batch times out → split into 5 singles (all fixed);
+    // the trailing single-finding batch is fixed directly. 1 batch + 5 splits + 1 batch = 7 calls.
+    expect(fixUnit.mock.calls.map((c) => c[0].findings.length)).toEqual([5, 1, 1, 1, 1, 1, 1]);
+    expect(res.termination).toBe("converged");
+    expect(res.findings.every((f) => f.status === "fixed")).toBe(true);
+  });
+
+  it("never chunks an atomic multi-file-duplicate-refactor unit", async () => {
+    const duplicate = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      category: "duplication",
+      file: "src/a.ts",
+      flowPath: [
+        { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 15, endCol: 0 } },
+        { file: "src/b.ts", line: 20, range: { startLine: 20, startCol: 0, endLine: 34, endCol: 0 } },
+      ],
+    });
+    const audit = vi.fn(scriptedAudit([[duplicate], []]));
+    const fixUnit = vi.fn(keep);
+
+    await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).toHaveBeenCalledOnce();
+    expect(fixUnit.mock.calls[0]?.[0].strategy).toBe("multi-file-duplicate-refactor");
+  });
+
   it("stops on rate limit with retryable infrastructure exit without consuming attempts", async () => {
     const finding = ai("src/a.ts");
     const audit = vi.fn(scriptedAudit([[finding], [finding]]));

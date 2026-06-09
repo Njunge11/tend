@@ -3,7 +3,7 @@ import { route } from "./findings/router.js";
 import type { Finding, Tool } from "./findings/finding.js";
 import type { ScannerStatus } from "./scanners/scanner.js";
 import type { RevertReason } from "./gate/check.js";
-import { dispatch, planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
+import { chunkUnit, dispatch, planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
 import {
   applyRepairPlanToFinding,
   isAiDispatchStrategy,
@@ -218,6 +218,15 @@ function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, 
   }
 }
 
+/**
+ * Max findings handed to one AI fix session. A single finding takes ~15–49s, so a batch of 5
+ * completes in ~75–245s — comfortably under the 10-min session cap — while still letting one
+ * session clear several related findings at once. A file with more findings is processed in
+ * sequential batches of this size (see `chunkUnit`), so the doomed full-file batch that always
+ * timed out never happens (root causes A+B).
+ */
+const FIX_BATCH_SIZE = 5;
+
 function splitUnit(unit: WorkUnit): WorkUnit[] {
   if (unit.findings.length <= 1) return [];
   return unit.findings.map((finding) => ({
@@ -411,51 +420,68 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
       files: units.map((u) => u.file),
       concurrency: config.maxSessions,
     });
-    const outcomesNested = await dispatch(
-      units,
-      async (unit): Promise<{ unit: WorkUnit; outcome: FixOutcome; apply: boolean }[]> => {
-        bus.emit({ type: "file-start", loop, file: unit.file, rule: unit.findings[0]?.rule });
-        const outcome = await deps.fixUnit(unit, loop);
-        const smaller = shouldSplitAfterFailure(unit, outcome) ? splitUnit(unit) : [];
-        if (smaller.length === 0) {
-          bus.emit({
-            type: "file-result",
-            loop,
-            file: unit.file,
-            outcome: outcome.kept ? "fixed" : "reverted",
-            reason: outcome.reason,
-            detail: outcome.detail,
-          });
-          return [{ unit, outcome, apply: true }];
-        }
+    type DispatchOutcome = { unit: WorkUnit; outcome: FixOutcome; apply: boolean };
 
+    // Fix one (sub-)unit; if a multi-finding batch still times out or regresses, reactively
+    // split it into single-finding units and run those sequentially as a last resort.
+    const fixWithSplitFallback = async (work: WorkUnit): Promise<DispatchOutcome[]> => {
+      bus.emit({ type: "file-start", loop, file: work.file, rule: work.findings[0]?.rule });
+      const outcome = await deps.fixUnit(work, loop);
+      const smaller = shouldSplitAfterFailure(work, outcome) ? splitUnit(work) : [];
+      if (smaller.length === 0) {
         bus.emit({
           type: "file-result",
           loop,
-          file: unit.file,
-          outcome: "left",
+          file: work.file,
+          outcome: outcome.kept ? "fixed" : "reverted",
           reason: outcome.reason,
           detail: outcome.detail,
         });
+        return [{ unit: work, outcome, apply: true }];
+      }
 
-        const splitOutcomes: { unit: WorkUnit; outcome: FixOutcome; apply: boolean }[] = [
-          { unit, outcome, apply: false },
-        ];
-        for (const split of smaller) {
-          bus.emit({ type: "file-start", loop, file: split.file, rule: split.findings[0]?.rule });
-          const splitOutcome = await deps.fixUnit(split, loop);
-          bus.emit({
-            type: "file-result",
-            loop,
-            file: split.file,
-            outcome: splitOutcome.kept ? "fixed" : "reverted",
-            reason: splitOutcome.reason,
-            detail: splitOutcome.detail,
-          });
-          splitOutcomes.push({ unit: split, outcome: splitOutcome, apply: true });
-          if (splitOutcome.failureClass === "rate-limit") break;
+      bus.emit({
+        type: "file-result",
+        loop,
+        file: work.file,
+        outcome: "left",
+        reason: outcome.reason,
+        detail: outcome.detail,
+      });
+
+      const splitOutcomes: DispatchOutcome[] = [{ unit: work, outcome, apply: false }];
+      for (const split of smaller) {
+        bus.emit({ type: "file-start", loop, file: split.file, rule: split.findings[0]?.rule });
+        const splitOutcome = await deps.fixUnit(split, loop);
+        bus.emit({
+          type: "file-result",
+          loop,
+          file: split.file,
+          outcome: splitOutcome.kept ? "fixed" : "reverted",
+          reason: splitOutcome.reason,
+          detail: splitOutcome.detail,
+        });
+        splitOutcomes.push({ unit: split, outcome: splitOutcome, apply: true });
+        if (splitOutcome.failureClass === "rate-limit") break;
+      }
+      return splitOutcomes;
+    };
+
+    const outcomesNested = await dispatch(
+      units,
+      async (unit): Promise<DispatchOutcome[]> => {
+        // Process a large file's findings in bounded SEQUENTIAL batches from the start so no
+        // session is ever handed more than it can finish in the timeout, and the doomed
+        // full-file batch never happens. Batches share the file, so they must run one after
+        // another (never concurrently) or they would patch-conflict on the same file.
+        const batches = chunkUnit(unit, FIX_BATCH_SIZE);
+        const results: DispatchOutcome[] = [];
+        for (const batch of batches) {
+          const batchResults = await fixWithSplitFallback(batch);
+          results.push(...batchResults);
+          if (batchResults.some((r) => r.outcome.failureClass === "rate-limit")) break;
         }
-        return splitOutcomes;
+        return results;
       },
       { concurrency: config.maxSessions },
     );

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
-import { dispatch, planWork, planWorkFromRepairs } from "./dispatch.js";
+import { chunkUnit, dispatch, planWork, planWorkFromRepairs } from "./dispatch.js";
+import type { WorkUnit } from "./dispatch.js";
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -74,6 +75,60 @@ describe("planWorkFromRepairs", () => {
       strategy: "multi-file-duplicate-refactor",
       verificationTargets: ["src/a.ts", "src/b.ts"],
     });
+  });
+});
+
+describe("chunkUnit — bounded sequential batches", () => {
+  const findingsFor = (file: string, count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      makeFinding({ file, rule: `r${i}`, range: { startLine: i + 1, startCol: 0, endLine: i + 1, endCol: 1 } }),
+    );
+  const unitWith = (count: number, extra: Partial<WorkUnit> = {}): WorkUnit => ({
+    file: "src/big.ts",
+    files: ["src/big.ts", "src/big.test.ts"],
+    findings: findingsFor("src/big.ts", count),
+    ...extra,
+  });
+
+  it("returns the same unit reference (no copy) when findings fit in one batch", () => {
+    const unit = unitWith(5);
+    expect(chunkUnit(unit, 5)).toEqual([unit]);
+    expect(chunkUnit(unit, 5)[0]).toBe(unit);
+    expect(chunkUnit(unitWith(3), 5)).toHaveLength(1);
+  });
+
+  it("splits a large unit into sequential batches of at most batchSize", () => {
+    const batches = chunkUnit(unitWith(25), 5);
+    expect(batches).toHaveLength(5);
+    expect(batches.map((b) => b.findings.length)).toEqual([5, 5, 5, 5, 5]);
+    // every finding is covered exactly once, in order
+    const rules = batches.flatMap((b) => b.findings.map((f) => f.rule));
+    expect(rules).toEqual(findingsFor("src/big.ts", 25).map((f) => f.rule));
+  });
+
+  it("leaves a non-even remainder in a final smaller batch", () => {
+    const batches = chunkUnit(unitWith(7), 5);
+    expect(batches.map((b) => b.findings.length)).toEqual([5, 2]);
+  });
+
+  it("every batch keeps the unit's file set (so batches must run sequentially)", () => {
+    const batches = chunkUnit(unitWith(12), 5);
+    for (const batch of batches) {
+      expect(batch.files).toEqual(["src/big.ts", "src/big.test.ts"]);
+      expect(batch.file).toBe("src/big.ts");
+    }
+  });
+
+  it("keeps atomic strategies whole — never split", () => {
+    for (const strategy of ["multi-file-duplicate-refactor", "generated-source-repair"] as const) {
+      const unit = unitWith(12, { strategy, strategies: [strategy] });
+      expect(chunkUnit(unit, 5)).toEqual([unit]);
+    }
+  });
+
+  it("treats batchSize < 1 as no chunking", () => {
+    const unit = unitWith(12);
+    expect(chunkUnit(unit, 0)).toEqual([unit]);
   });
 });
 
