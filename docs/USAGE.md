@@ -51,7 +51,7 @@ All flags apply to root-level runs and `tend run`:
 | `--all` | fix the whole repo backlog, not just changed files |
 | `--max-loops <n>` | cap on fix loops (default `5`) |
 | `--max-sessions <n>` | concurrent AI sessions (default `4`) |
-| `--model <model>` | `sonnet` (default), `opus`, `haiku`, or a full model id |
+| `--model <model>` | full model id (default `claude-sonnet-4-6`), or an alias: `sonnet`, `opus`, `haiku` |
 | `--effort <level>` | reasoning effort: `low \| medium \| high \| xhigh \| max` |
 | `--include-tests` | also fix findings in test files (excluded by default) |
 | `--plain` | one-line-per-event output for pipes/CI (no color, no spinners) |
@@ -70,14 +70,20 @@ Zero-config by default. `cosmiconfig` discovers `.tendrc`, `tend.config.js`, a `
   "perIssueBudget": 3,  // fix attempts per finding before it's marked unfixable
   "teethCheck": true,   // reject test edits that pass on the old code
   "includeTests": false,
-  "model": "sonnet",
+  "model": "claude-sonnet-4-6",
+  "duplicationModel": "claude-opus-4-6", // optional; capable model for jscpd dedup fixes
   "effort": "high"
 }
 ```
 
-CLI flags override the config file. `model` is an alias (`sonnet` default, `opus`, `haiku`) or a
-full model id (e.g. `claude-opus-4-8`); `effort` is the reasoning effort (`low | medium | high |
+CLI flags override the config file. `model` is a full model id (default `claude-sonnet-4-6`, e.g.
+`claude-opus-4-8`) or an alias (`sonnet`, `opus`, `haiku`); `effort` is the reasoning effort (`low | medium | high |
 xhigh | max`, unset → claude's default). Both are passed straight to `claude -p`.
+
+Duplication (jscpd) fixes need more reasoning than localized single-file edits, so a work unit
+containing any duplication finding is fixed with a more capable model — `claude-opus-4-6` by
+default. Override it with `duplicationModel` (an alias or full model id); everything else stays on
+`model`.
 
 ## Scanners
 

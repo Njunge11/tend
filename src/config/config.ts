@@ -30,8 +30,14 @@ export const ConfigSchema = z.object({
   test: z.string().optional(),
   teethCheck: z.boolean().default(true),
   includeTests: z.boolean().default(false),
-  /** Model passed to `claude -p` for fixes — an alias (sonnet/opus/haiku) or a full model id. */
-  model: z.string().default("sonnet"),
+  /** Model passed to `claude -p` for fixes — a full model id (or an alias like sonnet/opus/haiku). */
+  model: z.string().default("claude-sonnet-4-6"),
+  /**
+   * Model for duplication (jscpd) fixes — an alias or full model id. Cross-file
+   * dedup needs more reasoning than the default model, so these go to a more
+   * capable model. Unset → a built-in capable default (see model-selection.ts).
+   */
+  duplicationModel: z.string().optional(),
   /** Reasoning effort for fixes; unset → claude's own default. */
   effort: z.enum(EFFORT_LEVELS).optional(),
   /** Extended-thinking token budget per fix session; unset → per-finding policy decides. */
@@ -54,6 +60,7 @@ type CliOverrides = Partial<
     | "teethCheck"
     | "includeTests"
     | "model"
+    | "duplicationModel"
     | "effort"
   >
 >;

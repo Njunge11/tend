@@ -12,7 +12,7 @@ import type { SessionRunner } from "../src/session/types.js";
 import { undoCommand } from "../src/commands/undo.js";
 import { tmpRepo, type TmpRepo } from "./helpers/tmp-repo.js";
 
-const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4 };
+const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
 const LOOSE_EQ = /(?<![=!])==(?!=)/;
 
 const codeFinding = (file: string): RawFinding => ({

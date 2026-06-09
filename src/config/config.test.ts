@@ -32,7 +32,7 @@ describe("loadConfig", () => {
         includeGenerated: false,
         includeFixtures: false,
       },
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
     });
   });
 
@@ -57,14 +57,24 @@ describe("loadConfig", () => {
     });
   });
 
-  it("model: defaults to sonnet, overridable by config file and CLI flag", async () => {
-    expect((await loadConfig(dir)).model).toBe("sonnet");
+  it("model: defaults to claude-sonnet-4-6, overridable by config file and CLI flag", async () => {
+    expect((await loadConfig(dir)).model).toBe("claude-sonnet-4-6");
 
     writeFileSync(join(dir, ".tendrc.json"), JSON.stringify({ model: "opus" }));
     expect((await loadConfig(dir)).model).toBe("opus");
 
     const merged = applyCliOverrides(await loadConfig(dir), { model: "claude-haiku-4-5" });
     expect(merged.model).toBe("claude-haiku-4-5");
+  });
+
+  it("duplicationModel: unset by default, overridable by config file and CLI flag", async () => {
+    expect((await loadConfig(dir)).duplicationModel).toBeUndefined();
+
+    writeFileSync(join(dir, ".tendrc.json"), JSON.stringify({ duplicationModel: "claude-opus-4-6" }));
+    expect((await loadConfig(dir)).duplicationModel).toBe("claude-opus-4-6");
+
+    const merged = applyCliOverrides(await loadConfig(dir), { duplicationModel: "claude-opus-4-7" });
+    expect(merged.duplicationModel).toBe("claude-opus-4-7");
   });
 
   it("effort: optional, accepts valid levels, rejects invalid ones", async () => {

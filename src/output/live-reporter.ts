@@ -40,7 +40,8 @@ const CLOSED = Symbol("closed");
 
 /**
  * The live TTY view. Scanning shows a spinner with elapsed time; fixing shows one compact
- * redrawing listr2 progress row with X-of-Y · running · queued · outcome counts.
+ * redrawing listr2 progress row: fixed/total findings · reverted · the current file's
+ * rule, stage, model, and elapsed time.
  *
  * Events arrive synchronously on the bus while the orchestrator runs; this reporter buffers
  * them into channels and drives a sequence of listr instances (scan → fix → scan → …) from
@@ -61,18 +62,18 @@ export class LiveReporter extends BaseReporter implements Reporter {
     this.resolveClosed = () => resolve(CLOSED);
   });
 
-  // Per-loop fix state, reset on each loop-start.
-  private fixTotal = 0;
-  private started = 0;
-  private finished = 0;
-  private fixed = 0;
-  private reverted = 0;
-  private notAttempted = 0;
+  // Per-phase fix state, reset on each loop-start. We count FINDINGS (issues), not jobs: the
+  // denominator is the total findings dispatched this phase, which is stable because findings
+  // never split (jobs do). The numerator jumps by a job's finding-count when that job ends.
+  private findingsTotal = 0;
+  private fixedFindings = 0;
+  private revertedFindings = 0;
   private currentLoop = 0;
   private readonly runningFiles = new Set<string>();
   private readonly fileStartTimes = new Map<string, number>();
   private currentConcurrency?: number;
   private readonly rules = new Map<string, string>();
+  private readonly models = new Map<string, string>();
   private readonly stages = new Map<string, FixStage>();
   private readonly stageDetails = new Map<string, string>();
   private readonly scannerStates = new Map<Tool, ScannerInfo>();
@@ -121,16 +122,14 @@ export class LiveReporter extends BaseReporter implements Reporter {
         // Reset counters here (synchronously, before any file-start for this loop) so the
         // header counts stay correct no matter how events interleave with rendering.
         this.currentLoop = event.loop;
-        this.fixTotal = event.files.length;
-        this.started = 0;
-        this.finished = 0;
-        this.fixed = 0;
-        this.reverted = 0;
-        this.notAttempted = 0;
+        this.findingsTotal = event.findings;
+        this.fixedFindings = 0;
+        this.revertedFindings = 0;
         this.runningFiles.clear();
         this.fileStartTimes.clear();
         this.currentConcurrency = event.concurrency;
         this.rules.clear();
+        this.models.clear();
         this.stages.clear();
         this.stageDetails.clear();
         this.labelWidth = Math.max(
@@ -143,11 +142,10 @@ export class LiveReporter extends BaseReporter implements Reporter {
         });
         break;
       case "file-start":
-        this.started += 1;
-        this.fixTotal = Math.max(this.fixTotal, this.started);
         this.runningFiles.add(event.file);
         this.fileStartTimes.set(event.file, Date.now());
         if (event.rule) this.rules.set(event.file, event.rule);
+        if (event.model) this.models.set(event.file, event.model);
         this.refreshHeader();
         break;
       case "file-stage":
@@ -157,11 +155,10 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.refreshHeader();
         break;
       case "file-result":
-        this.finished += 1;
-        this.fixTotal = Math.max(this.fixTotal, this.started, this.finished);
-        if (event.outcome === "fixed") this.fixed += 1;
-        else if (event.outcome === "reverted") this.reverted += 1;
-        else this.notAttempted += 1;
+        // Count findings, not jobs. "left" (not attempted / split-parent placeholder) is
+        // ignored — those findings roll into the next pass and show in the final summary.
+        if (event.outcome === "fixed") this.fixedFindings += event.findings;
+        else if (event.outcome === "reverted") this.revertedFindings += event.findings;
         this.runningFiles.delete(event.file);
         this.fileStartTimes.delete(event.file);
         this.refreshHeader();
@@ -325,17 +322,14 @@ export class LiveReporter extends BaseReporter implements Reporter {
   }
 
   private headerTitle(): string {
-    const running = Math.max(0, this.started - this.finished);
-    const queued = Math.max(0, this.fixTotal - this.started);
     const bullet = this.theme.glyph.bullet;
-    const outcomes = `${this.fixed} fixed ${bullet} ${this.reverted} reverted`;
     const cost = this.cumulativeCostUsd > 0 ? ` ${bullet} $${this.cumulativeCostUsd.toFixed(2)}` : "";
     const runningList = [...this.runningFiles];
     const current = runningList.length > 0
       ? runningList.map((f) => this.fileTitle(f)).join(` ${bullet} `)
       : "";
-    const detail = `${bullet} ${running} running ${bullet} ${queued} queued ${bullet} ${outcomes}${cost}${current ? ` ${bullet} ${current}` : ""}`;
-    return `fix pass ${this.currentLoop} ${this.finished}/${this.fixTotal} ${this.theme.dim(detail)}`;
+    const detail = this.theme.dim(`${cost}${current ? ` ${bullet} ${current}` : ""}`);
+    return `fix pass ${this.currentLoop} ${bullet} ${this.fixedFindings}/${this.findingsTotal} fixed ${bullet} ${this.revertedFindings} reverted${detail}`;
   }
 
   private refreshHeader(): void {
@@ -354,9 +348,10 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private fileTitle(file: string): string {
     const rule = this.rules.get(file);
     const stage = this.stages.get(file);
+    const model = this.models.get(file);
     const startTime = this.fileStartTimes.get(file);
     const elapsed = startTime ? formatClock(Date.now() - startTime) : undefined;
-    const detail = [rule, stage ? fixStageLabel(stage) : undefined, this.stageDetails.get(file), elapsed]
+    const detail = [rule, stage ? fixStageLabel(stage) : undefined, this.stageDetails.get(file), model, elapsed]
       .filter(Boolean)
       .join(" · ");
     const suffix = detail ? `  ${this.theme.dim(detail)}` : "";

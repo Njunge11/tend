@@ -28,11 +28,11 @@ describe("PlainReporter", () => {
       { type: "scanner-start", loop: 1, tool: "jscpd" },
       { type: "scanner-result", loop: 1, tool: "jscpd", status: "ran", findings: 4 },
       { type: "audit", loop: 1, findings: 13, files: 10, scanned: 159 },
-      { type: "loop-start", loop: 1, files: ["a.ts", "b.ts"], concurrency: 4 },
-      { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity" },
+      { type: "loop-start", loop: 1, files: ["a.ts", "b.ts"], concurrency: 4, findings: 4 },
+      { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity", model: "claude-opus-4-6" },
       { type: "file-stage", loop: 1, file: "a.ts", stage: "typecheck" },
-      { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed" },
-      { type: "file-result", loop: 1, file: "b.ts", outcome: "reverted", reason: "broke-test" },
+      { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed", findings: 2 },
+      { type: "file-result", loop: 1, file: "b.ts", outcome: "reverted", findings: 2, reason: "broke-test" },
       { type: "loop-complete", loop: 1, fixed: 1, reverted: 1, remaining: 0, estimatedCostUsd: 0.42 },
       { type: "done", exitStatus: 0 },
     ];
@@ -44,14 +44,27 @@ describe("PlainReporter", () => {
     expect(lines).toContain("scanner jscpd: running");
     expect(lines).toContain("scanner jscpd: ran 4 findings");
     expect(lines.some((l) => l.includes("initial audit: fix scope 159 files eligible for fixes") && l.includes("in-scope findings 13 across 10 files"))).toBe(true);
-    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("2 files") && l.includes("4 concurrent"))).toBe(true);
+    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("4 findings across 2 files") && l.includes("4 concurrent"))).toBe(true);
     expect(lines).toContain("progress a.ts: typecheck");
-    expect(lines.some((l) => l.includes("fixed a.ts"))).toBe(true);
+    // The fixed line shows the model the job ran on, verbatim.
+    expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("claude-opus-4-6"))).toBe(true);
     expect(lines.some((l) => l.includes("reverted b.ts") && l.includes("broke tests"))).toBe(true);
     // loop-complete now renders an intermediate summary line.
     expect(lines.some((l) => l.includes("loop 1:") && l.includes("1 fixed") && l.includes("1 reverted") && l.includes("$0.42"))).toBe(true);
     // file-start and done produce no standalone lines.
     expect(lines.some((l) => l.includes("a.ts") && l.includes("cognitive-complexity"))).toBe(false);
+  });
+
+  it("labels a deterministic-phase job's model as 'deterministic'", () => {
+    const { reporter, lines } = harness();
+    const events: TendEvent[] = [
+      { type: "loop-start", loop: 1, files: ["a.ts"], concurrency: 1, findings: 1 },
+      { type: "file-start", loop: 1, file: "a.ts", rule: "no-unused", model: "deterministic" },
+      { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed", findings: 1 },
+    ];
+    for (const e of events) reporter.onEvent(e);
+
+    expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("deterministic"))).toBe(true);
   });
 
   it("writes streamed session activity line-by-line during a long AI edit", () => {

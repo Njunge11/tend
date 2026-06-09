@@ -15,6 +15,7 @@ import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
 import { makeFixUnit } from "./fixing/fix-unit.js";
 import { thinkingEnv } from "./fixing/thinking-budget.js";
+import { modelForUnit } from "./fixing/model-selection.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
@@ -189,7 +190,7 @@ async function makeProductionFixUnit(
             "-p",
             req.prompt,
             "--model",
-            config.model,
+            modelForUnit(req.findings, config),
             "--effort",
             unitEffort,
             "--output-format",

@@ -11,7 +11,7 @@ import { filterToChanged } from "./scanners/scope.js";
 import { tmpRepo } from "../test/helpers/tmp-repo.js";
 import { ReportSchema } from "./report/schema.js";
 
-const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4 };
+const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
 
 const ai = (file: string, rule = "r1", line = 1): Finding =>
   makeFinding({ tool: "sonarjs", file, rule, range: { startLine: line, startCol: 0, endLine: line, endCol: 1 } });
