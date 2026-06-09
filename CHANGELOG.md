@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.10.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.6...tend-cli-v0.10.0) (2026-06-09)
+
+
+### Features
+
+* **fixing:** route duplication fixes to a more capable model ([63241ac](https://github.com/Njunge11/tend/commit/63241ac863ca2f77f6cbd4396d42225058151323))
+* **reporter:** count findings with a stable denominator and show the per-job model ([2291d31](https://github.com/Njunge11/tend/commit/2291d3156629b3edb5ea26f10c858609c59621b7))
+* **reporter:** count findings with a stable denominator and show the per-job model ([43a5b21](https://github.com/Njunge11/tend/commit/43a5b21d038384d66b5f60d55e67b470bb706fcb))
+
 ## [0.9.6](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.5...tend-cli-v0.9.6) (2026-06-09)
 
 
