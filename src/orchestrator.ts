@@ -126,8 +126,13 @@ function allRepairFilesInScope(
   );
 }
 
-function dispatchableUnits(plans: RepairPlan[]): WorkUnit[] {
-  return planWorkFromRepairs(plans).filter((unit) => unit.strategy !== undefined && isAiDispatchStrategy(unit.strategy));
+export function dispatchableUnits(plans: RepairPlan[]): WorkUnit[] {
+  // Filter PLANS before unit-building (mirroring `deterministicUnits`). Removing
+  // non-dispatchable/`unsupported` (report-only) plans here means they can never reserve a
+  // sibling file in `ownerFiles` nor get merged into a dispatchable unit by `mergeUnits` — so a
+  // dispatched worker can't edit an out-of-fix-scope file or count its report-only findings as
+  // fixed. Filtering the resulting units instead runs too late: the merge has already happened.
+  return planWorkFromRepairs(plans.filter((plan) => isAiDispatchStrategy(plan.strategy)));
 }
 
 function isDeterministicStrategy(strategy: RepairStrategy | undefined): boolean {
@@ -198,9 +203,13 @@ function effectiveBudget(failureClass: FailureClass | undefined, budget: number)
     : budget;
 }
 
-function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, budget: number): void {
+export function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, budget: number): void {
   for (const finding of unit.findings) {
     if (outcome.kept) {
+      // Defense in depth: a kept unit only ever targeted its in-scope findings. Never credit an
+      // out-of-fix-scope (report-only) finding as fixed even if one reaches a kept unit by some
+      // other path — leave its status untouched (stays pending) so the report can't show it fixed.
+      if (finding.inFixScope === false) continue;
       finding.status = "fixed";
       delete finding.revertReason;
       delete finding.revertDetail;
