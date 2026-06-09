@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.6](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.5...tend-cli-v0.9.6) (2026-06-09)
+
+
+### Bug Fixes
+
+* **bin:** SIGKILL timed-out AI sessions so the session cap holds under load ([4d62e4f](https://github.com/Njunge11/tend/commit/4d62e4fb1a33915a532c9bd9bc0319393d7c5035))
+* **fixing:** advance the sandbox base so sequential same-file fixes don't patch-conflict ([43945e5](https://github.com/Njunge11/tend/commit/43945e564f6dc2c6e9f16ecdd6450bae4459c38a))
+* make tend converge on dense files (advancing sandbox base + SIGKILL session timeout) ([0e6cc06](https://github.com/Njunge11/tend/commit/0e6cc06dd9a1f34fed11717a7cf3591265713d9e))
+
 ## [0.9.5](https://github.com/Njunge11/tend/compare/tend-cli-v0.9.4...tend-cli-v0.9.5) (2026-06-09)
 
 
