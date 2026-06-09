@@ -13,7 +13,7 @@ const PLAIN_THEME = makeTheme({
   unicode: true,
 });
 
-export type SummaryOptions = {
+type SummaryOptions = {
   theme?: Theme;
   verbose?: boolean;
   plain?: boolean;
@@ -48,59 +48,55 @@ function isOutOfScope(f: Finding): boolean {
   return f.inScope === false && f.category !== "secret";
 }
 
-function bucket(report: Report): Buckets {
-  const fixed: Finding[] = [];
-  const skippedTests: Finding[] = [];
-  const generated: Finding[] = [];
-  const fixtures: Finding[] = [];
-  const outOfScope: Finding[] = [];
-  const reportOnly: Finding[] = [];
-  const timedOutSessionError: Finding[] = [];
-  const regressed: Finding[] = [];
-  const typecheckFailed: Finding[] = [];
-  const testFailed: Finding[] = [];
-  const retryExhausted: Finding[] = [];
-  const unresolvedEligible: Finding[] = [];
-  const secrets: Finding[] = [];
-  for (const f of report.findings) {
-    if (f.category === "secret") secrets.push(f);
-    // Out-of-scope findings are reported on the separate repo-wide line, never folded into
-    // the headline counts — so "0 in your changes" can't read as "the repo is clean".
-    else if (isOutOfScope(f)) outOfScope.push(f);
-    else if (f.inReportScope === false) continue;
-    else if (f.status === "fixed") fixed.push(f);
-    else if (f.status === "reverted" || f.status === "unfixable") {
-      if (f.revertReason === "session-error" || f.finalFailureClass === "tool-timeout") timedOutSessionError.push(f);
-      else if (f.revertReason === "regression") regressed.push(f);
-      else if (f.revertReason === "typecheck") typecheckFailed.push(f);
-      else if (f.revertReason === "broke-test") testFailed.push(f);
-      else retryExhausted.push(f);
-    }
-    else {
-      const pending = classifyPending(f, report);
-      if (pending === "skippedTests") skippedTests.push(f);
-      else if (pending === "generated") generated.push(f);
-      else if (pending === "fixtures") fixtures.push(f);
-      else if (pending === "outOfScope") outOfScope.push(f);
-      else if (pending === "reportOnly") reportOnly.push(f);
-      else unresolvedEligible.push(f);
-    }
-  }
+function emptyBuckets(): Buckets {
   return {
-    fixed,
-    skippedTests,
-    generated,
-    fixtures,
-    outOfScope,
-    reportOnly,
-    timedOutSessionError,
-    regressed,
-    typecheckFailed,
-    testFailed,
-    retryExhausted,
-    unresolvedEligible,
-    secrets,
+    fixed: [],
+    skippedTests: [],
+    generated: [],
+    fixtures: [],
+    outOfScope: [],
+    reportOnly: [],
+    timedOutSessionError: [],
+    regressed: [],
+    typecheckFailed: [],
+    testFailed: [],
+    retryExhausted: [],
+    unresolvedEligible: [],
+    secrets: [],
   };
+}
+
+/** Which `reverted`/`unfixable` bucket a finding belongs to, by revert cause. */
+function classifyReverted(f: Finding): keyof Buckets {
+  if (f.revertReason === "session-error" || f.finalFailureClass === "tool-timeout")
+    return "timedOutSessionError";
+  if (f.revertReason === "regression") return "regressed";
+  if (f.revertReason === "typecheck") return "typecheckFailed";
+  if (f.revertReason === "broke-test") return "testFailed";
+  return "retryExhausted";
+}
+
+/** The bucket a finding belongs to, or `null` when it should be dropped entirely. */
+function classifyFinding(f: Finding, report: Report): keyof Buckets | null {
+  if (f.category === "secret") return "secrets";
+  // Out-of-scope findings are reported on the separate repo-wide line, never folded into
+  // the headline counts — so "0 in your changes" can't read as "the repo is clean".
+  if (isOutOfScope(f)) return "outOfScope";
+  if (f.inReportScope === false) return null;
+  if (f.status === "fixed") return "fixed";
+  if (f.status === "reverted" || f.status === "unfixable")
+    return classifyReverted(f);
+  const pending = classifyPending(f, report);
+  return pending === "left" ? "unresolvedEligible" : pending;
+}
+
+function bucket(report: Report): Buckets {
+  const buckets = emptyBuckets();
+  for (const f of report.findings) {
+    const key = classifyFinding(f, report);
+    if (key) buckets[key].push(f);
+  }
+  return buckets;
 }
 
 function classifyPending(f: Finding, report: Report): PendingBucket {
@@ -147,9 +143,8 @@ export function renderSummary(
 
   const lines: string[] = [];
   lines.push(theme.dim(glyph.rule.repeat(RULE_WIDTH)));
-  lines.push(
-    `done ${theme.dim(`${glyph.bullet} ${report.loops} fix passes ${glyph.bullet} ${formatDuration(report.durationMs)}`)}`,
-  );
+  const headlineMeta = `${glyph.bullet} ${report.loops} fix passes ${glyph.bullet} ${formatDuration(report.durationMs)}`;
+  lines.push(`done ${theme.dim(headlineMeta)}`);
   lines.push("");
   lines.push(theme.bold("run summary"));
   lines.push(renderOverallTable(report, b, theme));
@@ -193,149 +188,170 @@ function renderPlainSummary(
 ): string {
   const lines = [
     `done ${theme.glyph.bullet} ${report.loops} fix passes ${theme.glyph.bullet} ${formatDuration(report.durationMs)}`,
+    plainSummaryLine(b),
+    plainAiUsageLine(report),
+  ];
+  lines.push(...plainStrategyLines(report));
+  lines.push(...plainFailureLines(report));
+  lines.push(...plainScannerLines(report));
+  lines.push(...plainCouldntFixLines(b));
+  lines.push(...plainSecretLines(b));
+  lines.push(...plainExclusionLines(b));
+  if (verbose) lines.push(...plainVerboseLines(report));
+  lines.push(
+    'next command="tend diff" command="git add -p" command="tend undo"',
+  );
+  return lines.join("\n");
+}
+
+/** The single `summary ...` headline line of the plain (machine) output. */
+function plainSummaryLine(b: Buckets): string {
+  return [
+    "summary",
+    `fixed=${b.fixed.length}`,
+    `couldntFix=${couldntFixFindings(b).length}`,
+    `skippedTests=${b.skippedTests.length}`,
+    `reportOnly=${b.reportOnly.length}`,
+    `left=${b.unresolvedEligible.length}`,
+    `secrets=${b.secrets.length}`,
+    `generated=${b.generated.length}`,
+    `fixtures=${b.fixtures.length}`,
+    `outOfScope=${b.outOfScope.length}`,
+    `unresolvedEligible=${b.unresolvedEligible.length}`,
+    `timedOutSessionError=${b.timedOutSessionError.length}`,
+    `regressed=${b.regressed.length}`,
+    `typecheckFailed=${b.typecheckFailed.length}`,
+    `testFailed=${b.testFailed.length}`,
+  ].join(" ");
+}
+
+/** The single `aiUsage ...` line of the plain output. */
+function plainAiUsageLine(report: Report): string {
+  return [
+    "aiUsage",
+    `estimatedCostUsd=${report.aiUsage.estimatedCostUsd.toFixed(2)}`,
+    `sessions=${report.aiUsage.sessions}`,
+    `inputTokens=${report.aiUsage.inputTokens}`,
+    `outputTokens=${report.aiUsage.outputTokens}`,
+    `cacheReadInputTokens=${report.aiUsage.cacheReadInputTokens}`,
+    `cacheCreationInputTokens=${report.aiUsage.cacheCreationInputTokens}`,
+  ].join(" ");
+}
+
+/** The `repairStrategies ...` line, omitted when no strategies were recorded. */
+function plainStrategyLines(report: Report): string[] {
+  const strategyCounts = repairStrategyCounts(report);
+  if (strategyCounts.size === 0) return [];
+  return [
     [
-      "summary",
-      `fixed=${b.fixed.length}`,
-      `couldntFix=${couldntFixFindings(b).length}`,
-      `skippedTests=${b.skippedTests.length}`,
-      `reportOnly=${b.reportOnly.length}`,
-      `left=${b.unresolvedEligible.length}`,
-      `secrets=${b.secrets.length}`,
-      `generated=${b.generated.length}`,
-      `fixtures=${b.fixtures.length}`,
-      `outOfScope=${b.outOfScope.length}`,
-      `unresolvedEligible=${b.unresolvedEligible.length}`,
-      `timedOutSessionError=${b.timedOutSessionError.length}`,
-      `regressed=${b.regressed.length}`,
-      `typecheckFailed=${b.typecheckFailed.length}`,
-      `testFailed=${b.testFailed.length}`,
-    ].join(" "),
-    [
-      "aiUsage",
-      `estimatedCostUsd=${report.aiUsage.estimatedCostUsd.toFixed(2)}`,
-      `sessions=${report.aiUsage.sessions}`,
-      `inputTokens=${report.aiUsage.inputTokens}`,
-      `outputTokens=${report.aiUsage.outputTokens}`,
-      `cacheReadInputTokens=${report.aiUsage.cacheReadInputTokens}`,
-      `cacheCreationInputTokens=${report.aiUsage.cacheCreationInputTokens}`,
+      "repairStrategies",
+      ...[...strategyCounts.entries()].map(
+        ([strategy, count]) => `${strategy}=${count}`,
+      ),
     ].join(" "),
   ];
-  const strategyCounts = repairStrategyCounts(report);
-  if (strategyCounts.size > 0) {
-    lines.push(
-      [
-        "repairStrategies",
-        ...[...strategyCounts.entries()].map(([strategy, count]) => `${strategy}=${count}`),
-      ].join(" "),
-    );
-  }
-  if (report.exitStatus !== 0 || hasFailureSummary(report)) {
-    lines.push(
-      [
-        "failureSummary",
-        `blockingSecrets=${report.failureSummary.blockingSecrets}`,
-        `unresolvedEligible=${report.failureSummary.unresolvedEligible}`,
-        `toolFailures=${report.failureSummary.toolFailures}`,
-        `failedDeterministic=${report.failureSummary.failedDeterministic}`,
-        `sessionErrors=${report.failureSummary.sessionErrors}`,
-        `regressions=${report.failureSummary.regressions}`,
-        `typecheckFailures=${report.failureSummary.typecheckFailures}`,
+}
+
+/** The `failureSummary ...` line (plus final-integration), omitted on clean success. */
+function plainFailureLines(report: Report): string[] {
+  if (report.exitStatus === 0 && !hasFailureSummary(report)) return [];
+  const lines = [
+    [
+      "failureSummary",
+      `blockingSecrets=${report.failureSummary.blockingSecrets}`,
+      `unresolvedEligible=${report.failureSummary.unresolvedEligible}`,
+      `toolFailures=${report.failureSummary.toolFailures}`,
+      `failedDeterministic=${report.failureSummary.failedDeterministic}`,
+      `sessionErrors=${report.failureSummary.sessionErrors}`,
+      `regressions=${report.failureSummary.regressions}`,
+      `typecheckFailures=${report.failureSummary.typecheckFailures}`,
       `testFailures=${report.failureSummary.testFailures}`,
       `sandboxSetupFailures=${report.failureSummary.sandboxSetupFailures}`,
       `patchConflicts=${report.failureSummary.patchConflicts}`,
       `unownedPatches=${report.failureSummary.unownedPatches}`,
       `finalIntegrationFailures=${report.failureSummary.finalIntegrationFailures}`,
     ].join(" "),
-  );
+  ];
   if (report.finalIntegration && !report.finalIntegration.ok) {
     lines.push(
       `final-integration status=failed files=${report.finalIntegration.files.length} detail=${JSON.stringify(firstLine(report.finalIntegration.detail ?? ""))}`,
     );
   }
-  }
+  return lines;
+}
 
+/** The trailing ` reason=...` suffix for a plain `scanner ...` line. */
+function plainScannerReason(
+  status: Report["scannerStatuses"][number] | undefined,
+): string {
+  if (status?.status === "failed" && status.reason)
+    return ` reason=${JSON.stringify(firstLine(status.reason))}`;
+  if (status?.status === "skipped") return " reason=not-installed";
+  return "";
+}
+
+/** One `scanner ...` line per tool that ran or has findings. */
+function plainScannerLines(report: Report): string[] {
   const counts = inScopeByTool(report);
   const statusByTool = new Map(report.scannerStatuses.map((s) => [s.tool, s]));
   const tools = TOOLS.filter((t) => statusByTool.has(t) || counts.has(t));
-  for (const tool of tools) {
+  return tools.map((tool) => {
     const status = statusByTool.get(tool);
-    const c = counts.get(tool) ?? {
-      total: 0,
-      fixed: 0,
-      couldntFix: 0,
-      skippedTests: 0,
-      reportOnly: 0,
-      left: 0,
-      generated: 0,
-      fixtures: 0,
-      outOfScope: 0,
-    };
-    const reason =
-      status?.status === "failed" && status.reason
-        ? ` reason=${JSON.stringify(firstLine(status.reason))}`
-        : status?.status === "skipped"
-          ? " reason=not-installed"
-          : "";
-    lines.push(
-      `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left} unresolvedEligible=${c.left} generated=${c.generated} fixtures=${c.fixtures} outOfScope=${c.outOfScope}${reason}`,
-    );
-  }
+    const c = counts.get(tool) ?? emptyScopeCounts();
+    const reason = plainScannerReason(status);
+    return `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left} unresolvedEligible=${c.left} generated=${c.generated} fixtures=${c.fixtures} outOfScope=${c.outOfScope}${reason}`;
+  });
+}
 
-  for (const f of couldntFixFindings(b)) {
-    const id = retryTarget(f);
-    lines.push(
-      `couldnt-fix retryId=${f.retryId ?? "(none)"} file=${JSON.stringify(f.file)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(findingReason(f))} detail=${JSON.stringify(firstLine(f.revertDetail ?? ""))} command=${JSON.stringify(`tend retry ${id}`)}`,
-    );
-  }
+/** One `couldnt-fix ...` line per finding tend gave up on. */
+function plainCouldntFixLines(b: Buckets): string[] {
+  return couldntFixFindings(b).map((f) => {
+    const command = `tend retry ${retryTarget(f)}`;
+    return `couldnt-fix retryId=${f.retryId ?? "(none)"} file=${JSON.stringify(f.file)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(findingReason(f))} detail=${JSON.stringify(firstLine(f.revertDetail ?? ""))} command=${JSON.stringify(command)}`;
+  });
+}
 
-  for (const f of b.secrets) {
-    lines.push(
+/** One `secret ...` line per secret finding. */
+function plainSecretLines(b: Buckets): string[] {
+  return b.secrets.map(
+    (f) =>
       `secret retryId=${f.retryId ?? "(none)"} file=${JSON.stringify(f.file)} rule=${JSON.stringify(f.rule)} action=${JSON.stringify("rotate + scrub history")}`,
-    );
-  }
+  );
+}
 
-  if (b.skippedTests.length > 0) {
+/** The excluded-bucket lines (skipped tests, generated, fixtures, out-of-scope, report-only). */
+function plainExclusionLines(b: Buckets): string[] {
+  const lines: string[] = [];
+  if (b.skippedTests.length > 0)
     lines.push(
       `skipped-tests count=${b.skippedTests.length} reason="test files are excluded by default" command="tend run --include-tests <path...>"`,
     );
-  }
-
-  if (b.generated.length > 0) {
+  if (b.generated.length > 0)
     lines.push(
       `generated count=${b.generated.length} reason="generated/cache/build output is excluded from fixes by default"`,
     );
-  }
-
-  if (b.fixtures.length > 0) {
+  if (b.fixtures.length > 0)
     lines.push(
       `fixtures count=${b.fixtures.length} reason="fixture files are excluded from fixes by default"`,
     );
-  }
-
-  if (b.outOfScope.length > 0) {
+  if (b.outOfScope.length > 0)
     lines.push(
       `out-of-scope count=${b.outOfScope.length} reason="outside the current fix scope or explicitly excluded"`,
     );
-  }
-
-  if (b.reportOnly.length > 0) {
+  if (b.reportOnly.length > 0)
     lines.push(
       `report-only count=${b.reportOnly.length} reason="unsupported or report-only findings"`,
     );
-  }
+  return lines;
+}
 
-  if (verbose) {
-    for (const f of report.findings) {
-      lines.push(
-        `finding retryId=${f.retryId ?? ""} status=${f.status} strategy=${f.repairStrategy ?? ""} tool=${f.tool} location=${JSON.stringify(`${f.file}:${f.range.startLine}`)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(f.status === "fixed" ? "" : findingReason(f))}`,
-      );
-    }
-  }
-
-  lines.push(
-    'next command="tend diff" command="git add -p" command="tend undo"',
-  );
-  return lines.join("\n");
+/** One `finding ...` line per finding, emitted only under `--verbose`. */
+function plainVerboseLines(report: Report): string[] {
+  return report.findings.map((f) => {
+    const location = `${f.file}:${f.range.startLine}`;
+    const reason = f.status === "fixed" ? "" : findingReason(f);
+    return `finding retryId=${f.retryId ?? ""} status=${f.status} strategy=${f.repairStrategy ?? ""} tool=${f.tool} location=${JSON.stringify(location)} rule=${JSON.stringify(f.rule)} reason=${JSON.stringify(reason)}`;
+  });
 }
 
 function repairStrategyCounts(report: Report): Map<string, number> {
@@ -357,6 +373,19 @@ function renderTable(head: string[], rows: string[][]): string {
   return table.toString();
 }
 
+/** The headline `status` cell: error when exiting non-zero, otherwise success. */
+function overallStatusText(
+  report: Report,
+  clean: boolean,
+  theme: Theme,
+): string {
+  if (report.exitStatus !== 0)
+    return theme.error(`needs attention (exit ${report.exitStatus})`);
+  return clean
+    ? theme.fixed("success (nothing to fix)")
+    : theme.fixed("success");
+}
+
 function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
   const couldntFix = couldntFixFindings(b);
   const clean =
@@ -370,12 +399,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     b.unresolvedEligible.length === 0 &&
     b.secrets.length === 0 &&
     !hasFailureSummary(report);
-  const status =
-    report.exitStatus === 0
-      ? clean
-        ? theme.fixed("success (nothing to fix)")
-        : theme.fixed("success")
-      : theme.error(`needs attention (exit ${report.exitStatus})`);
+  const status = overallStatusText(report, clean, theme);
   const rows = [
     ["status", status],
     ["scope", scopeLabel(report)],
@@ -488,38 +512,67 @@ type ScopeCounts = {
   outOfScope: number;
 };
 
+/** A fresh zeroed `ScopeCounts` tally. */
+function emptyScopeCounts(): ScopeCounts {
+  return {
+    total: 0,
+    fixed: 0,
+    couldntFix: 0,
+    skippedTests: 0,
+    reportOnly: 0,
+    left: 0,
+    generated: 0,
+    fixtures: 0,
+    outOfScope: 0,
+  };
+}
+
+/** The `ScopeCounts` field a finding contributes to (besides `total`). */
+function scopeCountKey(f: Finding, report: Report): keyof ScopeCounts {
+  if (f.status === "fixed") return "fixed";
+  if (f.status === "reverted" || f.status === "unfixable") return "couldntFix";
+  return classifyPending(f, report);
+}
+
 /** Per-tool tally over the in-scope findings only. */
 function inScopeByTool(report: Report): Map<Tool, ScopeCounts> {
   const counts = new Map<Tool, ScopeCounts>();
   for (const f of report.findings) {
     if (f.inScope === false) continue;
-    const row = counts.get(f.tool) ?? {
-      total: 0,
-      fixed: 0,
-      couldntFix: 0,
-      skippedTests: 0,
-      reportOnly: 0,
-      left: 0,
-      generated: 0,
-      fixtures: 0,
-      outOfScope: 0,
-    };
+    const row = counts.get(f.tool) ?? emptyScopeCounts();
     row.total += 1;
-    if (f.status === "fixed") row.fixed += 1;
-    else if (f.status === "reverted" || f.status === "unfixable")
-      row.couldntFix += 1;
-    else {
-      const pending = classifyPending(f, report);
-      if (pending === "skippedTests") row.skippedTests += 1;
-      else if (pending === "generated") row.generated += 1;
-      else if (pending === "fixtures") row.fixtures += 1;
-      else if (pending === "outOfScope") row.outOfScope += 1;
-      else if (pending === "reportOnly") row.reportOnly += 1;
-      else row.left += 1;
-    }
+    row[scopeCountKey(f, report)] += 1;
     counts.set(f.tool, row);
   }
   return counts;
+}
+
+/** A single cell of the placeholder row shown when no scanners ran. */
+function emptyScannerCell(index: number): string {
+  if (index === 0) return "(none)";
+  if (index === 1) return "not recorded";
+  return "0";
+}
+
+/** The `status` cell for a scanner-breakdown row. */
+function scannerStatusText(
+  status: Report["scannerStatuses"][number] | undefined,
+  theme: Theme,
+): string {
+  if (status?.status === "ran") return `${theme.fixed(theme.glyph.fixed)} ran`;
+  if (status?.status === "failed") return `${theme.error("!")} failed`;
+  if (status?.status === "skipped") return "skipped";
+  return "not recorded";
+}
+
+/** The `reason` cell for a scanner-breakdown row. */
+function scannerReasonText(
+  status: Report["scannerStatuses"][number] | undefined,
+): string {
+  if (status?.status === "failed" && status.reason)
+    return firstLine(status.reason);
+  if (status?.status === "skipped") return "not installed";
+  return "";
 }
 
 function renderScannerBreakdownTable(report: Report, theme: Theme, verbose = false): string {
@@ -528,38 +581,18 @@ function renderScannerBreakdownTable(report: Report, theme: Theme, verbose = fal
   const tools = TOOLS.filter((t) => statusByTool.has(t) || counts.has(t));
   if (tools.length === 0) {
     const headers = scannerBreakdownHeaders(verbose);
-    const emptyRow = Array.from({ length: headers.length }, (_, i) => (i === 0 ? "(none)" : i === 1 ? "not recorded" : "0"));
+    const emptyRow = Array.from({ length: headers.length }, (_, i) =>
+      emptyScannerCell(i),
+    );
     return renderTable(headers, [emptyRow]);
   }
 
   const rows = tools.map((tool) => {
     const status = statusByTool.get(tool);
-    const c = counts.get(tool) ?? {
-      total: 0,
-      fixed: 0,
-      couldntFix: 0,
-      skippedTests: 0,
-      reportOnly: 0,
-      left: 0,
-      generated: 0,
-      fixtures: 0,
-      outOfScope: 0,
-    };
+    const c = counts.get(tool) ?? emptyScopeCounts();
     const label = scannerLabel(tool);
-    const statusText =
-      status?.status === "ran"
-        ? `${theme.fixed(theme.glyph.fixed)} ran`
-        : status?.status === "failed"
-          ? `${theme.error("!")} failed`
-          : status?.status === "skipped"
-            ? "skipped"
-            : "not recorded";
-    const reason =
-      status?.status === "failed" && status.reason
-        ? firstLine(status.reason)
-        : status?.status === "skipped"
-          ? "not installed"
-          : "";
+    const statusText = scannerStatusText(status, theme);
+    const reason = scannerReasonText(status);
     const base = [label, statusText, String(c.total), String(c.fixed), String(c.couldntFix), String(c.left), reason];
     if (verbose) return [...base.slice(0, -1), String(c.skippedTests), String(c.reportOnly), String(c.generated), String(c.fixtures), String(c.outOfScope), reason];
     return base;
@@ -662,7 +695,7 @@ function couldntFixReason(f: Finding): CouldntFixReason {
   return "retries exhausted";
 }
 
-export function groupCouldntFixByReason(
+function groupCouldntFixByReason(
   findings: Finding[],
 ): CouldntFixReasonGroup[] {
   const groups = new Map<CouldntFixReason, Finding[]>();
@@ -678,13 +711,13 @@ export function groupCouldntFixByReason(
   });
 }
 
-export function truncateCell(value: string, maxLength = 64): string {
+function truncateCell(value: string, maxLength = 64): string {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLength) return normalized;
   return `${normalized.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
-export function uniqueExampleFiles(findings: Finding[], maxFiles = 3): string[] {
+function uniqueExampleFiles(findings: Finding[], maxFiles = 3): string[] {
   const files: string[] = [];
   const seen = new Set<string>();
   for (const finding of findings) {
@@ -701,7 +734,7 @@ function nextActionForCouldntFixGroup(findings: Finding[]): string {
   return "run with --verbose";
 }
 
-export function renderCouldntFixSummaryTable(findings: Finding[]): string {
+function renderCouldntFixSummaryTable(findings: Finding[]): string {
   const rows = groupCouldntFixByReason(findings).map((group) => [
     group.reason,
     String(group.findings.length),
@@ -713,7 +746,7 @@ export function renderCouldntFixSummaryTable(findings: Finding[]): string {
   return renderTable(["reason", "count", "examples", "next action"], rows);
 }
 
-export function renderCouldntFixDetailTable(
+function renderCouldntFixDetailTable(
   findings: Finding[],
   theme: Theme,
 ): string {
@@ -805,8 +838,8 @@ function renderVerbose(report: Report, theme: Theme): string {
   ].join("\n");
 }
 
-export type RemainingKey = "secrets" | "security" | "couldnt-fix" | "review";
-export type RemainingGroup = {
+type RemainingKey = "secrets" | "security" | "couldnt-fix" | "review";
+type RemainingGroup = {
   key: RemainingKey;
   title: string;
   count: number;

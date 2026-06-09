@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
+import type { Finding } from "../findings/finding.js";
 import { ReportBuilder } from "../report/builder.js";
 import { ReportSchema, type Report } from "../report/schema.js";
 import { groupRemaining, renderSummary } from "./summary.js";
@@ -10,6 +11,53 @@ function reportWith(...findings: ReturnType<typeof makeFinding>[]) {
   const builder = new ReportBuilder();
   builder.recordOutcomes(findings);
   return builder;
+}
+
+/** Mark jscpd as ran, build a one-loop report, and render both the styled and plain summaries. */
+function renderAfterJscpdRan(builder: ReportBuilder) {
+  builder.recordScannerStatuses([{ tool: "jscpd", status: "ran" }]);
+  const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
+  return { out: renderSummary(report), plain: renderSummary(report, { plain: true }) };
+}
+
+/** Mark sonarjs as ran, build a one-loop report (with optional overrides), and render both summaries. */
+function renderAfterSonarRan(
+  builder: ReportBuilder,
+  buildOverrides: Partial<Parameters<ReportBuilder["build"]>[0]> = {},
+) {
+  builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
+  const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0, ...buildOverrides });
+  return { out: renderSummary(report), plain: renderSummary(report, { plain: true }) };
+}
+
+/** A knip `unused-export` dead-code finding for the given file. */
+function knipDeadCodeFinding(file: string) {
+  return makeFinding({
+    tool: "knip",
+    rule: "unused-export",
+    category: "dead-code",
+    file,
+  });
+}
+
+/** A builder with one fixed sonarjs finding and one reverted knip dead-code finding. */
+function fixedAndRevertedBuilder(revertReason?: Finding["revertReason"]) {
+  return reportWith(
+    {
+      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
+      status: "fixed",
+    },
+    {
+      ...knipDeadCodeFinding("src/b.ts"),
+      status: "reverted",
+      ...(revertReason ? { revertReason } : {}),
+    },
+  );
+}
+
+/** A builder with a single sonarjs finding on src/a.ts at the given status (plus optional overrides). */
+function sonarBuilder(status: Finding["status"], overrides: Partial<Finding> = {}) {
+  return reportWith({ ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }), status, ...overrides });
 }
 
 function badRunScopeAndTimeoutsReport(): Report {
@@ -25,22 +73,7 @@ function badRunScopeAndTimeoutsReport(): Report {
 
 describe("renderSummary", () => {
   it("T-099: headline groups fixed vs couldn't-fix with real elapsed time", () => {
-    const builder = reportWith(
-      {
-        ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
-        status: "fixed",
-      },
-      {
-        ...makeFinding({
-          tool: "knip",
-          rule: "unused-export",
-          category: "dead-code",
-          file: "src/b.ts",
-        }),
-        status: "reverted",
-        revertReason: "broke-test",
-      },
-    );
+    const builder = fixedAndRevertedBuilder("broke-test");
     const report = builder.build({
       loops: 2,
       durationMs: 192_000,
@@ -155,12 +188,7 @@ describe("renderSummary", () => {
 
   it("keeps --plain summary line-oriented for CI and pipes", () => {
     const builder = reportWith({
-      ...makeFinding({
-        tool: "knip",
-        rule: "unused-export",
-        category: "dead-code",
-        file: "src/b.ts",
-      }),
+      ...knipDeadCodeFinding("src/b.ts"),
       retryId: "kx7p2q",
       status: "reverted",
       revertReason: "broke-test",
@@ -366,21 +394,7 @@ describe("renderSummary", () => {
   });
 
   it("summarizes scanners in a default table; exhaustive per-finding detail is verbose-only", () => {
-    const builder = reportWith(
-      {
-        ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
-        status: "fixed",
-      },
-      {
-        ...makeFinding({
-          tool: "knip",
-          rule: "unused-export",
-          category: "dead-code",
-          file: "src/b.ts",
-        }),
-        status: "reverted",
-      },
-    );
+    const builder = fixedAndRevertedBuilder();
     const report = builder.build({ loops: 2, durationMs: 3400, exitStatus: 0 });
 
     const out = renderSummary(report);
@@ -471,22 +485,21 @@ describe("renderSummary", () => {
     const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
 
     const out = renderSummary(report);
-    expect(out).not.toContain("repo-wide backlog");
-    expect(out).not.toContain("outside your changes");
-    expect(out).not.toContain("tend --all");
-    expect(out).not.toContain("knip 2");
+    for (const absent of [
+      "repo-wide backlog",
+      "outside your changes",
+      "tend --all",
+      "knip 2",
+    ]) {
+      expect(out).not.toContain(absent);
+    }
     // out-of-scope findings are NOT folded into the headline "left"
     expect(out).not.toMatch(/left 2/);
   });
 
   it("T-137: plain summary also omits out-of-scope backlog hints", () => {
     const builder = reportWith({
-      ...makeFinding({
-        tool: "knip",
-        rule: "unused-export",
-        category: "dead-code",
-        file: "src/legacy.ts",
-      }),
+      ...knipDeadCodeFinding("src/legacy.ts"),
       status: "pending",
       inScope: false,
     });
@@ -515,15 +528,10 @@ describe("renderSummary", () => {
       status: "pending",
       inScope: true,
     });
-    builder.recordScannerStatuses([{ tool: "jscpd", status: "ran" }]);
-    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
-
-    const out = renderSummary(report);
+    const { out, plain } = renderAfterJscpdRan(builder);
     expect(out).toMatch(/skipped tests\s+│ – 0/);
     expect(out).toMatch(/report only\s+│ – 1/);
     expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ 1\s+│ 0\s+│ 0\s+│ 0/);
-
-    const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=0 reportOnly=1 left=0");
     expect(plain).toContain('report-only count=1 reason="unsupported or report-only findings"');
     expect(plain).not.toContain("skipped-tests count=1");
@@ -540,15 +548,10 @@ describe("renderSummary", () => {
       status: "pending",
       inScope: true,
     });
-    builder.recordScannerStatuses([{ tool: "jscpd", status: "ran" }]);
-    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
-
-    const out = renderSummary(report);
+    const { out, plain } = renderAfterJscpdRan(builder);
     expect(out).toContain("skipped tests");
     expect(out).toContain("1 (pass --include-tests)");
     expect(out).toMatch(/unresolved eligible\s+│ – 0/);
-
-    const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=1 reportOnly=0 left=0");
     expect(plain).toContain('reason="test files are excluded by default"');
     expect(plain).toContain('command="tend run --include-tests <path...>"');
@@ -585,17 +588,12 @@ describe("renderSummary", () => {
         scopeExclusionReason: "out-of-scope",
       },
     );
-    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
-    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
-
-    const out = renderSummary(report);
+    const { out, plain } = renderAfterSonarRan(builder);
     expect(out).toMatch(/generated\s+│ – 1/);
     expect(out).toMatch(/fixtures\s+│ – 1/);
     expect(out).toMatch(/skipped tests\s+│ – 1/);
     expect(out).toMatch(/out of scope\s+│ – 1/);
     expect(out).toMatch(/unresolved eligible\s+│ – 0/);
-
-    const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=1 reportOnly=0 left=0 secrets=0 generated=1 fixtures=1 outOfScope=1");
     expect(plain).toContain("generated count=1");
     expect(plain).toContain("fixtures count=1");
@@ -613,46 +611,24 @@ describe("renderSummary", () => {
       status: "pending",
       inScope: true,
     });
-    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
-    const report = builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 });
-
-    const out = renderSummary(report);
+    const { out, plain } = renderAfterSonarRan(builder);
     expect(out).toMatch(/skipped tests\s+│ – 0/);
     expect(out).toMatch(/report only\s+│ – 0/);
     expect(out).toMatch(/unresolved eligible\s+│ – 1/);
-
-    const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("skippedTests=0 reportOnly=0 left=1");
   });
 
   it("--all scanner scope renders as whole repo, not in your changes", () => {
-    const builder = reportWith({
-      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
-      status: "pending",
-      inScope: true,
-    });
-    builder.recordScannerStatuses([{ tool: "sonarjs", status: "ran" }]);
-    const report = builder.build({
-      loops: 1,
-      durationMs: 1000,
-      exitStatus: 0,
-      runScope: { type: "all" },
-    });
-
-    const out = renderSummary(report);
+    const builder = sonarBuilder("pending", { inScope: true });
+    const { out, plain } = renderAfterSonarRan(builder, { runScope: { type: "all" } });
     expect(out).toContain("whole repo");
     expect(out).not.toContain("in your changes");
-
-    const plain = renderSummary(report, { plain: true });
     expect(plain).toContain("scope=whole-repo");
     expect(plain).not.toContain("scope=in-your-changes");
   });
 
   it("non-zero exitStatus renders as needs attention, not completed", () => {
-    const report = reportWith({
-      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
-      status: "fixed",
-    }).build({ loops: 1, durationMs: 1000, exitStatus: 1 });
+    const report = sonarBuilder("fixed").build({ loops: 1, durationMs: 1000, exitStatus: 1 });
 
     const out = renderSummary(report);
     expect(out).toContain("needs attention (exit 1)");
