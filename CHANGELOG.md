@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.1...tend-cli-v0.10.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* **fixing:** stop report-only findings leaking into AI-fix work units ([41a55cf](https://github.com/Njunge11/tend/commit/41a55cfce5816d95ccec66a5307ce9543da0e56b))
+* **fixing:** stop report-only findings leaking into AI-fix work units ([442a17c](https://github.com/Njunge11/tend/commit/442a17cb5afa9d46e969388e19042a1f050d0747))
+
 ## [0.10.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.0...tend-cli-v0.10.1) (2026-06-09)
 
 
