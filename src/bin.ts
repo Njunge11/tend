@@ -73,7 +73,7 @@ const TEND_CACHE_DIR = join(TEND_DIR, "cache");
 // Upper bounds so a hung child can't stall the run forever — execa kills it on timeout.
 // One cap for a single AI fix session. Used both to kill the `claude -p` subprocess and as the
 // fix-unit session-timeout wrapper (passed below), so the enforced limit always matches the intent.
-const CLAUDE_TIMEOUT_MS = 10 * 60_000;
+const CLAUDE_TIMEOUT_MS = Number(process.env.TEND_SESSION_TIMEOUT_MS) || 10 * 60_000;
 const BUILD_TIMEOUT_MS = 5 * 60_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = 5 * 60_000;
@@ -205,6 +205,13 @@ async function makeProductionFixUnit(
             reject: false,
             timeout: CLAUDE_TIMEOUT_MS,
             cancelSignal: req.signal,
+            // SIGKILL, not the default SIGTERM. `claude -p` ignores SIGTERM, so execa would fall
+            // back to its `forceKillAfterDelay` escalation (~5s) — but that escalation is a JS
+            // timer, and once a few un-killed sessions pile up they saturate the CPU and starve
+            // the event loop, so every timer (the session cap AND the escalation) fires minutes
+            // late. Sessions then ran for 30+ min against a 10-min cap. SIGKILL terminates on the
+            // first (still-accurate) timeout with no second timer, so orphans never accumulate.
+            killSignal: "SIGKILL",
             env: { ...process.env, ...thinkingEnv(req.findings, config) },
           },
         );
