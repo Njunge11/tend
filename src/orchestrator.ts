@@ -12,6 +12,7 @@ import {
   type RepairStrategy,
 } from "./fixing/repair-strategy.js";
 import { EventBus } from "./output/events.js";
+import { modelForUnit } from "./fixing/model-selection.js";
 import { addUsage, zeroUsage, type AiUsage, type FailureClass } from "./session/types.js";
 import type { RunScope } from "./report/schema.js";
 import { deriveReportFields } from "./report/builder.js";
@@ -45,6 +46,9 @@ export type OrchestrateDeps = {
     maxSessions: number;
     includeTests?: boolean;
     fix?: FixScopeConfig;
+    /** Fix model and its duplication override — used to label each job with the model it ran on. */
+    model: string;
+    duplicationModel?: string;
   };
   /** Restrict findings to the fix scope (changed files); defaults to all. */
   inScope?: (findings: Finding[]) => Finding[];
@@ -363,6 +367,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
         loop,
         files: deterministicWork.map((u) => u.file),
         concurrency: config.maxSessions,
+        findings: deterministicWork.reduce((sum, u) => sum + u.findings.length, 0),
       });
       const deterministicFixUnit =
         deps.deterministicFixUnit ??
@@ -375,13 +380,14 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
       const outcomes = await dispatch(
         deterministicWork,
         async (unit) => {
-          bus.emit({ type: "file-start", loop, file: unit.file, rule: unit.findings[0]?.rule });
+          bus.emit({ type: "file-start", loop, file: unit.file, rule: unit.findings[0]?.rule, model: "deterministic" });
           const outcome = await deterministicFixUnit(unit, loop);
           bus.emit({
             type: "file-result",
             loop,
             file: unit.file,
             outcome: outcome.kept ? "fixed" : "reverted",
+            findings: unit.findings.length,
             reason: outcome.reason,
             detail: outcome.detail,
           });
@@ -419,13 +425,14 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
       loop,
       files: units.map((u) => u.file),
       concurrency: config.maxSessions,
+      findings: units.reduce((sum, u) => sum + u.findings.length, 0),
     });
     type DispatchOutcome = { unit: WorkUnit; outcome: FixOutcome; apply: boolean };
 
     // Fix one (sub-)unit; if a multi-finding batch still times out or regresses, reactively
     // split it into single-finding units and run those sequentially as a last resort.
     const fixWithSplitFallback = async (work: WorkUnit): Promise<DispatchOutcome[]> => {
-      bus.emit({ type: "file-start", loop, file: work.file, rule: work.findings[0]?.rule });
+      bus.emit({ type: "file-start", loop, file: work.file, rule: work.findings[0]?.rule, model: modelForUnit(work.findings, config) });
       const outcome = await deps.fixUnit(work, loop);
       const smaller = shouldSplitAfterFailure(work, outcome) ? splitUnit(work) : [];
       if (smaller.length === 0) {
@@ -434,30 +441,35 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
           loop,
           file: work.file,
           outcome: outcome.kept ? "fixed" : "reverted",
+          findings: work.findings.length,
           reason: outcome.reason,
           detail: outcome.detail,
         });
         return [{ unit: work, outcome, apply: true }];
       }
 
+      // Split-parent placeholder: its findings are re-attempted as the single-finding splits
+      // below, so report 0 here to avoid double-counting against the stable denominator.
       bus.emit({
         type: "file-result",
         loop,
         file: work.file,
         outcome: "left",
+        findings: 0,
         reason: outcome.reason,
         detail: outcome.detail,
       });
 
       const splitOutcomes: DispatchOutcome[] = [{ unit: work, outcome, apply: false }];
       for (const split of smaller) {
-        bus.emit({ type: "file-start", loop, file: split.file, rule: split.findings[0]?.rule });
+        bus.emit({ type: "file-start", loop, file: split.file, rule: split.findings[0]?.rule, model: modelForUnit(split.findings, config) });
         const splitOutcome = await deps.fixUnit(split, loop);
         bus.emit({
           type: "file-result",
           loop,
           file: split.file,
           outcome: splitOutcome.kept ? "fixed" : "reverted",
+          findings: split.findings.length,
           reason: splitOutcome.reason,
           detail: splitOutcome.detail,
         });

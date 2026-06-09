@@ -20,11 +20,14 @@ export type TendEvent =
     }
   // `scanned` = resolved fix-scope file count when known; `findings`/`files` = in-scope findings.
   | { type: "audit"; loop: number; findings: number; files: number; scanned?: number }
-  // Announces the batch about to be fixed this loop, so the live view can show queued work.
-  | { type: "loop-start"; loop: number; files: string[]; concurrency: number }
-  | { type: "file-start"; loop: number; file: string; rule?: string }
+  // Announces the batch about to be fixed this loop. `findings` = total findings across the
+  // dispatched units (the stable live-view denominator; jobs split, findings don't).
+  | { type: "loop-start"; loop: number; files: string[]; concurrency: number; findings: number }
+  // `model` = the model string passed to `claude -p` for this job, or "deterministic".
+  | { type: "file-start"; loop: number; file: string; rule?: string; model?: string }
   | { type: "file-stage"; loop: number; file: string; stage: FixStage; detail?: string }
-  | { type: "file-result"; loop: number; file: string; outcome: FileOutcome; reason?: string; detail?: string }
+  // `findings` = how many findings this job covered (0 for a split-parent placeholder).
+  | { type: "file-result"; loop: number; file: string; outcome: FileOutcome; findings: number; reason?: string; detail?: string }
   | { type: "loop-complete"; loop: number; fixed: number; reverted: number; remaining: number; estimatedCostUsd: number }
   | { type: "done"; exitStatus: number };
 

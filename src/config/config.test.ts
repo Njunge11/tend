@@ -32,7 +32,7 @@ describe("loadConfig", () => {
         includeGenerated: false,
         includeFixtures: false,
       },
-      model: "sonnet",
+      model: "claude-sonnet-4-6",
     });
   });
 
@@ -57,8 +57,8 @@ describe("loadConfig", () => {
     });
   });
 
-  it("model: defaults to sonnet, overridable by config file and CLI flag", async () => {
-    expect((await loadConfig(dir)).model).toBe("sonnet");
+  it("model: defaults to claude-sonnet-4-6, overridable by config file and CLI flag", async () => {
+    expect((await loadConfig(dir)).model).toBe("claude-sonnet-4-6");
 
     writeFileSync(join(dir, ".tendrc.json"), JSON.stringify({ model: "opus" }));
     expect((await loadConfig(dir)).model).toBe("opus");

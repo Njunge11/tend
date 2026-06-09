@@ -88,7 +88,7 @@ Zero-config by default. Drop a `.tendrc` (or a `tend` key in `package.json`) to 
 {
   "maxSessions": 4,
   "maxLoops": 5,
-  "model": "sonnet",
+  "model": "claude-sonnet-4-6",
   "effort": "high"
 }
 ```

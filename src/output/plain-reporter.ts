@@ -11,6 +11,7 @@ import type { Reporter, ReporterDeps } from "./reporter.js";
  */
 export class PlainReporter extends BaseReporter implements Reporter {
   private readonly fileStartTimes = new Map<string, number>();
+  private readonly models = new Map<string, string>();
 
   constructor(deps: ReporterDeps) {
     super(deps);
@@ -42,20 +43,24 @@ export class PlainReporter extends BaseReporter implements Reporter {
         break;
       }
       case "loop-start":
-        this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
+        this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.findings} findings across ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
         break;
       case "file-start":
         this.fileStartTimes.set(event.file, Date.now());
+        if (event.model) this.models.set(event.file, event.model);
         break;
       case "file-result": {
         const startTime = this.fileStartTimes.get(event.file);
         const elapsed = startTime ? ` (${formatClock(Date.now() - startTime)})` : "";
         this.fileStartTimes.delete(event.file);
+        const model = this.models.get(event.file);
+        this.models.delete(event.file);
+        const modelTag = model ? ` ${glyph.bullet} ${model}` : "";
         if (event.outcome === "fixed") {
-          this.write(`${glyph.fixed} fixed ${event.file}${elapsed}`);
+          this.write(`${glyph.fixed} fixed ${event.file}${modelTag}${elapsed}`);
         } else if (event.outcome === "reverted") {
           const detail = event.detail ? ` — ${event.detail.split("\n")[0]}` : "";
-          this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}${detail}${elapsed}`);
+          this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}${detail}${modelTag}${elapsed}`);
         } else {
           this.write(`${glyph.left} not attempted ${event.file}`);
         }

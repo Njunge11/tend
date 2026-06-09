@@ -13,7 +13,7 @@ import { runCommand } from "./run.js";
 import { showCommand } from "./show.js";
 import { undoCommand } from "./undo.js";
 
-const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4 };
+const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
 
 function badRunScopeAndTimeoutsReport(): Report {
   return ReportSchema.parse(
