@@ -30,9 +30,24 @@ export function incrementalTscArgs(cacheFile: string): string[] {
  */
 export function tscCacheFile(cacheDir: string, mainRoot: string, ownerRoot: string): string {
   const rel = relative(mainRoot, ownerRoot).replaceAll("\\", "/") || ".";
-  const slug = rel === "." ? "root" : rel.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+/, "").replace(/-+$/, "") || "pkg";
+  const slug = rel === "." ? "root" : slugifyRelPath(rel);
   const hash = createHash("sha256").update(rel).digest("hex").slice(0, 8);
   return join(cacheDir, `${slug}-${hash}.tsbuildinfo`);
+}
+
+/**
+ * Turn a repo-relative path into a filesystem-safe slug: runs of non-alphanumerics
+ * collapse to a single "-", with leading/trailing dashes trimmed. The trim scans the
+ * string instead of using `^-+`/`-+$` regexes, so the whole computation is provably
+ * linear with no polynomial backtracking on adversarial input (SonarQube S5852).
+ */
+function slugifyRelPath(rel: string): string {
+  const collapsed = rel.replace(/[^a-zA-Z0-9]+/g, "-");
+  let start = 0;
+  let end = collapsed.length;
+  while (start < end && collapsed[start] === "-") start += 1;
+  while (end > start && collapsed[end - 1] === "-") end -= 1;
+  return collapsed.slice(start, end) || "pkg";
 }
 
 type IncrementalTscDeps = {
