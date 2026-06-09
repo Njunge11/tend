@@ -44,45 +44,56 @@ function hasLockfile(cwd: string): boolean {
   return LOCKFILES.some((file) => existsSync(join(cwd, file)));
 }
 
+type PackageJson = {
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
+
+function removeDependencyFromJson(json: PackageJson, name: string): ApplyResult {
+  if (json.dependencies?.[name] !== undefined) {
+    delete json.dependencies[name];
+  } else if (json.devDependencies?.[name] !== undefined) {
+    delete json.devDependencies[name];
+  } else {
+    return {
+      ok: false,
+      reason: "session-error",
+      detail: `Dependency "${name}" was not found in dependencies or devDependencies`,
+    };
+  }
+  if (json.dependencies && Object.keys(json.dependencies).length === 0) delete json.dependencies;
+  if (json.devDependencies && Object.keys(json.devDependencies).length === 0) delete json.devDependencies;
+  return { ok: true };
+}
+
+function cleanupSinglePackageFile(cwd: string, file: string, findings: { message: string }[]): ApplyResult {
+  const abs = join(cwd, file);
+  const json = JSON.parse(readFileSync(abs, "utf8")) as PackageJson;
+  let removed = false;
+
+  for (const finding of findings) {
+    const name = packageNameFromFindingMessage(finding.message);
+    if (!name) {
+      return {
+        ok: false,
+        reason: "session-error",
+        detail: `Could not parse unused dependency name from finding: ${finding.message}`,
+      };
+    }
+    const result = removeDependencyFromJson(json, name);
+    if (!result.ok) return result;
+    removed = true;
+  }
+
+  if (removed) writeFileSync(abs, `${JSON.stringify(json, null, 2)}\n`);
+  return { ok: true };
+}
+
 function applyPackageJsonCleanup(cwd: string, unit: WorkUnit): ApplyResult {
   const packageFiles = [...new Set(unit.findings.map((finding) => finding.file).filter((file) => /(^|\/)package\.json$/.test(file)))];
   for (const file of packageFiles) {
-    const abs = join(cwd, file);
-    const json = JSON.parse(readFileSync(abs, "utf8")) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    let removed = false;
-
-    for (const finding of unit.findings.filter((f) => f.file === file)) {
-      const name = packageNameFromFindingMessage(finding.message);
-      if (!name) {
-        return {
-          ok: false,
-          reason: "session-error",
-          detail: `Could not parse unused dependency name from finding: ${finding.message}`,
-        };
-      }
-
-      if (json.dependencies?.[name] !== undefined) {
-        delete json.dependencies[name];
-        removed = true;
-      } else if (json.devDependencies?.[name] !== undefined) {
-        delete json.devDependencies[name];
-        removed = true;
-      } else {
-        return {
-          ok: false,
-          reason: "session-error",
-          detail: `Dependency "${name}" was not found in dependencies or devDependencies`,
-        };
-      }
-
-      if (json.dependencies && Object.keys(json.dependencies).length === 0) delete json.dependencies;
-      if (json.devDependencies && Object.keys(json.devDependencies).length === 0) delete json.devDependencies;
-    }
-
-    if (removed) writeFileSync(abs, `${JSON.stringify(json, null, 2)}\n`);
+    const result = cleanupSinglePackageFile(cwd, file, unit.findings.filter((f) => f.file === file));
+    if (!result.ok) return result;
   }
 
   if (hasLockfile(cwd)) {
