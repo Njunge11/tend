@@ -7,7 +7,7 @@ import { typecheck } from "../gate/checks/typecheck.js";
 import { runTestPhase, type TestOutcome } from "../gate/checks/tests.js";
 import type { FixOutcome } from "../orchestrator.js";
 import { zeroUsage, type AiUsage } from "../session/types.js";
-import type { WorkUnit } from "./dispatch.js";
+import { isTestFile, type WorkUnit } from "./dispatch.js";
 import type { FixStage } from "./progress.js";
 
 export type UnitGateDeps = {
@@ -69,6 +69,22 @@ export function buildDiff(before: FileSnapshot, after: FileSnapshot): string {
     }
   }
   return out.join("\n");
+}
+
+/**
+ * jscpd duplicates that touch a test file are routed report-only and are never fixed (see
+ * `planRepair` in repair-strategy.ts — test setup is meant to repeat). The gate must stay
+ * consistent with that routing: when a source fix incidentally clones a block that also lives
+ * in a sibling test, the new clone is something tend will never act on, so it must not count as
+ * a regression and block an otherwise-good fix. Mirrors the routing predicate exactly. A
+ * source↔source clone (no test side) is still a real regression and stays rejected.
+ */
+function isReportOnlyTestDuplicate(f: Finding): boolean {
+  return (
+    f.tool === "jscpd" &&
+    f.rule === "duplicate-code" &&
+    (isTestFile(f.file) || (f.flowPath ?? []).some((p) => isTestFile(p.file)))
+  );
 }
 
 function isDeadCodeFinding(finding: Finding): boolean {
@@ -150,7 +166,12 @@ export async function gateUnitChanges(
 
   const verificationTargets = unit.verificationTargets ?? unit.files;
   opts.onProgress?.("rescan");
-  const afterFindings = await deps.scanFindings(verificationTargets, scannerTools);
+  // jscpd scans the whole repo, so a source fix can surface a new clone whose other foot lives in
+  // a sibling test. Those are report-only and never fixed, so drop them before the regression check
+  // (anti-regression compares ids only and would otherwise revert the good source fix).
+  const afterFindings = (await deps.scanFindings(verificationTargets, scannerTools)).filter(
+    (f) => !isReportOnlyTestDuplicate(f),
+  );
   opts.onProgress?.("regression-check");
   const regression = antiRegression(unit.findings, afterFindings, {
     requireResolved: opts.requireResolved || unit.strategy === "multi-file-duplicate-refactor",
