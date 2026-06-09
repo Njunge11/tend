@@ -30,12 +30,12 @@ export function incrementalTscArgs(cacheFile: string): string[] {
  */
 export function tscCacheFile(cacheDir: string, mainRoot: string, ownerRoot: string): string {
   const rel = relative(mainRoot, ownerRoot).replaceAll("\\", "/") || ".";
-  const slug = rel === "." ? "root" : rel.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "pkg";
-  const hash = createHash("sha1").update(rel).digest("hex").slice(0, 8);
+  const slug = rel === "." ? "root" : rel.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+/, "").replace(/-+$/, "") || "pkg";
+  const hash = createHash("sha256").update(rel).digest("hex").slice(0, 8);
   return join(cacheDir, `${slug}-${hash}.tsbuildinfo`);
 }
 
-export type IncrementalTscDeps = {
+type IncrementalTscDeps = {
   /** Command runner (execa-compatible). */
   exec: Exec;
   /** The owning package root tsc runs in (its tsconfig is resolved from here). */

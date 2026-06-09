@@ -308,7 +308,7 @@ async function runGateWithTimeout(
       resolve({
         kept: false,
         reason: "session-error",
-        detail: `Gate timed out${stage ? ` during ${fixStageLabel(stage)}` : ""} after ${formatDuration(timeoutMs)}`,
+        detail: `Gate timed out${stage ? " during " + fixStageLabel(stage) : ""} after ${formatDuration(timeoutMs)}`,
         failureClass: "tool-timeout",
         usage: usage(),
       });
@@ -473,29 +473,30 @@ export function makeFixUnit(deps: FixUnitDeps) {
     }
 
     let repairFailureDetail: string | undefined;
+    // The repair session also edits the disk directly — just re-run it.
+    async function repairBrokenTests(_attempt: number, regressed: Array<{ name: string }>): Promise<void> {
+      const after = snapshotUnitNow(deps.cwd, snapshotFiles);
+      const repair = await runSessionWithTimeout(deps, {
+        file: unit.file,
+        findings: unit.findings,
+        prompt: renderRegressionRepairPrompt({
+          unit,
+          rejectedDiff: buildDiff(before, after),
+          newFindings: [],
+          gateReason: "broke-test",
+          gateOutput: `Fix left previously-green test(s) red:\n${regressed.map((test) => test.name).join("\n")}`,
+        }),
+        onActivity: activity("test-repair"),
+      });
+      if (repair.usage) usage = addUsage(usage, repair.usage);
+      if (!repair.ok) repairFailureDetail = `Repair session failed: ${repair.error}`;
+    }
     async function gateCurrent(): Promise<FixOutcome> {
       return gateUnitChanges(unit, before, deps, {
         usage,
         preexistingIds,
         onProgress: progress,
-        // The repair session also edits the disk directly — just re-run it.
-        repair: async (_attempt, regressed) => {
-          const after = snapshotUnitNow(deps.cwd, snapshotFiles);
-          const repair = await runSessionWithTimeout(deps, {
-            file: unit.file,
-            findings: unit.findings,
-            prompt: renderRegressionRepairPrompt({
-              unit,
-              rejectedDiff: buildDiff(before, after),
-              newFindings: [],
-              gateReason: "broke-test",
-              gateOutput: `Fix left previously-green test(s) red:\n${regressed.map((test) => test.name).join("\n")}`,
-            }),
-            onActivity: activity("test-repair"),
-          });
-          if (repair.usage) usage = addUsage(usage, repair.usage);
-          if (!repair.ok) repairFailureDetail = `Repair session failed: ${repair.error}`;
-        },
+        repair: repairBrokenTests,
         maxRepairs: deps.maxRepairs,
         repairFailureDetail: () => repairFailureDetail,
       });

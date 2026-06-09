@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
+import type { RawFinding } from "../findings/normalize.js";
 import { makeFinding } from "../../test/helpers/make-finding.js";
 import { computeSharedModulePath, planRepair } from "./repair-strategy.js";
 
+function makeJscpdFinding(overrides: Omit<Partial<RawFinding>, "tool" | "rule" | "category"> = {}) {
+  return makeFinding({ tool: "jscpd", rule: "duplicate-code", category: "duplication", ...overrides });
+}
+
 describe("planRepair", () => {
   it("classifies same-file jscpd duplicates as a single-file AI edit", () => {
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.ts",
       flowPath: [
         { file: "src/a.ts", line: 1 },
@@ -23,10 +25,7 @@ describe("planRepair", () => {
   });
 
   it("classifies eligible cross-file jscpd duplicates as a multi-file refactor with shared module", () => {
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.ts",
       flowPath: [
         { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 15, endCol: 0 } },
@@ -42,10 +41,7 @@ describe("planRepair", () => {
   });
 
   it("skips cross-file duplicates shorter than 10 lines", () => {
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.ts",
       flowPath: [
         { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 6, endCol: 0 } },
@@ -60,10 +56,7 @@ describe("planRepair", () => {
   });
 
   it("skips test-only duplicates as report-only even when tests are included", () => {
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.test.ts",
       flowPath: [
         { file: "src/a.test.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 20, endCol: 0 } },
@@ -78,10 +71,7 @@ describe("planRepair", () => {
   });
 
   it("skips source-test mixed duplicates as report-only", () => {
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.ts",
       flowPath: [
         { file: "src/a.ts", line: 1, range: { startLine: 1, startCol: 0, endLine: 20, endCol: 0 } },
@@ -96,12 +86,7 @@ describe("planRepair", () => {
   });
 
   it("skips same-file duplicates inside a test file as report-only", () => {
-    // The summary.test.ts case: both clone sites in one test file. Pre-fix this fell through to
-    // single-file-ai-edit and the AI thrashed (deduping test boilerplate spawns new clones).
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.test.ts",
       flowPath: [
         { file: "src/a.test.ts", line: 166, range: { startLine: 166, startCol: 0, endLine: 173, endCol: 0 } },
@@ -116,10 +101,7 @@ describe("planRepair", () => {
   });
 
   it("returns the exact exclusion reason for cross-file jscpd when a clone file is excluded", () => {
-    const finding = makeFinding({
-      tool: "jscpd",
-      rule: "duplicate-code",
-      category: "duplication",
+    const finding = makeJscpdFinding({
       file: "src/a.ts",
       flowPath: [
         { file: "src/a.ts", line: 1 },

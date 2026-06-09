@@ -21,10 +21,10 @@ export type UnitGateDeps = {
   baseline: Set<string>;
 };
 
-export type FileSnapshot = Map<string, string | null>;
+type FileSnapshot = Map<string, string | null>;
 
 /** A file's current contents, or null if it doesn't exist. */
-export const snapshotFile = (abs: string): string | null => (existsSync(abs) ? readFileSync(abs, "utf8") : null);
+const snapshotFile = (abs: string): string | null => (existsSync(abs) ? readFileSync(abs, "utf8") : null);
 
 export function snapshotUnitFiles(cwd: string, files: string[]): FileSnapshot {
   return new Map(files.map((f) => [f, snapshotFile(join(cwd, f))] as const));
@@ -94,7 +94,7 @@ function isDeadCodeFinding(finding: Finding): boolean {
   );
 }
 
-export function allowsDeleteOnly(unit: WorkUnit): boolean {
+function allowsDeleteOnly(unit: WorkUnit): boolean {
   return unit.findings.length > 0 && unit.findings.every(isDeadCodeFinding);
 }
 

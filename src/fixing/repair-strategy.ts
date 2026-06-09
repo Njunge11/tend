@@ -24,7 +24,7 @@ export type RepairStrategyReason =
   | "report-only"
   | "deterministic-not-dispatched";
 
-export type RepairPlannerInput = {
+type RepairPlannerInput = {
   finding: Finding;
   scope?: Partial<Pick<Finding, "inFixScope" | "scopeExclusionReason" | "inReportScope" | "inScope">>;
   config?: FixScopeConfig & {
@@ -165,6 +165,39 @@ function firstExcludedReason(files: string[], config: RepairPlannerInput["config
   return undefined;
 }
 
+function planForCrossFileDuplicate(
+  input: RepairPlannerInput,
+  scope: Partial<Pick<Finding, "inFixScope" | "scopeExclusionReason" | "inReportScope" | "inScope">>,
+  files: string[],
+): RepairPlan | undefined {
+  if (!isCrossFileDuplicate(input)) return undefined;
+  if (scope.inScope === false) return unsupported(input, "out-of-scope");
+  const excluded = firstExcludedReason(files, input.config);
+  if (excluded) return unsupported(input, excluded);
+  if (scope.inFixScope === false) return unsupported(input, scope.scopeExclusionReason ?? "out-of-scope");
+  if (duplicateLineCount(input) < MIN_DUPLICATE_LINES) return unsupported(input, "report-only");
+  const sharedModule = computeSharedModulePath(files);
+  const editableFiles = files.includes(sharedModule) ? files : [...files, sharedModule];
+  return {
+    finding: input.finding,
+    strategy: "multi-file-duplicate-refactor",
+    editableFiles,
+    verificationTargets: files,
+  };
+}
+
+function planForGeneratedFinding(input: RepairPlannerInput, file: string): RepairPlan | undefined {
+  if (!isGeneratedFinding(input)) return undefined;
+  const owner = sourceOwnerForGenerated(input);
+  if (!owner) return unsupported(input, "generated-source-not-found");
+  return {
+    finding: input.finding,
+    strategy: "generated-source-repair",
+    editableFiles: [owner],
+    verificationTargets: unique([file, owner]),
+  };
+}
+
 export function planRepair(input: RepairPlannerInput): RepairPlan {
   const file = input.file ?? input.finding.file;
   const category = input.category ?? input.finding.category;
@@ -175,39 +208,15 @@ export function planRepair(input: RepairPlannerInput): RepairPlan {
     return unsupported(input, "report-only");
   }
 
-  // Never auto-deduplicate test files. Test setup is meant to repeat (DAMP, not DRY); refactoring
-  // it almost always trades one clone for another, an unwinnable regression loop. This guards both
-  // same-file and cross-file duplicates that touch a test, so neither reaches an AI strategy.
   if (isJscpdDuplicate(input) && involvesTestFile(input)) {
     return unsupported(input, "report-only");
   }
 
-  if (isCrossFileDuplicate(input)) {
-    if (scope.inScope === false) return unsupported(input, "out-of-scope");
-    const excluded = firstExcludedReason(files, input.config);
-    if (excluded) return unsupported(input, excluded);
-    if (scope.inFixScope === false) return unsupported(input, scope.scopeExclusionReason ?? "out-of-scope");
-    if (duplicateLineCount(input) < MIN_DUPLICATE_LINES) return unsupported(input, "report-only");
-    const sharedModule = computeSharedModulePath(files);
-    const editableFiles = files.includes(sharedModule) ? files : [...files, sharedModule];
-    return {
-      finding: input.finding,
-      strategy: "multi-file-duplicate-refactor",
-      editableFiles,
-      verificationTargets: files,
-    };
-  }
+  const crossFilePlan = planForCrossFileDuplicate(input, scope, files);
+  if (crossFilePlan) return crossFilePlan;
 
-  if (isGeneratedFinding(input)) {
-    const owner = sourceOwnerForGenerated(input);
-    if (!owner) return unsupported(input, "generated-source-not-found");
-    return {
-      finding: input.finding,
-      strategy: "generated-source-repair",
-      editableFiles: [owner],
-      verificationTargets: unique([file, owner]),
-    };
-  }
+  const generatedPlan = planForGeneratedFinding(input, file);
+  if (generatedPlan) return generatedPlan;
 
   if (
     isTestFile(file) &&

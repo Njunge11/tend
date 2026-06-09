@@ -163,11 +163,16 @@ export function planWorkFromRepairs(plans: RepairPlan[]): WorkUnit[] {
 
   for (const plan of plans) {
     let next = unitForPlan(plan);
-    for (let index = 0; index < units.length; index++) {
-      if (!overlaps(units[index]!, next)) continue;
-      next = mergeUnits(units[index]!, next);
-      units.splice(index, 1);
-      index = -1;
+    let merged = true;
+    while (merged) {
+      merged = false;
+      for (let index = 0; index < units.length; index++) {
+        if (!overlaps(units[index]!, next)) continue;
+        next = mergeUnits(units[index]!, next);
+        units.splice(index, 1);
+        merged = true;
+        break;
+      }
     }
     units.push(next);
   }
