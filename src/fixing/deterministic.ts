@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync,readFileSync,writeFileSync } from "node:fs";
+import { join,resolve } from "node:path";
 import ts from "typescript";
 import type { RevertReason } from "../gate/check.js";
 import type { FixOutcome } from "../orchestrator.js";
@@ -8,11 +8,11 @@ import { zeroUsage } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
 import type { RepairStrategy } from "./repair-strategy.js";
 import {
-  gateUnitChanges,
-  restoreSnapshot,
-  snapshotUnitFiles,
-  unitChanged,
-  type UnitGateDeps,
+gateUnitChanges,
+restoreSnapshot,
+snapshotUnitFiles,
+unitChanged,
+type UnitGateDeps,
 } from "./unit-gate.js";
 
 type DeterministicRepairStrategy = Extract<RepairStrategy, `deterministic-${string}`>;

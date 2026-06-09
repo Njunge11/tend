@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-export type GeneratedSourceOwner = {
+type GeneratedSourceOwner = {
   generatedFile: string;
   sourceOwner?: string;
   sourceMap?: string;

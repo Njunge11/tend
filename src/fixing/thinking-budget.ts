@@ -1,7 +1,7 @@
 import type { Finding } from "../findings/finding.js";
 
 /** Thinking disabled — mechanical fixes don't need reasoning tokens. */
-export const THINKING_OFF = 0;
+const THINKING_OFF = 0;
 
 /**
  * Upper bound on extended-thinking tokens per fix session. Unbounded thinking
@@ -11,7 +11,7 @@ export const THINKING_OFF = 0;
 export const THINKING_BUDGET_CAP = 4096;
 
 /** Config slice that can pin the budget; an explicit value (including 0) always wins. */
-export type ThinkingBudgetConfig = { thinkingBudget?: number };
+type ThinkingBudgetConfig = { thinkingBudget?: number };
 
 function isMechanical(finding: Pick<Finding, "category" | "autofixable">): boolean {
   return finding.category === "dead-code" || finding.autofixable === true;
