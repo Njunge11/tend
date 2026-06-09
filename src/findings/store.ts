@@ -32,6 +32,12 @@ export class FindingStore {
   reconcile(fresh: Finding[], loop: number): void {
     const freshIds = new Set(fresh.map((f) => f.id));
 
+    // Intentionally NOT scoped by `inFixScope`: a finding absent from a fresh scan is genuinely
+    // gone, and that reflects the repo's actual state (a removed secret, a clone the user deleted),
+    // not tend taking credit. Skipping `inFixScope === false` here would wrongly leave genuinely
+    // resolved out-of-scope findings (e.g. a secret the user removed) reported as still unresolved.
+    // The report-only-leak bug is closed upstream by `dispatchableUnits` filtering plans before
+    // unit-building, so tend no longer edits out-of-scope files and this no longer mis-fires.
     for (const known of this.findings.values()) {
       if (!freshIds.has(known.id)) {
         known.status = "fixed";

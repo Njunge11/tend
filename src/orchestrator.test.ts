@@ -5,7 +5,9 @@ import { makeFinding } from "../test/helpers/make-finding.js";
 import type { Finding } from "./findings/finding.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
 import { EventBus, type TendEvent } from "./output/events.js";
-import { orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
+import { applyOutcome, dispatchableUnits, orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
+import { FindingStore } from "./findings/store.js";
+import type { RepairPlan } from "./fixing/repair-strategy.js";
 import { filesUnder } from "./git/repo.js";
 import { filterToChanged } from "./scanners/scope.js";
 import { tmpRepo } from "../test/helpers/tmp-repo.js";
@@ -707,16 +709,68 @@ describe("orchestrate", () => {
     expect(files).toEqual(["src/a.ts", "src/inbound.ts"]); // inbound.ts owns its sibling test
   });
 
-  it("T-128: a sibling test stays grouped with its code file (still editable during the fix)", async () => {
-    // both the code file and its sibling test have findings → one unit, owner = code file
-    const audit = vi.fn(scriptedAudit([[ai("src/a.ts"), ai("src/a.test.ts")], []]));
+  it("T-128: an out-of-fix-scope sibling-test finding is not reserved into the source unit nor credited", async () => {
+    // includeTests is off (default config), so the a.test.ts finding is out-of-fix-scope
+    // (`unsupported`/"tests"). The source fix for a.ts must NOT reserve a.test.ts (no editing an
+    // out-of-scope test) and must NOT count the report-only test finding as fixed. The legitimate
+    // editable-sibling case (includeTests on → `test-file-repair`) is covered by T-127 above.
+    const audit = vi.fn(scriptedAudit([
+      [ai("src/a.ts"), ai("src/a.test.ts")],
+      [ai("src/a.test.ts")], // a.ts fixed; the out-of-scope test finding persists, unaddressed
+    ]));
     const fixUnit = vi.fn(keep);
 
-    await orchestrate({ audit, fixUnit, config });
+    const res = await orchestrate({ audit, fixUnit, config });
 
+    // only the source file is dispatched; the sibling test is not reserved into its unit
     expect(fixUnit).toHaveBeenCalledTimes(1);
     const unit = fixUnit.mock.calls[0]?.[0];
     expect(unit?.file).toBe("src/a.ts");
-    expect(unit?.files).toContain("src/a.test.ts"); // sibling reserved → editable, not dropped
+    expect(unit?.files).not.toContain("src/a.test.ts");
+    // the out-of-fix-scope test finding is never marked fixed
+    const testFinding = res.findings.find((f) => f.file === "src/a.test.ts");
+    expect(testFinding?.inFixScope).toBe(false);
+    expect(testFinding?.status).not.toBe("fixed");
+  });
+});
+
+describe("dispatchableUnits — report-only plans never contaminate a dispatchable unit", () => {
+  it("keeps an unsupported sibling-test plan out of the in-scope unit's files and findings", () => {
+    const source = ai("src/x.ts");
+    // A report-only duplicate in the sibling test: an `unsupported` plan with no editable files.
+    // Pre-fix, `ownerFiles` expands [] → [test, ownerOf(test)=src/x.ts], so `mergeUnits` folds it
+    // into the source unit — reserving the test and carrying its report-only finding.
+    const test = makeFinding({ tool: "jscpd", rule: "duplicate-code", category: "duplication", file: "src/x.test.ts" });
+    const plans: RepairPlan[] = [
+      { finding: source, strategy: "single-file-ai-edit", editableFiles: ["src/x.ts"], verificationTargets: ["src/x.ts"] },
+      { finding: test, strategy: "unsupported", editableFiles: [], verificationTargets: ["src/x.test.ts"], reason: "report-only" },
+    ];
+
+    const units = dispatchableUnits(plans);
+
+    expect(units).toHaveLength(1);
+    expect(units[0]?.files).toEqual(["src/x.ts"]); // NOT containing src/x.test.ts
+    expect(units[0]?.findings).toEqual([source]); // only the in-scope finding
+  });
+});
+
+describe("applyOutcome — never credit an out-of-fix-scope finding as fixed", () => {
+  it("leaves an inFixScope:false finding pending on a kept outcome", () => {
+    const store = new FindingStore();
+    const inScopeF = ai("src/x.ts");
+    const outOfScopeF = ai("src/x.test.ts", "r2");
+    outOfScopeF.inFixScope = false; // report-only finding that hypothetically reached a kept unit
+    store.add(inScopeF);
+    store.add(outOfScopeF);
+    const unit: WorkUnit = {
+      file: "src/x.ts",
+      files: ["src/x.ts", "src/x.test.ts"],
+      findings: [inScopeF, outOfScopeF],
+    };
+
+    applyOutcome(store, unit, { kept: true }, config.perIssueBudget);
+
+    expect(inScopeF.status).toBe("fixed");
+    expect(outOfScopeF.status).toBe("pending"); // never credited as fixed
   });
 });
