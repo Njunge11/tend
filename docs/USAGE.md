@@ -88,6 +88,11 @@ finding is fixed with a more capable model — `claude-opus-4-8` by default. Ove
 `duplicationModel` / `complexityModel` (a full model id); everything else stays on `model`. One
 such finding lifts its whole unit, since a unit's findings share a single session.
 
+At startup tend pings every model the run can route to (a few seconds, fractions of a cent) and
+fails fast on one that doesn't exist or isn't accessible — `claude -p` itself exits 0 for an
+unknown model, so without the preflight a typo'd `--model` would burn entire fix passes as no-op
+session errors.
+
 ## Scanners
 
 Six scanners run on one of three tracks:
