@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.4...tend-cli-v0.11.0) (2026-06-10)
+
+
+### Features
+
+* **scanner:** close the Sonar way gap with borrowed ESLint rules in the default config ([8443ff8](https://github.com/Njunge11/tend/commit/8443ff8bc2e49d7e47cb08d81338aaa6b92256ce))
+
 ## [0.10.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.3...tend-cli-v0.10.4) (2026-06-10)
 
 
