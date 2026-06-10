@@ -77,7 +77,7 @@ export const FinalIntegrationSchema = z.object({
 });
 
 /** Why the scan → fix → re-audit loop stopped. Single source of truth for the orchestrator. */
-export const TERMINATIONS = [
+const TERMINATIONS = [
   "converged",
   "max-loops",
   "no-progress",

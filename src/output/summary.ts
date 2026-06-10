@@ -100,24 +100,30 @@ function bucket(report: Report): Buckets {
   return buckets;
 }
 
+/** The bucket for a finding excluded from the fix scope, keyed by its exclusion reason. */
+function classifyScopeExclusion(f: Finding): PendingBucket {
+  if (f.scopeExclusionReason === "generated") return "generated";
+  if (f.scopeExclusionReason === "fixtures") return "fixtures";
+  if (f.scopeExclusionReason === "tests") return "skippedTests";
+  return "outOfScope";
+}
+
+/** The bucket for an `unsupported`-strategy finding, keyed by the planner's reason. */
+function classifyUnsupportedStrategy(f: Finding): PendingBucket {
+  if (f.repairStrategyReason === "tests") return "skippedTests";
+  if (f.repairStrategyReason === "generated") return "generated";
+  if (f.repairStrategyReason === "fixtures") return "fixtures";
+  if (f.repairStrategyReason === "out-of-scope") return "outOfScope";
+  return "reportOnly"; // "report-only", "generated-source-not-found"
+}
+
 function classifyPending(f: Finding, includeTests: boolean): PendingBucket {
-  if (f.inFixScope === false) {
-    if (f.scopeExclusionReason === "generated") return "generated";
-    if (f.scopeExclusionReason === "fixtures") return "fixtures";
-    if (f.scopeExclusionReason === "tests") return "skippedTests";
-    return "outOfScope";
-  }
+  if (f.inFixScope === false) return classifyScopeExclusion(f);
   // A finding whose planned repair strategy is "unsupported" never reaches the dispatcher
   // (dispatchableUnits drops the plan), so it is not eligible. Bucket it by the planner's
   // reason so the audit funnel, the fix-pass denominator, and the final summary all describe
   // the population the dispatcher actually attempts.
-  if (f.repairStrategy === "unsupported") {
-    if (f.repairStrategyReason === "tests") return "skippedTests";
-    if (f.repairStrategyReason === "generated") return "generated";
-    if (f.repairStrategyReason === "fixtures") return "fixtures";
-    if (f.repairStrategyReason === "out-of-scope") return "outOfScope";
-    return "reportOnly"; // "report-only", "generated-source-not-found"
-  }
+  if (f.repairStrategy === "unsupported") return classifyUnsupportedStrategy(f);
   if (f.track === "report-only") return "reportOnly";
   if (f.track === "ai-fix" && !includeTests && isTestFile(f.file))
     return "skippedTests";
