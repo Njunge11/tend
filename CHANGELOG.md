@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.12.0...tend-cli-v0.12.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* stop reverting worker patches as unowned when node_modules is untracked ([b12f410](https://github.com/Njunge11/tend/commit/b12f4108806483a325ce1cfbdc802ae6bb013adc))
+* stop reverting worker patches as unowned when node_modules is untracked ([864edba](https://github.com/Njunge11/tend/commit/864edbac979b6f2cb9cf6076829bdcbcaaee5c2e))
+
 ## [0.12.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.11.0...tend-cli-v0.12.0) (2026-06-10)
 
 
