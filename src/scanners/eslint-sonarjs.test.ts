@@ -121,6 +121,40 @@ describe("runEslintSonarjs (Node API, bundled eslint)", () => {
     expect(rules.some((r) => r.startsWith("sonarjs/"))).toBe(false); // tend did NOT layer sonarjs
   });
 
+  it("default mode catches Sonar-way borrowed rules: duplicate imports (S3863) and core rules", async () => {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "m.ts"), "export type Tool = string;\nexport type Finding = { id: string };\n");
+    writeFileSync(
+      join(dir, "code.ts"),
+      [
+        'import type { Tool } from "./m.js";',
+        'import type { Finding } from "./m.js";', // S3863: same module imported twice
+        "var n = 3; // S3504: no-var",
+        "export function f(a: Tool | Finding): boolean { return n === n; } // S6679: self-compare",
+      ].join("\n"),
+    );
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+
+    const rules = res.findings.map((f) => f.rule);
+    expect(res.error).toBeUndefined();
+    expect(rules).toContain("import/no-duplicates");
+    expect(rules).toContain("no-var");
+    expect(rules).toContain("no-self-compare");
+  });
+
+  it("borrowed extension rules run as their @typescript-eslint variant on TS files", async () => {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "code.ts"), "const flag = true;\nflag;\nexport default flag;\n");
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+
+    const rules = res.findings.map((f) => f.rule);
+    expect(res.error).toBeUndefined();
+    expect(rules).toContain("@typescript-eslint/no-unused-expressions"); // S905 via the TS-aware rule
+    expect(rules).not.toContain("no-unused-expressions"); // core variant stays off on TS files
+  });
+
   it("default mode lints TS via the TS-aware unused-vars rule, not the bogus core rule", async () => {
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
     writeFileSync(

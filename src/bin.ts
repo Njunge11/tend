@@ -19,9 +19,8 @@ import { thinkingEnv } from "./fixing/thinking-budget.js";
 import { modelForUnit } from "./fixing/model-selection.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
-import type { WorkUnit } from "./fixing/dispatch.js";
-import type { Tool } from "./findings/finding.js";
-import { planWorkFromRepairs } from "./fixing/dispatch.js";
+import { planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
+import type { Finding, Tool } from "./findings/finding.js";
 import { planRepair } from "./fixing/repair-strategy.js";
 import {
   mapOwnerRoot,
@@ -34,8 +33,7 @@ import { onTerminationSignals } from "./process/signals.js";
 import { ClaudeSession } from "./session/claude.js";
 import { createStreamActivityScanner } from "./session/stream-activity.js";
 import { runIncrementalTsc, tscCacheFile } from "./fixing/typecheck-cache.js";
-import { orchestrate } from "./orchestrator.js";
-import type { FixOutcome } from "./orchestrator.js";
+import { orchestrate, type FixOutcome } from "./orchestrator.js";
 import { ReportBuilder } from "./report/builder.js";
 import { ReportSchema, type Report } from "./report/schema.js";
 import { renderSummary } from "./output/summary.js";
@@ -54,7 +52,6 @@ import {
 import type { TestOutcome } from "./gate/checks/tests.js";
 import { reasonLabel } from "./output/format.js";
 import { zeroUsage } from "./session/types.js";
-import type { Finding } from "./findings/finding.js";
 
 function effortForFindings(findings: Pick<Finding, "category" | "autofixable">[]): Effort {
   if (findings.length === 0) return "medium";
