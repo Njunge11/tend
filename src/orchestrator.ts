@@ -1,3 +1,4 @@
+import { hasBlockingFailure } from "./_shared.js";
 import { FindingStore } from "./findings/store.js";
 import { route } from "./findings/router.js";
 import type { Finding, Tool } from "./findings/finding.js";
@@ -264,7 +265,7 @@ function shouldSplitAfterFailure(unit: WorkUnit, outcome: FixOutcome): boolean {
  * the previous status for the rest — so the final report never drops a scanner that ran
  * cleanly in loop 1. Previous order is preserved; genuinely new tools are appended.
  */
-export function mergeScannerStatuses(prev: ScannerStatus[], next: ScannerStatus[]): ScannerStatus[] {
+function mergeScannerStatuses(prev: ScannerStatus[], next: ScannerStatus[]): ScannerStatus[] {
   const byTool = new Map(next.map((status) => [status.tool, status]));
   const prevTools = new Set(prev.map((status) => status.tool));
   return [
@@ -574,19 +575,10 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
     includeGenerated: Boolean(config.fix?.includeGenerated),
     includeFixtures: Boolean(config.fix?.includeFixtures),
   });
-  const hasBlockingFailure =
-    derived.failureSummary.blockingSecrets > 0 ||
-    derived.failureSummary.unresolvedEligible > 0 ||
-    derived.failureSummary.toolFailures > 0 ||
-    derived.failureSummary.failedDeterministic > 0 ||
-    derived.failureSummary.sessionErrors > 0 ||
-    derived.failureSummary.regressions > 0 ||
-    derived.failureSummary.typecheckFailures > 0 ||
-    derived.failureSummary.testFailures > 0;
   const exitStatus =
     termination === "retryable-infrastructure"
       ? 75
-      : hasBlockingFailure
+      : hasBlockingFailure(derived.failureSummary)
         ? 1
         : 0;
   bus.emit({ type: "done", exitStatus });
