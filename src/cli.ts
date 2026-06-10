@@ -1,5 +1,6 @@
 import { Command, InvalidArgumentError } from "commander";
 import { existsSync } from "node:fs";
+import { DEFAULT_MODEL } from "./fixing/model-selection.js";
 
 export type CliHandlers = {
   run: (opts: {
@@ -48,7 +49,7 @@ function addRunOptions(command: Command): Command {
     .option("--all", "fix the entire backlog, not just changed files")
     .option("--max-loops <n>", "cap on fix loops", positiveInt("--max-loops"))
     .option("--max-sessions <n>", "concurrent AI sessions", positiveInt("--max-sessions"))
-    .option("--model <model>", "model for fixes: sonnet (default), opus, haiku, or a full model id")
+    .option("--model <model>", `full model id for fixes (default ${DEFAULT_MODEL})`)
     .option("--effort <level>", "reasoning effort for fixes: low | medium | high | xhigh | max")
     .option("--include-tests", "also fix findings in test files (excluded by default)")
     .option("--plain", "plain one-line-per-event output for pipes/CI (no color, no spinners)")

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangeSet } from "../src/fixing/change-set.js";
+import { DEFAULT_MODEL } from "../src/fixing/model-selection.js";
 import type { WorkUnit } from "../src/fixing/dispatch.js";
 import { antiSuppression } from "../src/gate/checks/anti-suppression.js";
 import { runTestPhase, type TestOutcome } from "../src/gate/checks/tests.js";
@@ -12,7 +13,7 @@ import type { SessionRunner } from "../src/session/types.js";
 import { undoCommand } from "../src/commands/undo.js";
 import { tmpRepo, type TmpRepo } from "./helpers/tmp-repo.js";
 
-const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
+const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: DEFAULT_MODEL };
 const LOOSE_EQ = /(?<![=!])==(?!=)/;
 
 const codeFinding = (file: string): RawFinding => ({

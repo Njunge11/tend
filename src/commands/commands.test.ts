@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
 import { tmpRepo, type TmpRepo } from "../../test/helpers/tmp-repo.js";
+import { DEFAULT_MODEL } from "../fixing/model-selection.js";
 import { Snapshot } from "../git/snapshot.js";
 import type { AuditResult, FixOutcome } from "../orchestrator.js";
 import { ReportSchema, type Report } from "../report/schema.js";
@@ -13,7 +14,7 @@ import { runCommand } from "./run.js";
 import { showCommand } from "./show.js";
 import { undoCommand } from "./undo.js";
 
-const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
+const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: DEFAULT_MODEL };
 
 function badRunScopeAndTimeoutsReport(): Report {
   return ReportSchema.parse(
