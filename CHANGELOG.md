@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.3...tend-cli-v0.13.4) (2026-06-10)
+
+
+### Bug Fixes
+
+* serialize git worktree add/remove on the main repo ([fee2e92](https://github.com/Njunge11/tend/commit/fee2e92a8d4aa21bf38605bb0fb70d8a56c95871))
+
 ## [0.13.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.2...tend-cli-v0.13.3) (2026-06-10)
 
 
