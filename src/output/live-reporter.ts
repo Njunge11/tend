@@ -8,11 +8,18 @@ import type { Tool } from "../findings/finding.js";
 import { fixStageLabel, type FixStage } from "../fixing/progress.js";
 import type { ScannerStatusKind } from "../scanners/scanner.js";
 import { BaseReporter } from "./base-reporter.js";
-import type { TendEvent } from "./events.js";
-import { formatClock } from "./format.js";
+import type { AuditExclusions, TendEvent } from "./events.js";
+import { formatAuditFunnel, formatClock } from "./format.js";
 import type { Reporter, ReporterDeps } from "./reporter.js";
 
-type AuditData = { loop: number; findings: number; files: number; scanned?: number };
+type AuditData = {
+  loop: number;
+  findings: number;
+  files: number;
+  scanned?: number;
+  eligible?: number;
+  excluded?: AuditExclusions;
+};
 type FixInfo = { loop: number; files: string[]; concurrency: number };
 type Phase = { kind: "fix"; info: FixInfo } | { kind: "done" };
 type ScannerLiveStatus = "running" | ScannerStatusKind;
@@ -96,6 +103,8 @@ export class LiveReporter extends BaseReporter implements Reporter {
           findings: event.findings,
           files: event.files,
           scanned: event.scanned,
+          eligible: event.eligible,
+          excluded: event.excluded,
         });
         break;
       case "scan-start":
@@ -296,8 +305,9 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private scannedTitle(a: AuditData): string {
     const scope = a.scanned != null ? `${a.scanned} files eligible for fixes` : "whole repo";
     const label = a.loop === 1 ? "initial audit" : `re-audit after fix pass ${a.loop - 1}`;
+    const funnel = formatAuditFunnel(a.eligible, a.excluded, this.theme.glyph.arrow);
     const meta = this.theme.dim(
-      `${label}: fix scope ${scope} ${this.theme.glyph.bullet} in-scope findings ${a.findings} across ${a.files} files`,
+      `${label}: fix scope ${scope} ${this.theme.glyph.bullet} in-scope findings ${a.findings} across ${a.files} files${funnel}`,
     );
     return meta;
   }
@@ -330,7 +340,9 @@ export class LiveReporter extends BaseReporter implements Reporter {
       : "";
     const currentSuffix = current ? ` ${bullet} ${current}` : "";
     const detail = this.theme.dim(`${cost}${currentSuffix}`);
-    return `fix pass ${this.currentLoop} ${bullet} ${this.fixedFindings}/${this.findingsTotal} fixed ${bullet} ${this.revertedFindings} reverted${detail}`;
+    // "eligible fixed": the denominator is the dispatched/eligible population for this pass,
+    // not the audit's in-scope total — keep that explicit so 2/2 never reads as "fixed all 11".
+    return `fix pass ${this.currentLoop} ${bullet} ${this.fixedFindings}/${this.findingsTotal} eligible fixed ${bullet} ${this.revertedFindings} reverted${detail}`;
   }
 
   private refreshHeader(): void {

@@ -126,7 +126,7 @@ describe("LiveReporter", () => {
     const output = chunks.join("");
     expect(output).toContain("initial audit: fix scope 150 files eligible for fixes");
     expect(output).toContain("in-scope findings 150 across 150 files");
-    expect(output).toContain("fix pass 1 · 150/150 fixed");
+    expect(output).toContain("fix pass 1 · 150/150 eligible fixed");
     expect(output).toContain("0 reverted");
     // Regression guard for captured terminals: fixed files should not be emitted as
     // persistent completed Listr rows, one per file, across redraws.
@@ -174,7 +174,7 @@ describe("LiveReporter", () => {
 
     const output = chunks.join("");
     // 2/2 fixed (not 3/3): the "left" placeholder was excluded and the denominator held.
-    expect(output).toContain("fix pass 1 · 2/2 fixed");
+    expect(output).toContain("fix pass 1 · 2/2 eligible fixed");
   });
 
   it("excludes 'left' (not-attempted) findings from the live counts", async () => {
@@ -209,6 +209,41 @@ describe("LiveReporter", () => {
 
     const output = chunks.join("");
     // Only the one fixed finding counts; the 2 "left" findings are not folded in.
-    expect(output).toContain("fix pass 1 · 1/3 fixed · 0 reverted");
+    expect(output).toContain("fix pass 1 · 1/3 eligible fixed · 0 reverted");
+  });
+
+  it("renders the audit eligibility funnel with non-zero exclusion reasons only", async () => {
+    const { reporter } = harness();
+    const chunks: string[] = [];
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      chunks.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write;
+
+    try {
+      reporter.start();
+      const drawing = reporter.run();
+      reporter.onEvent({ type: "scan-start", loop: 1 });
+      reporter.onEvent({
+        type: "audit",
+        loop: 1,
+        findings: 11,
+        files: 7,
+        scanned: 23,
+        eligible: 2,
+        excluded: { tests: 8, generated: 0, fixtures: 0, outOfScope: 1, reportOnly: 0 },
+      });
+      reporter.onEvent({ type: "done", exitStatus: 0 });
+      reporter.close();
+      await drawing;
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+
+    const output = chunks.join("");
+    expect(output).toContain(
+      "in-scope findings 11 across 7 files → 2 eligible to fix (8 in test files, 1 excluded from fix scope)",
+    );
   });
 });

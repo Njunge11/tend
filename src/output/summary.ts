@@ -2,6 +2,7 @@ import Table from "cli-table3";
 import { TOOLS, type Finding, type Tool } from "../findings/finding.js";
 import { isTestFile } from "../fixing/dispatch.js";
 import type { Report } from "../report/schema.js";
+import type { AuditExclusions } from "./events.js";
 import { formatDuration } from "./format.js";
 import { makeTheme, type Theme } from "./theme.js";
 
@@ -86,7 +87,7 @@ function classifyFinding(f: Finding, report: Report): keyof Buckets | null {
   if (f.status === "fixed") return "fixed";
   if (f.status === "reverted" || f.status === "unfixable")
     return classifyReverted(f);
-  const pending = classifyPending(f, report);
+  const pending = classifyPending(f, report.fixPolicy.includeTests);
   return pending === "left" ? "unresolvedEligible" : pending;
 }
 
@@ -99,7 +100,7 @@ function bucket(report: Report): Buckets {
   return buckets;
 }
 
-function classifyPending(f: Finding, report: Report): PendingBucket {
+function classifyPending(f: Finding, includeTests: boolean): PendingBucket {
   if (f.inFixScope === false) {
     if (f.scopeExclusionReason === "generated") return "generated";
     if (f.scopeExclusionReason === "fixtures") return "fixtures";
@@ -107,13 +108,38 @@ function classifyPending(f: Finding, report: Report): PendingBucket {
     return "outOfScope";
   }
   if (f.track === "report-only") return "reportOnly";
-  if (
-    f.track === "ai-fix" &&
-    !report.fixPolicy.includeTests &&
-    isTestFile(f.file)
-  )
+  if (f.track === "ai-fix" && !includeTests && isTestFile(f.file))
     return "skippedTests";
   return "left";
+}
+
+/**
+ * The audit-time funnel over in-scope findings: how many the fix policy will dispatch
+ * ("eligible") and per-reason counts for the rest. Feeds the `audit` event so reporters can
+ * explain the in-scope → dispatched collapse the moment it happens.
+ */
+export function auditEligibility(
+  findings: Finding[],
+  includeTests: boolean,
+): { eligible: number; excluded: AuditExclusions } {
+  const excluded: AuditExclusions = {
+    tests: 0,
+    generated: 0,
+    fixtures: 0,
+    outOfScope: 0,
+    reportOnly: 0,
+  };
+  let eligible = 0;
+  for (const f of findings) {
+    const pending = classifyPending(f, includeTests);
+    if (pending === "left") eligible++;
+    else if (pending === "skippedTests") excluded.tests++;
+    else if (pending === "generated") excluded.generated++;
+    else if (pending === "fixtures") excluded.fixtures++;
+    else if (pending === "outOfScope") excluded.outOfScope++;
+    else excluded.reportOnly++;
+  }
+  return { eligible, excluded };
 }
 
 function couldntFixFindings(b: Buckets): Finding[] {
@@ -212,7 +238,6 @@ function plainSummaryLine(b: Buckets): string {
     `couldntFix=${couldntFixFindings(b).length}`,
     `skippedTests=${b.skippedTests.length}`,
     `reportOnly=${b.reportOnly.length}`,
-    `left=${b.unresolvedEligible.length}`,
     `secrets=${b.secrets.length}`,
     `generated=${b.generated.length}`,
     `fixtures=${b.fixtures.length}`,
@@ -299,7 +324,7 @@ function plainScannerLines(report: Report): string[] {
     const status = statusByTool.get(tool);
     const c = counts.get(tool) ?? emptyScopeCounts();
     const reason = plainScannerReason(status);
-    return `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left} unresolvedEligible=${c.left} generated=${c.generated} fixtures=${c.fixtures} outOfScope=${c.outOfScope}${reason}`;
+    return `scanner tool=${tool} status=${status?.status ?? "not-recorded"} scope=${plainScopeLabel(report)} total=${c.total} fixed=${c.fixed} couldntFix=${c.couldntFix} skippedTests=${c.skippedTests} reportOnly=${c.reportOnly} left=${c.left} generated=${c.generated} fixtures=${c.fixtures} outOfScope=${c.outOfScope}${reason}`;
   });
 }
 
@@ -400,6 +425,13 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     b.secrets.length === 0 &&
     !hasFailureSummary(report);
   const status = overallStatusText(report, clean, theme);
+  // Failure/exclusion rows appear only when non-zero so a typical run isn't a wall of zeros.
+  const revertedRow = (label: string, count: number): string[][] =>
+    count > 0 ? [[label, `${theme.reverted(theme.glyph.reverted)} ${count}`]] : [];
+  const leftRow = (label: string, count: number, suffix = ""): string[][] =>
+    count > 0 ? [[label, `${theme.dim(theme.glyph.left)} ${count}${suffix}`]] : [];
+  const errorRow = (label: string, count: number): string[][] =>
+    count > 0 ? [[label, theme.error(String(count))]] : [];
   const rows = [
     ["status", status],
     ["scope", scopeLabel(report)],
@@ -409,51 +441,20 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
       : []),
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
-    [
-      "timed out/session error",
-      `${theme.reverted(theme.glyph.reverted)} ${b.timedOutSessionError.length}`,
-    ],
-    [
-      "regressed",
-      `${theme.reverted(theme.glyph.reverted)} ${b.regressed.length}`,
-    ],
-    [
-      "typecheck failed",
-      `${theme.reverted(theme.glyph.reverted)} ${b.typecheckFailed.length}`,
-    ],
-    [
-      "test failed",
-      `${theme.reverted(theme.glyph.reverted)} ${b.testFailed.length}`,
-    ],
-    ["retries exhausted", `${theme.reverted(theme.glyph.reverted)} ${b.retryExhausted.length}`],
-    [
-      "skipped tests",
-      `${theme.dim(theme.glyph.left)} ${b.skippedTests.length} (pass --include-tests)`,
-    ],
-    ["skipped generated", `${theme.dim(theme.glyph.left)} ${b.generated.length}`],
-    ["skipped fixtures", `${theme.dim(theme.glyph.left)} ${b.fixtures.length}`],
-    ["out of scope", `${theme.dim(theme.glyph.left)} ${b.outOfScope.length}`],
-    ["report only", `${theme.dim(theme.glyph.left)} ${b.reportOnly.length}`],
-    [
-      "unresolved eligible",
-      `${theme.dim(theme.glyph.left)} ${b.unresolvedEligible.length}`,
-    ],
-    [
-      "secrets",
-      b.secrets.length > 0 ? theme.error(String(b.secrets.length)) : "0",
-    ],
-    [
-      "tool failures",
-      report.failureSummary.toolFailures > 0
-        ? theme.error(String(report.failureSummary.toolFailures))
-        : "0",
-    ],
-    [
-      "failed deterministic fixes",
-      report.failureSummary.failedDeterministic > 0
-        ? theme.error(String(report.failureSummary.failedDeterministic))
-        : "0",
-    ],
+    ...revertedRow("timed out/session error", b.timedOutSessionError.length),
+    ...revertedRow("regressed", b.regressed.length),
+    ...revertedRow("typecheck failed", b.typecheckFailed.length),
+    ...revertedRow("test failed", b.testFailed.length),
+    ...revertedRow("retries exhausted", b.retryExhausted.length),
+    ...leftRow("skipped tests", b.skippedTests.length, " (pass --include-tests)"),
+    ...leftRow("skipped generated", b.generated.length),
+    ...leftRow("skipped fixtures", b.fixtures.length),
+    ...leftRow("elsewhere in repo (outside fix scope)", b.outOfScope.length),
+    ...leftRow("report only", b.reportOnly.length),
+    ...leftRow("unresolved eligible", b.unresolvedEligible.length),
+    ...errorRow("secrets", b.secrets.length),
+    ...errorRow("tool failures", report.failureSummary.toolFailures),
+    ...errorRow("failed deterministic fixes", report.failureSummary.failedDeterministic),
     ["estimated AI cost", formatCost(report.aiUsage.estimatedCostUsd)],
     ["AI sessions", String(report.aiUsage.sessions)],
     ["tokens", formatTokens(report.aiUsage)],
@@ -531,7 +532,7 @@ function emptyScopeCounts(): ScopeCounts {
 function scopeCountKey(f: Finding, report: Report): keyof ScopeCounts {
   if (f.status === "fixed") return "fixed";
   if (f.status === "reverted" || f.status === "unfixable") return "couldntFix";
-  return classifyPending(f, report);
+  return classifyPending(f, report.fixPolicy.includeTests);
 }
 
 /** Per-tool tally over the in-scope findings only. */
@@ -593,17 +594,19 @@ function renderScannerBreakdownTable(report: Report, theme: Theme, verbose = fal
     const label = scannerLabel(tool);
     const statusText = scannerStatusText(status, theme);
     const reason = scannerReasonText(status);
-    const base = [label, statusText, String(c.total), String(c.fixed), String(c.couldntFix), String(c.left), reason];
-    if (verbose) return [...base.slice(0, -1), String(c.skippedTests), String(c.reportOnly), String(c.generated), String(c.fixtures), String(c.outOfScope), reason];
-    return base;
+    const base = [label, statusText, String(c.total), String(c.fixed), String(c.couldntFix), String(c.left)];
+    if (verbose) return [...base, String(c.skippedTests), String(c.reportOnly), String(c.generated), String(c.fixtures), String(c.outOfScope), reason];
+    // "excluded" rolls up every policy bucket so total = fixed + couldn't fix + left + excluded.
+    const excluded = c.skippedTests + c.reportOnly + c.generated + c.fixtures + c.outOfScope;
+    return [...base, String(excluded), reason];
   });
   return renderTable(scannerBreakdownHeaders(verbose), rows);
 }
 
 function scannerBreakdownHeaders(verbose: boolean): string[] {
-  const base = ["scanner", "status", "total", "fixed", "couldn't fix", "left", "reason"];
-  if (verbose) return [...base.slice(0, -1), "skipped tests", "report only", "generated", "fixtures", "out of scope", "reason"];
-  return base;
+  const base = ["scanner", "status", "total", "fixed", "couldn't fix", "left"];
+  if (verbose) return [...base, "skipped tests", "report only", "generated", "fixtures", "out of scope", "reason"];
+  return [...base, "excluded", "reason"];
 }
 
 function scopeLabel(report: Report): string {

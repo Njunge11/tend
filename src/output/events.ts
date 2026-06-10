@@ -5,6 +5,15 @@ import type { ScannerStatusKind } from "../scanners/scanner.js";
 /** What happened to a file in the current dispatched batch. "left" = not attempted. */
 export type FileOutcome = "fixed" | "reverted" | "left";
 
+/** Per-reason counts of in-scope findings the fix policy excludes from dispatch. */
+export type AuditExclusions = {
+  tests: number;
+  generated: number;
+  fixtures: number;
+  outOfScope: number;
+  reportOnly: number;
+};
+
 export type TendEvent =
   | { type: "snapshot" }
   | { type: "detected"; packageManager: string; typescript: boolean; testRunner?: string }
@@ -19,7 +28,17 @@ export type TendEvent =
       reason?: string;
     }
   // `scanned` = resolved fix-scope file count when known; `findings`/`files` = in-scope findings.
-  | { type: "audit"; loop: number; findings: number; files: number; scanned?: number }
+  // `eligible` = the subset of those findings the fix policy will actually dispatch; `excluded`
+  // accounts for the rest, so findings = eligible + sum(excluded) when both are present.
+  | {
+      type: "audit";
+      loop: number;
+      findings: number;
+      files: number;
+      scanned?: number;
+      eligible?: number;
+      excluded?: AuditExclusions;
+    }
   // Announces the batch about to be fixed this loop. `findings` = total findings across the
   // dispatched units (the stable live-view denominator; jobs split, findings don't).
   | { type: "loop-start"; loop: number; files: string[]; concurrency: number; findings: number }

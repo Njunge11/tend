@@ -12,6 +12,7 @@ import {
   type RepairStrategy,
 } from "./fixing/repair-strategy.js";
 import { EventBus } from "./output/events.js";
+import { auditEligibility } from "./output/summary.js";
 import { modelForUnit } from "./fixing/model-selection.js";
 import { addUsage, zeroUsage, type AiUsage, type FailureClass } from "./session/types.js";
 import type { RunScope } from "./report/schema.js";
@@ -356,12 +357,20 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
     }
     for (const finding of routed.deterministic) deterministic.set(finding.id, finding);
 
+    // Eligibility is read off the store records: fresh findings are cloned into the store by
+    // reconcile, and markScope above marked those copies, not `audited.findings`.
+    const funnel = auditEligibility(
+      scopedFindings.map((f) => store.get(f.id) ?? f),
+      Boolean(config.includeTests),
+    );
     bus.emit({
       type: "audit",
       loop,
       findings: scopedFindings.length,
       files: new Set(scopedFindings.map((f) => f.file)).size,
       scanned: audited.scanned,
+      eligible: funnel.eligible,
+      excluded: funnel.excluded,
     });
 
     if (loop === 1 && audited.findings.length === 0) {

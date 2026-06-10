@@ -1,3 +1,33 @@
+import type { AuditExclusions } from "./events.js";
+
+/**
+ * The audit line's funnel suffix: " → 2 eligible to fix (8 in test files, 1 excluded from
+ * fix scope)". Zero-count reasons are omitted; empty string when eligibility is unknown
+ * (events from older emitters). Shared by the live and plain reporters so both views explain
+ * the in-scope → dispatched collapse identically.
+ */
+export function formatAuditFunnel(
+  eligible: number | undefined,
+  excluded: AuditExclusions | undefined,
+  arrow: string,
+): string {
+  if (eligible === undefined) return "";
+  const reasons = excluded
+    ? (
+        [
+          [excluded.tests, "in test files"],
+          [excluded.generated, "generated"],
+          [excluded.fixtures, "fixtures"],
+          [excluded.reportOnly, "report-only"],
+          [excluded.outOfScope, "excluded from fix scope"],
+        ] as const
+      )
+        .filter(([count]) => count > 0)
+        .map(([count, label]) => `${count} ${label}`)
+    : [];
+  const parenthetical = reasons.length > 0 ? ` (${reasons.join(", ")})` : "";
+  return ` ${arrow} ${eligible} eligible to fix${parenthetical}`;
+}
 
 /**
  * Human duration for the summary: sub-minute reads as "2.4s", longer as "3m 12s".

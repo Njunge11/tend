@@ -27,7 +27,15 @@ describe("PlainReporter", () => {
       { type: "scan-start", loop: 1 },
       { type: "scanner-start", loop: 1, tool: "jscpd" },
       { type: "scanner-result", loop: 1, tool: "jscpd", status: "ran", findings: 4 },
-      { type: "audit", loop: 1, findings: 13, files: 10, scanned: 159 },
+      {
+        type: "audit",
+        loop: 1,
+        findings: 13,
+        files: 10,
+        scanned: 159,
+        eligible: 4,
+        excluded: { tests: 8, generated: 0, fixtures: 0, outOfScope: 1, reportOnly: 0 },
+      },
       { type: "loop-start", loop: 1, files: ["a.ts", "b.ts"], concurrency: 4, findings: 4 },
       { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity", model: "claude-opus-4-6" },
       { type: "file-stage", loop: 1, file: "a.ts", stage: "typecheck" },
@@ -44,7 +52,9 @@ describe("PlainReporter", () => {
     expect(lines).toContain("scanner jscpd: running");
     expect(lines).toContain("scanner jscpd: ran 4 findings");
     expect(lines.some((l) => l.includes("initial audit: fix scope 159 files eligible for fixes") && l.includes("in-scope findings 13 across 10 files"))).toBe(true);
-    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("4 findings across 2 files") && l.includes("4 concurrent"))).toBe(true);
+    // The funnel explains the 13 → 4 collapse at the moment it happens, omitting zero reasons.
+    expect(lines.some((l) => l.includes("→ 4 eligible to fix (8 in test files, 1 excluded from fix scope)"))).toBe(true);
+    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("4 eligible findings across 2 files") && l.includes("4 concurrent"))).toBe(true);
     expect(lines).toContain("progress a.ts: typecheck");
     // The fixed line shows the model the job ran on, verbatim.
     expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("claude-opus-4-6"))).toBe(true);
@@ -87,6 +97,8 @@ describe("PlainReporter", () => {
     reporter.onEvent({ type: "audit", loop: 1, findings: 3, files: 2 });
     expect(lines[0]).toContain("initial audit: fix scope whole repo");
     expect(lines[0]).toContain("in-scope findings 3 across 2 files");
+    // No eligibility on the event (older emitter) → no funnel suffix.
+    expect(lines[0]).not.toContain("eligible to fix");
   });
 
   it("run() resolves immediately (no async rendering in plain mode)", async () => {
