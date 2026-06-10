@@ -21,11 +21,7 @@ export class PlainReporter extends BaseReporter implements Reporter {
     const { glyph } = this.theme;
     switch (event.type) {
       case "scan-start":
-        this.write(
-          event.loop === 1
-            ? "initial audit: scanning…"
-            : `re-audit after fix pass ${event.loop - 1}: scanning…`,
-        );
+        this.write(this.formatScanStart(event.loop));
         break;
       case "scanner-start":
         this.write(`scanner ${event.tool}: running`);
@@ -36,12 +32,9 @@ export class PlainReporter extends BaseReporter implements Reporter {
         this.write(`scanner ${event.tool}: ${event.status}${count}${reason}`);
         break;
       }
-      case "audit": {
-        const scope = event.scanned != null ? `${event.scanned} files eligible for fixes` : "whole repo";
-        const phase = event.loop === 1 ? "initial audit" : `re-audit after fix pass ${event.loop - 1}`;
-        this.write(`${glyph.scanned} ${phase}: fix scope ${scope} ${glyph.bullet} in-scope findings ${event.findings} across ${event.files} files`);
+      case "audit":
+        this.write(this.formatAuditLine(event));
         break;
-      }
       case "loop-start":
         this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.findings} findings across ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
         break;
@@ -49,26 +42,14 @@ export class PlainReporter extends BaseReporter implements Reporter {
         this.fileStartTimes.set(event.file, Date.now());
         if (event.model) this.models.set(event.file, event.model);
         break;
-      case "file-result": {
-        const startTime = this.fileStartTimes.get(event.file);
-        const elapsed = startTime ? ` (${formatClock(Date.now() - startTime)})` : "";
-        this.fileStartTimes.delete(event.file);
-        const model = this.models.get(event.file);
-        this.models.delete(event.file);
-        const modelTag = model ? ` ${glyph.bullet} ${model}` : "";
-        if (event.outcome === "fixed") {
-          this.write(`${glyph.fixed} fixed ${event.file}${modelTag}${elapsed}`);
-        } else if (event.outcome === "reverted") {
-          const detail = event.detail ? ` — ${event.detail.split("\n")[0]}` : "";
-          this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}${detail}${modelTag}${elapsed}`);
-        } else {
-          this.write(`${glyph.left} not attempted ${event.file}`);
-        }
+      case "file-result":
+        this.writeFileResult(event);
+        break;
+      case "file-stage": {
+        const stageDetail = event.detail ? " (" + event.detail + ")" : "";
+        this.write(`progress ${event.file}: ${fixStageLabel(event.stage)}${stageDetail}`);
         break;
       }
-      case "file-stage":
-        this.write(`progress ${event.file}: ${fixStageLabel(event.stage)}${event.detail ? ` (${event.detail})` : ""}`);
-        break;
       case "loop-complete": {
         const cost = event.estimatedCostUsd > 0 ? ` ${glyph.bullet} $${event.estimatedCostUsd.toFixed(2)}` : "";
         this.write(`loop ${event.loop}: ${event.fixed} fixed ${glyph.bullet} ${event.reverted} reverted ${glyph.bullet} ${event.remaining} remaining${cost}`);
@@ -79,6 +60,36 @@ export class PlainReporter extends BaseReporter implements Reporter {
       case "detected":
       case "done":
         break;
+    }
+  }
+
+  private formatScanStart(loop: number): string {
+    if (loop === 1) return "initial audit: scanning…";
+    return `re-audit after fix pass ${loop - 1}: scanning…`;
+  }
+
+  private formatAuditLine(event: Extract<TendEvent, { type: "audit" }>): string {
+    const { glyph } = this.theme;
+    const scope = event.scanned != null ? `${event.scanned} files eligible for fixes` : "whole repo";
+    const phase = event.loop === 1 ? "initial audit" : `re-audit after fix pass ${event.loop - 1}`;
+    return `${glyph.scanned} ${phase}: fix scope ${scope} ${glyph.bullet} in-scope findings ${event.findings} across ${event.files} files`;
+  }
+
+  private writeFileResult(event: Extract<TendEvent, { type: "file-result" }>): void {
+    const { glyph } = this.theme;
+    const startTime = this.fileStartTimes.get(event.file);
+    const elapsed = startTime ? ` (${formatClock(Date.now() - startTime)})` : "";
+    this.fileStartTimes.delete(event.file);
+    const model = this.models.get(event.file);
+    this.models.delete(event.file);
+    const modelTag = model ? ` ${glyph.bullet} ${model}` : "";
+    if (event.outcome === "fixed") {
+      this.write(`${glyph.fixed} fixed ${event.file}${modelTag}${elapsed}`);
+    } else if (event.outcome === "reverted") {
+      const detail = event.detail ? ` — ${event.detail.split("\n")[0]}` : "";
+      this.write(`${glyph.reverted} reverted ${event.file} — ${reasonLabel(event.reason)}${detail}${modelTag}${elapsed}`);
+    } else {
+      this.write(`${glyph.left} not attempted ${event.file}`);
     }
   }
 

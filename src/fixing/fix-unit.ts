@@ -344,6 +344,64 @@ async function runGateWithTimeout(
   }
 }
 
+type InitialEditResult =
+  | { done: true; outcome: FixOutcome }
+  | { done: false; usage: AiUsage };
+
+async function runInitialEditSession(
+  deps: FixUnitDeps,
+  unit: WorkUnit,
+  fileContents: Map<string, string>,
+  restore: () => void,
+  changedOnDisk: () => boolean,
+  initialUsage: AiUsage,
+  progress: (stage: FixStage, detail?: string) => void,
+): Promise<InitialEditResult> {
+  let usage = initialUsage;
+  const activity = (stage: FixStage) => (detail: string) => progress(stage, detail);
+
+  progress("ai-edit");
+  const res = await runSessionWithTimeout(deps, {
+    file: unit.file,
+    findings: unit.findings,
+    prompt: renderPrompt(unit, fileContents),
+    onActivity: activity("ai-edit"),
+  });
+  if (res.usage) usage = addUsage(usage, res.usage);
+
+  // Files changed but the session errored/crashed → never leave a half-applied edit
+  // for the re-scan to call "fixed"; revert to the snapshot.
+  if (!res.ok) {
+    if (changedOnDisk()) restore();
+    return { done: true, outcome: { kept: false, reason: "session-error", detail: res.error, failureClass: res.failureClass, usage } };
+  }
+
+  if (changedOnDisk()) return { done: false, usage };
+
+  // No-edit sessions get one stricter retry — unless the unit is mechanical (dead-code,
+  // autofixable), where a second attempt won't help and just wastes time.
+  if (isMechanicalUnit(unit)) {
+    return { done: true, outcome: { kept: false, reason: "session-error", detail: "Mechanical fix session completed without edits", failureClass: "no-op", usage } };
+  }
+
+  progress("ai-no-edit-retry");
+  const retry = await runSessionWithTimeout(deps, {
+    file: unit.file,
+    findings: unit.findings,
+    prompt: renderNoEditRetryPrompt(unit, fileContents),
+    onActivity: activity("ai-no-edit-retry"),
+  });
+  if (retry.usage) usage = addUsage(usage, retry.usage);
+  if (!retry.ok) {
+    if (changedOnDisk()) restore();
+    return { done: true, outcome: { kept: false, reason: "session-error", detail: retry.error, failureClass: retry.failureClass, usage } };
+  }
+  if (!changedOnDisk()) {
+    return { done: true, outcome: { kept: false, reason: "session-error", detail: "Session completed without changing owned files after stricter retry", failureClass: "no-op", usage } };
+  }
+  return { done: false, usage };
+}
+
 /**
  * Production fix worker. The session edits files directly on disk (`claude -p
  * --allowedTools Read,Write,Edit`), so the **disk is the source of truth** — we
@@ -390,70 +448,9 @@ export function makeFixUnit(deps: FixUnitDeps) {
     // long AI edits show ongoing progress instead of a single static label.
     const activity = (stage: FixStage) => (detail: string) => progress(stage, detail);
 
-    progress("ai-edit");
-    const res = await runSessionWithTimeout(deps, {
-      file: unit.file,
-      findings: unit.findings,
-      prompt: renderPrompt(unit, fileContents),
-      onActivity: activity("ai-edit"),
-    });
-    if (res.usage) usage = addUsage(usage, res.usage);
-
-    // Files changed but the session errored/crashed → never leave a half-applied edit
-    // for the re-scan to call "fixed"; revert to the snapshot.
-    if (!res.ok) {
-      if (changedOnDisk()) restore();
-      return {
-        kept: false,
-        reason: "session-error",
-        detail: res.error,
-        failureClass: res.failureClass,
-        usage,
-      };
-    }
-
-    // No-edit sessions get one stricter retry — unless the unit is mechanical (dead-code,
-    // autofixable), where a second attempt won't help and just wastes time.
-    if (!changedOnDisk()) {
-      if (isMechanicalUnit(unit)) {
-        return {
-          kept: false,
-          reason: "session-error",
-          detail: "Mechanical fix session completed without edits",
-          failureClass: "no-op",
-          usage,
-        };
-      }
-      progress("ai-no-edit-retry");
-      const retry = await runSessionWithTimeout(deps, {
-        file: unit.file,
-        findings: unit.findings,
-        prompt: renderNoEditRetryPrompt(unit, fileContents),
-        onActivity: activity("ai-no-edit-retry"),
-      });
-      if (retry.usage) usage = addUsage(usage, retry.usage);
-      if (!retry.ok) {
-        if (changedOnDisk()) restore();
-        return {
-          kept: false,
-          reason: "session-error",
-          detail: retry.error,
-          failureClass: retry.failureClass,
-          usage,
-        };
-      }
-      if (changedOnDisk()) {
-        // Continue into the normal gate with the stricter retry's edit.
-      } else {
-        return {
-          kept: false,
-          reason: "session-error",
-          detail: "Session completed without changing owned files after stricter retry",
-          failureClass: "no-op",
-          usage,
-        };
-      }
-    }
+    const initialResult = await runInitialEditSession(deps, unit, fileContents, restore, changedOnDisk, usage, progress);
+    if (initialResult.done) return initialResult.outcome;
+    usage = initialResult.usage;
 
     async function scanNewFindings(): Promise<Finding[]> {
       progress("rescan");
