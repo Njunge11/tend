@@ -5,7 +5,7 @@ import { makeFinding } from "../../test/helpers/make-finding.js";
 import type { Finding } from "../findings/finding.js";
 import { ReportBuilder } from "../report/builder.js";
 import { ReportSchema, type Report } from "../report/schema.js";
-import { groupRemaining, renderSummary } from "./summary.js";
+import { auditEligibility, groupRemaining, renderSummary } from "./summary.js";
 
 function reportWith(...findings: ReturnType<typeof makeFinding>[]) {
   const builder = new ReportBuilder();
@@ -541,6 +541,28 @@ describe("renderSummary", () => {
     expect(plain).not.toContain("skipped-tests count=1");
   });
 
+  it("buckets unsupported-strategy findings as report-only, not unresolved eligible", () => {
+    // The dispatcher drops plans with strategy "unsupported" (e.g. a duplicate below the
+    // refactor minimum) — the summary must not present them as eligible-but-unresolved.
+    const builder = reportWith({
+      ...makeFinding({
+        tool: "jscpd",
+        rule: "duplicate-code",
+        category: "duplication",
+        file: "src/git/repo.ts",
+      }),
+      status: "pending",
+      inScope: true,
+      repairStrategy: "unsupported",
+      repairStrategyReason: "report-only",
+    });
+    const { out, plain } = renderAfterJscpdRan(builder);
+    expect(out).toMatch(/report only\s+│ – 1/);
+    expect(out).not.toContain("unresolved eligible");
+    expect(plain).toContain("reportOnly=1");
+    expect(plain).toContain("unresolvedEligible=0");
+  });
+
   it("renders pending AI-fix test-file findings as skipped tests by default", () => {
     const builder = reportWith({
       ...makeFinding({
@@ -666,6 +688,21 @@ describe("renderSummary", () => {
     expect(plain).not.toContain("scope=in-your-changes");
   });
 
+  it("surfaces the loop termination reason next to fix passes", () => {
+    const builder = sonarBuilder("fixed");
+    const { out, plain } = renderAfterSonarRan(builder, { termination: "max-loops" });
+    expect(out).toMatch(/fix passes\s+│ 1 \(stopped: max loops reached\)/);
+    expect(plain).toContain("termination=max-loops");
+  });
+
+  it("omits the termination label for reports written before termination tracking", () => {
+    const builder = sonarBuilder("fixed");
+    const { out, plain } = renderAfterSonarRan(builder);
+    expect(out).toMatch(/fix passes\s+│ 1\s+│/);
+    expect(out).not.toContain("stopped:");
+    expect(plain).not.toContain("termination=");
+  });
+
   it("non-zero exitStatus renders as needs attention, not completed", () => {
     const report = sonarBuilder("fixed").build({ loops: 1, durationMs: 1000, exitStatus: 1 });
 
@@ -738,6 +775,47 @@ describe("renderSummary", () => {
     expect(plain).toContain("generated count=1");
     expect(plain).toContain("fixtures count=1");
     expect(plain).toContain("report-only count=1");
+  });
+});
+
+describe("auditEligibility", () => {
+  /** A pending, in-scope sonarjs finding with the given overrides. */
+  function pendingFinding(overrides: Partial<Finding> = {}): Finding {
+    return {
+      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
+      status: "pending",
+      inScope: true,
+      ...overrides,
+    };
+  }
+
+  it("does not count unsupported-strategy findings as eligible; buckets by planner reason", () => {
+    const { eligible, excluded } = auditEligibility(
+      [
+        pendingFinding(), // genuinely dispatchable
+        pendingFinding({ repairStrategy: "unsupported", repairStrategyReason: "report-only" }),
+        pendingFinding({ repairStrategy: "unsupported", repairStrategyReason: "generated-source-not-found" }),
+        pendingFinding({ repairStrategy: "unsupported", repairStrategyReason: "tests" }),
+        pendingFinding({ repairStrategy: "unsupported", repairStrategyReason: "out-of-scope" }),
+      ],
+      false,
+    );
+    expect(eligible).toBe(1);
+    expect(excluded).toStrictEqual({
+      tests: 1,
+      generated: 0,
+      fixtures: 0,
+      outOfScope: 1,
+      reportOnly: 2,
+    });
+  });
+
+  it("still counts dispatchable strategies as eligible", () => {
+    const { eligible } = auditEligibility(
+      [pendingFinding({ repairStrategy: "single-file-ai-edit" })],
+      false,
+    );
+    expect(eligible).toBe(1);
   });
 });
 

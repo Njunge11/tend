@@ -12,6 +12,7 @@ import {
   type Report,
   type RunScope,
   type ScannerStatus,
+  type Termination,
 } from "./schema.js";
 
 const ZERO_AI_USAGE: AiUsage = {
@@ -50,6 +51,10 @@ function isUnresolvedEligibleFinding(
     finding.inScope !== false &&
     finding.inReportScope !== false &&
     finding.inFixScope !== false &&
+    // The dispatcher never attempts plans with an "unsupported" strategy, so such a finding
+    // can't be "unresolved eligible" — counting it would block exit 0 on work tend will
+    // never do (and the summary buckets it as report-only, not unresolved).
+    finding.repairStrategy !== "unsupported" &&
     (fixPolicy.includeTests || !isTestFile(finding.file))
   );
 }
@@ -145,6 +150,8 @@ export class ReportBuilder {
     runScope?: RunScope;
     fixPolicy?: FixPolicy;
     finalIntegration?: FinalIntegration;
+    /** Why the orchestrate loop stopped — persisted so "why only N passes?" is answerable. */
+    termination?: Termination;
   }): Report {
     const findings = assignRetryIds([...this.outcomes.values()], this.generateRetryId);
     const fixPolicy = meta.fixPolicy ?? DEFAULT_FIX_POLICY;
@@ -164,6 +171,7 @@ export class ReportBuilder {
       finalIntegration: meta.finalIntegration,
       unresolvedEligibleCount: derived.unresolvedEligibleCount,
       loops: meta.loops,
+      termination: meta.termination,
       durationMs: meta.durationMs,
       exitStatus: meta.exitStatus,
     };

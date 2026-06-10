@@ -38,6 +38,13 @@ export const ConfigSchema = z.object({
    * capable model. Unset → a built-in capable default (see model-selection.ts).
    */
   duplicationModel: z.string().optional(),
+  /**
+   * Model for cognitive-complexity refactors — an alias or full model id. Reducing
+   * complexity means rewriting a whole function without changing behavior, so these
+   * go to a more capable model. Unset → a built-in capable default (see
+   * model-selection.ts).
+   */
+  complexityModel: z.string().optional(),
   /** Reasoning effort for fixes; unset → claude's own default. */
   effort: z.enum(EFFORT_LEVELS).optional(),
   /** Extended-thinking token budget per fix session; unset → per-finding policy decides. */
@@ -61,6 +68,7 @@ type CliOverrides = Partial<
     | "includeTests"
     | "model"
     | "duplicationModel"
+    | "complexityModel"
     | "effort"
   >
 >;

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
 import type { Finding, Tool } from "./findings/finding.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
+import { CAPABLE_MODEL } from "./fixing/model-selection.js";
 import { EventBus, type TendEvent } from "./output/events.js";
 import { applyOutcome, dispatchableUnits, orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
 import { FindingStore } from "./findings/store.js";
@@ -743,6 +744,66 @@ describe("orchestrate", () => {
       findings: 2,
       eligible: 1,
       excluded: { tests: 1, generated: 0, fixtures: 0, outOfScope: 0, reportOnly: 0 },
+    });
+  });
+
+  it("audit funnel and fix-pass denominator agree when a plan's strategy is unsupported", async () => {
+    // A 6-line cross-file clone is below the refactor minimum, so planRepair marks it
+    // unsupported/report-only and the dispatcher never attempts it. The audit event must
+    // count it as excluded (not eligible), and the dispatched denominator must match.
+    const smallClone: Finding = {
+      ...makeFinding({
+        tool: "jscpd",
+        rule: "duplicate-code",
+        category: "duplication",
+        file: "src/git/repo.ts",
+        range: { startLine: 28, startCol: 0, endLine: 33, endCol: 10 },
+        flowPath: [
+          { file: "src/git/repo.ts", line: 28, range: { startLine: 28, startCol: 0, endLine: 33, endCol: 10 } },
+          { file: "src/git/client.ts", line: 80, range: { startLine: 80, startCol: 0, endLine: 85, endCol: 10 } },
+        ],
+      }),
+    };
+    const audit = vi.fn(scriptedAudit([[ai("src/a.ts"), smallClone], []]));
+    const fixUnit = vi.fn(keep);
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
+
+    const res = await orchestrate({ audit, fixUnit, config, bus });
+
+    const auditEvent = events.find((event) => event.type === "audit");
+    expect(auditEvent).toMatchObject({
+      findings: 2,
+      eligible: 1,
+      excluded: { tests: 0, generated: 0, fixtures: 0, outOfScope: 0, reportOnly: 1 },
+    });
+    // The same population reaches the dispatcher: 1 finding dispatched, 1 fix attempt.
+    const loopStart = events.find((event) => event.type === "loop-start");
+    expect(loopStart).toMatchObject({ findings: 1 });
+    expect(fixUnit).toHaveBeenCalledTimes(1);
+    // The never-attempted finding is not "unresolved eligible" and must not block exit 0.
+    expect(res.exitStatus).toBe(0);
+  });
+
+  it("labels file-start with the capable model for a cognitive-complexity unit", async () => {
+    // The fix-pass view shows each job's model from the file-start event; a complexity
+    // refactor must display (and run on) the capable model, not the default.
+    const complexity = ai("src/big.ts", "sonarjs/cognitive-complexity");
+    const audit = vi.fn(scriptedAudit([[complexity, ai("src/plain.ts")], []]));
+    const fixUnit = vi.fn(keep);
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
+
+    await orchestrate({ audit, fixUnit, config, bus });
+
+    const starts = events.filter((event) => event.type === "file-start");
+    expect(starts.find((event) => event.file === "src/big.ts")).toMatchObject({
+      model: CAPABLE_MODEL,
+    });
+    expect(starts.find((event) => event.file === "src/plain.ts")).toMatchObject({
+      model: config.model,
     });
   });
 

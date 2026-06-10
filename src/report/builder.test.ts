@@ -114,6 +114,48 @@ describe("ReportBuilder", () => {
     });
   });
 
+  it("excludes unsupported-strategy findings from unresolved eligible (never dispatched)", () => {
+    const builder = new ReportBuilder();
+    // The dispatcher never attempts this plan; counting it as unresolved eligible would
+    // block exit 0 on work tend will never do.
+    builder.recordOutcome({
+      ...makeFinding({
+        tool: "jscpd",
+        rule: "duplicate-code",
+        category: "duplication",
+        file: "src/git/repo.ts",
+      }),
+      status: "pending",
+      inScope: true,
+      repairStrategy: "unsupported",
+      repairStrategyReason: "report-only",
+    });
+    // A genuinely dispatchable pending finding still counts.
+    builder.recordOutcome({
+      ...makeFinding({ file: "src/b.ts" }),
+      status: "pending",
+      inScope: true,
+      repairStrategy: "single-file-ai-edit",
+    });
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 1 });
+
+    expect(report.unresolvedEligibleCount).toBe(1);
+    expect(report.failureSummary.unresolvedEligible).toBe(1);
+  });
+
+  it("persists the loop termination reason, and omits it when not provided", () => {
+    const builder = new ReportBuilder();
+    builder.recordOutcome({ ...makeFinding({ file: "src/a.ts" }), status: "fixed" });
+
+    const report = builder.build({ loops: 1, durationMs: 42, exitStatus: 0, termination: "max-loops" });
+    expect(report.termination).toBe("max-loops");
+
+    // Reports written before termination tracking (or builds without it) stay valid.
+    const withoutTermination = builder.build({ loops: 1, durationMs: 42, exitStatus: 0 });
+    expect(withoutTermination.termination).toBeUndefined();
+  });
+
   it("includes the run's estimated AI usage when provided to build()", () => {
     const builder = new ReportBuilder();
     builder.recordOutcome(makeFinding({ file: "src/a.ts" }));

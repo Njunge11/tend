@@ -1,13 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
-import { DUPLICATION_MODEL, modelForUnit } from "./model-selection.js";
+import { CAPABLE_MODEL, modelForUnit } from "./model-selection.js";
 
 const config = { model: "sonnet" };
 
 describe("modelForUnit", () => {
+  it("pins the capable default to current Opus", () => {
+    expect(CAPABLE_MODEL).toBe("claude-opus-4-8");
+  });
+
   it("uses the capable model for duplication findings", () => {
     const unit = [makeFinding({ category: "duplication", tool: "jscpd" })];
-    expect(modelForUnit(unit, config)).toBe(DUPLICATION_MODEL);
+    expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
+  });
+
+  it("uses the capable model for cognitive-complexity findings (matched by rule)", () => {
+    const unit = [makeFinding({ rule: "sonarjs/cognitive-complexity", category: "smell" })];
+    expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
   });
 
   it("uses the default model for non-duplication findings", () => {
@@ -20,7 +29,15 @@ describe("modelForUnit", () => {
       makeFinding({ category: "dead-code" }),
       makeFinding({ category: "duplication", tool: "jscpd" }),
     ];
-    expect(modelForUnit(unit, config)).toBe(DUPLICATION_MODEL);
+    expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
+  });
+
+  it("lifts a mixed unit to the capable model if any finding is a complexity refactor", () => {
+    const unit = [
+      makeFinding({ category: "dead-code" }),
+      makeFinding({ rule: "sonarjs/cognitive-complexity", category: "smell" }),
+    ];
+    expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
   });
 
   it("uses the default model for an empty unit", () => {
@@ -34,10 +51,41 @@ describe("modelForUnit", () => {
     );
   });
 
-  it("does not apply duplicationModel to non-duplication findings", () => {
-    const unit = [makeFinding({ category: "smell" })];
-    expect(modelForUnit(unit, { model: "sonnet", duplicationModel: "claude-opus-4-7" })).toBe(
-      "sonnet",
+  it("lets a configured complexityModel override the capable default", () => {
+    const unit = [makeFinding({ rule: "sonarjs/cognitive-complexity", category: "smell" })];
+    expect(modelForUnit(unit, { model: "sonnet", complexityModel: "claude-opus-4-7" })).toBe(
+      "claude-opus-4-7",
     );
+  });
+
+  it("keeps the overrides scoped to their finding kind", () => {
+    // duplicationModel must not leak onto complexity units, nor complexityModel onto
+    // duplication units, nor either onto plain findings.
+    const complexity = [makeFinding({ rule: "sonarjs/cognitive-complexity", category: "smell" })];
+    expect(modelForUnit(complexity, { model: "sonnet", duplicationModel: "claude-opus-4-7" })).toBe(
+      CAPABLE_MODEL,
+    );
+    const duplication = [makeFinding({ category: "duplication", tool: "jscpd" })];
+    expect(modelForUnit(duplication, { model: "sonnet", complexityModel: "claude-opus-4-7" })).toBe(
+      CAPABLE_MODEL,
+    );
+    const plain = [makeFinding({ category: "smell" })];
+    expect(
+      modelForUnit(plain, {
+        model: "sonnet",
+        duplicationModel: "claude-opus-4-7",
+        complexityModel: "claude-opus-4-7",
+      }),
+    ).toBe("sonnet");
+  });
+
+  it("prefers the duplication override when a unit contains both kinds", () => {
+    const unit = [
+      makeFinding({ category: "duplication", tool: "jscpd" }),
+      makeFinding({ rule: "sonarjs/cognitive-complexity", category: "smell" }),
+    ];
+    expect(
+      modelForUnit(unit, { model: "sonnet", duplicationModel: "dup-model", complexityModel: "cx-model" }),
+    ).toBe("dup-model");
   });
 });

@@ -651,6 +651,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   builder.recordScannerStatuses(result.scannerStatuses);
   const report = builder.build({
     loops: result.loops,
+    termination: result.termination,
     durationMs,
     exitStatus: result.exitStatus,
     aiUsage: result.usage,

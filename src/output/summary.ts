@@ -107,6 +107,17 @@ function classifyPending(f: Finding, includeTests: boolean): PendingBucket {
     if (f.scopeExclusionReason === "tests") return "skippedTests";
     return "outOfScope";
   }
+  // A finding whose planned repair strategy is "unsupported" never reaches the dispatcher
+  // (dispatchableUnits drops the plan), so it is not eligible. Bucket it by the planner's
+  // reason so the audit funnel, the fix-pass denominator, and the final summary all describe
+  // the population the dispatcher actually attempts.
+  if (f.repairStrategy === "unsupported") {
+    if (f.repairStrategyReason === "tests") return "skippedTests";
+    if (f.repairStrategyReason === "generated") return "generated";
+    if (f.repairStrategyReason === "fixtures") return "fixtures";
+    if (f.repairStrategyReason === "out-of-scope") return "outOfScope";
+    return "reportOnly"; // "report-only", "generated-source-not-found"
+  }
   if (f.track === "report-only") return "reportOnly";
   if (f.track === "ai-fix" && !includeTests && isTestFile(f.file))
     return "skippedTests";
@@ -214,7 +225,7 @@ function renderPlainSummary(
 ): string {
   const lines = [
     `done ${theme.glyph.bullet} ${report.loops} fix passes ${theme.glyph.bullet} ${formatDuration(report.durationMs)}`,
-    plainSummaryLine(b),
+    plainSummaryLine(report, b),
     plainAiUsageLine(report),
   ];
   lines.push(...plainStrategyLines(report));
@@ -231,7 +242,7 @@ function renderPlainSummary(
 }
 
 /** The single `summary ...` headline line of the plain (machine) output. */
-function plainSummaryLine(b: Buckets): string {
+function plainSummaryLine(report: Report, b: Buckets): string {
   return [
     "summary",
     `fixed=${b.fixed.length}`,
@@ -247,6 +258,8 @@ function plainSummaryLine(b: Buckets): string {
     `regressed=${b.regressed.length}`,
     `typecheckFailed=${b.typecheckFailed.length}`,
     `testFailed=${b.testFailed.length}`,
+    // Why the loop stopped (omitted for reports written before termination tracking).
+    ...(report.termination ? [`termination=${report.termination}`] : []),
   ].join(" ");
 }
 
@@ -435,7 +448,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
   const rows = [
     ["status", status],
     ["scope", scopeLabel(report)],
-    ["fix passes", String(report.loops)],
+    ["fix passes", fixPassesText(report)],
     ...(report.finalIntegration && !report.finalIntegration.ok
       ? ([["final integration", theme.error(firstLine(report.finalIntegration.detail ?? "failed"))]] as string[][])
       : []),
@@ -607,6 +620,30 @@ function scannerBreakdownHeaders(verbose: boolean): string[] {
   const base = ["scanner", "status", "total", "fixed", "couldn't fix", "left"];
   if (verbose) return [...base, "skipped tests", "report only", "generated", "fixtures", "out of scope", "reason"];
   return [...base, "excluded", "reason"];
+}
+
+/** "3 (stopped: max loops reached)" — why the loop ended, next to the pass count. */
+function fixPassesText(report: Report): string {
+  const label = terminationLabel(report.termination);
+  return label ? `${report.loops} (${label})` : String(report.loops);
+}
+
+/** Human label for the loop's stop reason; undefined for pre-termination reports. */
+function terminationLabel(termination: Report["termination"]): string | undefined {
+  switch (termination) {
+    case "converged":
+      return "converged";
+    case "max-loops":
+      return "stopped: max loops reached";
+    case "no-progress":
+      return "stopped: no further progress";
+    case "no-scanners":
+      return "stopped: no scanners available";
+    case "retryable-infrastructure":
+      return "stopped: rate limited / infrastructure error";
+    default:
+      return undefined;
+  }
 }
 
 function scopeLabel(report: Report): string {

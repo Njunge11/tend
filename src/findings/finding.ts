@@ -117,3 +117,15 @@ export function fingerprint(input: FingerprintInput): string {
   const key = [input.tool, input.rule, input.file, lineBucket, normalizeMessage(input.message)].join("|");
   return createHash("sha256").update(key).digest("hex");
 }
+
+/**
+ * The fingerprint components minus the line bucket. When an accepted edit shifts a finding
+ * across a 5-line bucket boundary its fingerprint changes; this looser identity lets
+ * reconcile re-match the drifted finding to its known record instead of inventing a phantom
+ * "fixed" plus a ghost "new" finding.
+ */
+export function normalizedIdentity(
+  f: Pick<Finding, "tool" | "rule" | "file" | "message">,
+): string {
+  return [f.tool, f.rule, f.file, normalizeMessage(f.message)].join("|");
+}
