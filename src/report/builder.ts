@@ -12,6 +12,7 @@ import {
   type Report,
   type RunScope,
   type ScannerStatus,
+  type Termination,
 } from "./schema.js";
 
 const ZERO_AI_USAGE: AiUsage = {
@@ -149,6 +150,8 @@ export class ReportBuilder {
     runScope?: RunScope;
     fixPolicy?: FixPolicy;
     finalIntegration?: FinalIntegration;
+    /** Why the orchestrate loop stopped — persisted so "why only N passes?" is answerable. */
+    termination?: Termination;
   }): Report {
     const findings = assignRetryIds([...this.outcomes.values()], this.generateRetryId);
     const fixPolicy = meta.fixPolicy ?? DEFAULT_FIX_POLICY;
@@ -168,6 +171,7 @@ export class ReportBuilder {
       finalIntegration: meta.finalIntegration,
       unresolvedEligibleCount: derived.unresolvedEligibleCount,
       loops: meta.loops,
+      termination: meta.termination,
       durationMs: meta.durationMs,
       exitStatus: meta.exitStatus,
     };

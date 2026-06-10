@@ -76,6 +76,17 @@ export const FinalIntegrationSchema = z.object({
   detail: z.string().optional(),
 });
 
+/** Why the scan → fix → re-audit loop stopped. Single source of truth for the orchestrator. */
+export const TERMINATIONS = [
+  "converged",
+  "max-loops",
+  "no-progress",
+  "no-scanners",
+  "retryable-infrastructure",
+] as const;
+
+export const TerminationSchema = z.enum(TERMINATIONS);
+
 const ZERO_AI_USAGE = {
   estimatedCostUsd: 0,
   inputTokens: 0,
@@ -116,11 +127,14 @@ export const ReportSchema = z.object({
   finalIntegration: FinalIntegrationSchema.optional(),
   unresolvedEligibleCount: z.number().int().nonnegative().default(0),
   loops: z.number().int().nonnegative(),
+  // Optional so reports written before termination tracking still parse.
+  termination: TerminationSchema.optional(),
   durationMs: z.number().nonnegative(),
   exitStatus: z.number().int(),
 });
 
 export type Report = z.infer<typeof ReportSchema>;
+export type Termination = z.infer<typeof TerminationSchema>;
 export type BehaviorChange = z.infer<typeof BehaviorChangeSchema>;
 export type ScannerStatus = z.infer<typeof ScannerStatusSchema>;
 export type AiUsage = z.infer<typeof AiUsageSchema>;

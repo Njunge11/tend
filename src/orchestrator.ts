@@ -16,7 +16,7 @@ import { EventBus } from "./output/events.js";
 import { auditEligibility } from "./output/summary.js";
 import { modelForUnit } from "./fixing/model-selection.js";
 import { addUsage, zeroUsage, type AiUsage, type FailureClass } from "./session/types.js";
-import type { RunScope } from "./report/schema.js";
+import type { RunScope, Termination } from "./report/schema.js";
 import { deriveReportFields } from "./report/builder.js";
 import { markScope, type FixScopeConfig } from "./scanners/scope-policy.js";
 
@@ -59,12 +59,9 @@ export type OrchestrateDeps = {
   bus?: EventBus;
 };
 
-export type Termination =
-  | "converged"
-  | "max-loops"
-  | "no-progress"
-  | "no-scanners"
-  | "retryable-infrastructure";
+// The loop's stop reason is defined in the report schema (so report.json persists it);
+// re-exported here for existing importers.
+export type { Termination } from "./report/schema.js";
 
 export type OrchestrateResult = {
   termination: Termination;

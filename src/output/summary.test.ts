@@ -688,6 +688,21 @@ describe("renderSummary", () => {
     expect(plain).not.toContain("scope=in-your-changes");
   });
 
+  it("surfaces the loop termination reason next to fix passes", () => {
+    const builder = sonarBuilder("fixed");
+    const { out, plain } = renderAfterSonarRan(builder, { termination: "max-loops" });
+    expect(out).toMatch(/fix passes\s+│ 1 \(stopped: max loops reached\)/);
+    expect(plain).toContain("termination=max-loops");
+  });
+
+  it("omits the termination label for reports written before termination tracking", () => {
+    const builder = sonarBuilder("fixed");
+    const { out, plain } = renderAfterSonarRan(builder);
+    expect(out).toMatch(/fix passes\s+│ 1\s+│/);
+    expect(out).not.toContain("stopped:");
+    expect(plain).not.toContain("termination=");
+  });
+
   it("non-zero exitStatus renders as needs attention, not completed", () => {
     const report = sonarBuilder("fixed").build({ loops: 1, durationMs: 1000, exitStatus: 1 });
 
