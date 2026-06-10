@@ -427,6 +427,31 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     includeTests: opts.includeTests,
   });
 
+  // Resolve the fix scope once and feed it to everything downstream (test baseline, audit,
+  // fix filter). `null` means the whole repo (`--all`); otherwise it's the concrete file list
+  // to fix — explicit path arguments expanded to files, or the files changed vs HEAD. Resolved
+  // BEFORE the snapshot so a no-op run (nothing changed) exits without touching anything.
+  const paths = opts.paths ?? [];
+  let scope: string[] | null;
+  if (opts.all) {
+    scope = null;
+  } else if (paths.length > 0) {
+    scope = await filesUnder(git, paths);
+    if (scope.length === 0) {
+      err(`✖ no files under ${paths.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    scope = await changedVsHead(git);
+    if (scope.length === 0) {
+      // A clean tree is a success, not an error (CI: nothing to fix → exit 0). Without this
+      // early exit an empty scope fell through to scanner-specific whole-repo defaults.
+      reporter.note("no files changed vs HEAD — nothing to scan. Use --all to fix the whole backlog or pass paths.");
+      return;
+    }
+  }
+
   const snapshot = await Snapshot.capture(git, cwd);
   persist(SNAPSHOT_PATH, snapshot.toJSON());
   reporter.note("snapshot saved · undo: tend undo");
@@ -443,24 +468,6 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   }
   if (missing.length > 0)
     reporter.note(`skipping missing external scanners: ${missing.join(", ")}`);
-
-  // Resolve the fix scope once and feed it to everything downstream (test baseline, audit,
-  // fix filter). `null` means the whole repo (`--all`); otherwise it's the concrete file list
-  // to fix — explicit path arguments expanded to files, or the files changed vs HEAD.
-  const paths = opts.paths ?? [];
-  let scope: string[] | null;
-  if (opts.all) {
-    scope = null;
-  } else if (paths.length > 0) {
-    scope = await filesUnder(git, paths);
-    if (scope.length === 0) {
-      err(`✖ no files under ${paths.join(", ")}`);
-      process.exitCode = 1;
-      return;
-    }
-  } else {
-    scope = await changedVsHead(git);
-  }
 
   // Capture the pristine test baseline (which tests are green before any fix), scoped to the
   // files we'll touch. Relating against "." runs the whole suite and can take many minutes.
