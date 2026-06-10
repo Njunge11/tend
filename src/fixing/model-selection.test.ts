@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
-import { CAPABLE_MODEL, DEFAULT_MODEL, modelForUnit } from "./model-selection.js";
+import { CAPABLE_MODEL, DEFAULT_MODEL, distinctRunModels, modelForUnit } from "./model-selection.js";
 
 const config = { model: DEFAULT_MODEL };
 
@@ -78,6 +78,20 @@ describe("modelForUnit", () => {
         complexityModel: "claude-opus-4-7",
       }),
     ).toBe("sonnet");
+  });
+
+  it("distinctRunModels: default config routes to the default and capable models", () => {
+    expect(distinctRunModels({ model: DEFAULT_MODEL })).toEqual([DEFAULT_MODEL, CAPABLE_MODEL]);
+  });
+
+  it("distinctRunModels: dedupes when the default already is the capable model", () => {
+    expect(distinctRunModels({ model: CAPABLE_MODEL })).toEqual([CAPABLE_MODEL]);
+  });
+
+  it("distinctRunModels: includes per-kind overrides", () => {
+    expect(
+      distinctRunModels({ model: DEFAULT_MODEL, duplicationModel: "dup-model", complexityModel: "cx-model" }),
+    ).toEqual([DEFAULT_MODEL, "dup-model", "cx-model"]);
   });
 
   it("prefers the duplication override when a unit contains both kinds", () => {

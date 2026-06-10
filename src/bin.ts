@@ -16,7 +16,8 @@ import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
 import { makeFixUnit } from "./fixing/fix-unit.js";
 import { thinkingEnv } from "./fixing/thinking-budget.js";
-import { modelForUnit } from "./fixing/model-selection.js";
+import { distinctRunModels, modelForUnit } from "./fixing/model-selection.js";
+import { preflightModels } from "./fixing/model-preflight.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
 import { planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
@@ -73,6 +74,7 @@ const TEND_CACHE_DIR = join(TEND_DIR, "cache");
 // One cap for a single AI fix session. Used both to kill the `claude -p` subprocess and as the
 // fix-unit session-timeout wrapper (passed below), so the enforced limit always matches the intent.
 const CLAUDE_TIMEOUT_MS = Number(process.env.TEND_SESSION_TIMEOUT_MS) || 10 * 60_000;
+const MODEL_PREFLIGHT_TIMEOUT_MS = 60_000;
 const BUILD_TIMEOUT_MS = 5 * 60_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = 5 * 60_000;
@@ -538,6 +540,35 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   const resolved = await resolveRunScope(git, opts, reporter);
   if (!resolved) return;
   const { scope } = resolved;
+
+  // Verify every model this run can route to before doing any work. `claude -p`
+  // exits 0 for an unknown model, so without this a typo'd --model silently burns
+  // entire fix passes as no-op session errors (see model-preflight.ts).
+  reporter.note("verifying model access…");
+  const preflight = await preflightModels(distinctRunModels(config), async (model) => {
+    const r = await execa(
+      "claude",
+      [
+        ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
+        "--no-session-persistence",
+        "-p",
+        "Reply with: ok",
+        "--model",
+        model,
+        "--max-turns",
+        "1",
+        "--output-format",
+        "json",
+      ],
+      { reject: false, timeout: MODEL_PREFLIGHT_TIMEOUT_MS },
+    );
+    return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? 1 };
+  });
+  if (!preflight.ok) {
+    for (const failure of preflight.failures) err(`✖ model "${failure.model}": ${failure.detail}`);
+    process.exitCode = 1;
+    return;
+  }
 
   const snapshot = await Snapshot.capture(git, cwd);
   persist(SNAPSHOT_PATH, snapshot.toJSON());

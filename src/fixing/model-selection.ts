@@ -67,3 +67,19 @@ export function modelForUnit(
   }
   return config.model;
 }
+
+/**
+ * Every model this run's config can route a unit to: the default plus the
+ * capable-tier models for duplication and complexity escalation, deduped.
+ * The startup preflight pings each of these so a typo'd model fails the run
+ * in seconds instead of after a full scan-and-fix pass of dead sessions.
+ */
+export function distinctRunModels(config: ModelSelectionConfig): string[] {
+  return [
+    ...new Set([
+      config.model,
+      config.duplicationModel ?? CAPABLE_MODEL,
+      config.complexityModel ?? CAPABLE_MODEL,
+    ]),
+  ];
+}
