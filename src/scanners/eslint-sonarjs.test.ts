@@ -171,6 +171,98 @@ describe("runEslintSonarjs (Node API, bundled eslint)", () => {
   });
 });
 
+// Type-aware lint: a tsconfig.json activates sonarjs's requiresTypeChecking rules (S2871 …),
+// with per-file syntactic rescue for anything the TS project service can't cover.
+describe("runEslintSonarjs (type-aware mode)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tend-eslint-typed-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  // S2871: sorting strings without a comparator — only detectable with type information.
+  const SORT_NO_COMPARATOR =
+    "export function listFiles(acceptedFiles: Set<string>): string[] {\n  const files = [...acceptedFiles].sort();\n  return files;\n}\n";
+  const TSCONFIG = JSON.stringify({ compilerOptions: { strict: true, module: "esnext", target: "es2022" } });
+
+  it("catches S2871 (sort without comparator) when the project has a tsconfig", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), TSCONFIG);
+    writeFileSync(join(dir, "code.ts"), SORT_NO_COMPARATOR);
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    expect(res.findings.map((f) => f.rule)).toContain("sonarjs/no-alphabetical-sort");
+  });
+
+  it("stays syntactic (no S2871, no error) when there is no tsconfig", async () => {
+    writeFileSync(join(dir, "code.ts"), SORT_NO_COMPARATOR);
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    expect(res.findings.map((f) => f.rule)).not.toContain("sonarjs/no-alphabetical-sort");
+  });
+
+  it("rescues files outside the tsconfig: typed findings in covered files, syntactic in the rest", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ include: ["src"] }));
+    mkdirSync(join(dir, "src"));
+    mkdirSync(join(dir, "scripts"));
+    writeFileSync(join(dir, "src", "code.ts"), SORT_NO_COMPARATOR);
+    // Outside the tsconfig's include → the project service rejects it; the rescue pass must
+    // still surface its syntactic finding (duplicated if/else branches).
+    writeFileSync(
+      join(dir, "scripts", "task.ts"),
+      "export function pick(c: boolean): number {\n  if (c) { return 42; } else { return 42; }\n}\n",
+    );
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["src/code.ts", "scripts/task.ts"], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    const byFile = (file: string) => res.findings.filter((f) => f.file === file).map((f) => f.rule);
+    expect(byFile("src/code.ts")).toContain("sonarjs/no-alphabetical-sort"); // typed pass
+    expect(byFile("scripts/task.ts")).toContain("sonarjs/no-all-duplicated-branches"); // rescued
+  });
+
+  it("falls back to syntactic linting when the tsconfig is unparseable", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), "{ this is not json");
+    writeFileSync(
+      join(dir, "code.ts"),
+      "export function pick(c: boolean): number {\n  if (c) { return 42; } else { return 42; }\n}\n",
+    );
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    expect(res.findings.map((f) => f.rule)).toContain("sonarjs/no-all-duplicated-branches");
+  });
+
+  it("TEND_ESLINT_TYPED=0 disables type-aware linting even with a tsconfig", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), TSCONFIG);
+    writeFileSync(join(dir, "code.ts"), SORT_NO_COMPARATOR);
+
+    process.env["TEND_ESLINT_TYPED"] = "0";
+    try {
+      const res = await runEslintSonarjs({ cwd: dir, files: ["code.ts"], loop: 1 });
+      expect(res.error).toBeUndefined();
+      expect(res.findings.map((f) => f.rule)).not.toContain("sonarjs/no-alphabetical-sort");
+    } finally {
+      delete process.env["TEND_ESLINT_TYPED"];
+    }
+  });
+
+  it("whole-repo scan is typed when a root tsconfig exists", async () => {
+    writeFileSync(join(dir, "tsconfig.json"), TSCONFIG);
+    writeFileSync(join(dir, "code.ts"), SORT_NO_COMPARATOR);
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["."], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    expect(res.findings.map((f) => f.rule)).toContain("sonarjs/no-alphabetical-sort");
+  });
+});
+
 // A real monorepo layout: repo root has no eslint config, apps/dashboard has its own.
 describe("runEslintSonarjs (per-file config resolution in a monorepo)", () => {
   const monorepoRoot = fileURLToPath(new URL("../../test/fixtures/monorepo", import.meta.url));

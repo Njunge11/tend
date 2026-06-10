@@ -5,8 +5,10 @@ import type { Finding } from "../findings/finding.js";
 import { normalize, type RawFinding } from "../findings/normalize.js";
 import {
   defaultEslintConfigPath,
+  defaultEslintTypedConfigPath,
   eslintMode,
   findEslintConfigDir,
+  findTsconfigDir,
   projectConfiguresSonarjs,
   type EslintMode,
 } from "./eslint-default-config.js";
@@ -69,10 +71,28 @@ type LintGroup = {
   cwd: string;
   /** Targets to lint, relative to `cwd`. */
   targets: string[];
+  /**
+   * Run with TypeScript type information (typescript-eslint project service), which activates
+   * sonarjs's `requiresTypeChecking` rules. True when a tsconfig.json governs at least one
+   * target; files the project service can't cover are rescued syntactically (see lintGroup).
+   */
+  typed: boolean;
 };
 
 function relativeLintTarget(from: string, to: string): string {
   return relative(from, to) || ".";
+}
+
+/** Kill switch for type-aware linting (e.g. repos where program construction is too heavy). */
+function typedLintEnabled(): boolean {
+  const flag = process.env["TEND_ESLINT_TYPED"];
+  return flag !== "0" && flag !== "off" && flag !== "false";
+}
+
+/** Should this group lint with type information? Any target governed by a tsconfig qualifies. */
+function groupIsTyped(mode: EslintMode, absFiles: string[], boundary: string): boolean {
+  if (mode === "defer" || !typedLintEnabled()) return false;
+  return absFiles.some((f) => findTsconfigDir(dirname(f), boundary) !== null);
 }
 
 /**
@@ -98,33 +118,76 @@ function groupByConfig(ctx: ScanContext): LintGroup[] {
         mode: "default",
         cwd: ctx.cwd,
         targets: absFiles.map((f) => relativeLintTarget(ctx.cwd, f)),
+        typed: groupIsTyped("default", absFiles, boundary),
       };
     }
+    const mode = projectConfiguresSonarjs(key) ? "defer" : "layer";
     return {
       configDir: key,
-      mode: projectConfiguresSonarjs(key) ? "defer" : "layer",
+      mode,
       cwd: key,
       targets: absFiles.map((f) => relativeLintTarget(key, f)),
+      typed: groupIsTyped(mode, absFiles, boundary),
     };
   });
 }
 
+// Layered onto the project's config in typed layer mode. Activates parser services for TS
+// files when the project's parser is typescript-eslint's; other parsers ignore the option,
+// and files outside every tsconfig fail with a fatal message that the rescue pass handles.
+const TYPED_PARSER_LAYER: Linter.Config = {
+  files: ["**/*.{ts,mts,cts,tsx}"],
+  languageOptions: { parserOptions: { projectService: true } },
+};
+
 /** Lint one group through the Node API; ESLint returns absolute filePaths regardless of cwd. */
-function eslintOptionsForGroup(group: LintGroup): ESLint.Options {
+function eslintOptionsForGroup(group: LintGroup, typed: boolean = group.typed): ESLint.Options {
   const options: ESLint.Options = { cwd: group.cwd, errorOnUnmatchedPattern: false };
   if (group.mode === "default") {
-    options.overrideConfigFile = defaultEslintConfigPath();
+    options.overrideConfigFile = typed ? defaultEslintTypedConfigPath() : defaultEslintConfigPath();
   } else if (group.mode === "layer") {
     // Append sonarjs ON TOP of the project's discovered config (the CLI `--config` flag can't —
     // it replaces). `defer` adds nothing: the project already configures sonarjs itself.
-    options.overrideConfig = [sonarjs.configs.recommended];
+    options.overrideConfig = typed
+      ? [sonarjs.configs.recommended, TYPED_PARSER_LAYER]
+      : [sonarjs.configs.recommended];
   }
   return options;
 }
 
+/**
+ * A fatal message produced when type-aware parsing rejects a file the TS project service
+ * cannot cover (not included in any tsconfig, conflicting parserOptions.project, broken
+ * tsconfig, …). Such files are re-linted syntactically so they keep today's coverage.
+ */
+function isTypedParseFailure(msg: EslintMessage): boolean {
+  return msg.ruleId === null && /project service|projectService|parserOptions\.project|allowDefaultProject/i.test(msg.message);
+}
+
 async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
-  const eslint = new ESLint(eslintOptionsForGroup(group));
-  return (await eslint.lintFiles(group.targets)) as EslintResult[];
+  if (!group.typed) {
+    const eslint = new ESLint(eslintOptionsForGroup(group));
+    return (await eslint.lintFiles(group.targets)) as EslintResult[];
+  }
+
+  let results: EslintResult[];
+  try {
+    const eslint = new ESLint(eslintOptionsForGroup(group, true));
+    results = (await eslint.lintFiles(group.targets)) as EslintResult[];
+  } catch {
+    // Type-aware run failed outright (e.g. unparseable tsconfig) → whole group falls back.
+    const eslint = new ESLint(eslintOptionsForGroup(group, false));
+    return (await eslint.lintFiles(group.targets)) as EslintResult[];
+  }
+
+  // Per-file rescue: anything the project service couldn't parse re-lints syntactically, so
+  // typed mode strictly adds findings and never costs a file the coverage it has today.
+  const failed = results.filter((r) => r.messages.some(isTypedParseFailure));
+  if (failed.length === 0) return results;
+  const failedPaths = new Set(failed.map((r) => r.filePath));
+  const eslint = new ESLint(eslintOptionsForGroup(group, false));
+  const rescued = (await eslint.lintFiles([...failedPaths])) as EslintResult[];
+  return [...results.filter((r) => !failedPaths.has(r.filePath)), ...rescued];
 }
 
 function messageMatchesFinding(message: Linter.LintMessage, finding: Finding): boolean {
@@ -175,9 +238,21 @@ export async function applyEslintFixesForFindings(ctx: ScanContext, findings: Fi
  */
 export async function runEslintSonarjs(ctx: ScanContext): Promise<ScanResult> {
   // Whole-repo scan: one pass rooted at ctx.cwd, mode decided there.
+  const wholeRepoMode = eslintMode(ctx.cwd);
   const groups: LintGroup[] =
     ctx.files.length === 0 || ctx.files.includes(".")
-      ? [{ configDir: null, mode: eslintMode(ctx.cwd), cwd: ctx.cwd, targets: ["."] }]
+      ? [
+          {
+            configDir: null,
+            mode: wholeRepoMode,
+            cwd: ctx.cwd,
+            targets: ["."],
+            // Decided by a root-level tsconfig only (no tree walk on a whole-repo scan).
+            // Once typed, the project service still matches each file to its NEAREST
+            // tsconfig, so per-package tsconfigs under a root one are honored.
+            typed: groupIsTyped(wholeRepoMode, [resolve(ctx.cwd, "tsconfig.json")], ctx.cwd),
+          },
+        ]
       : groupByConfig(ctx);
 
   try {

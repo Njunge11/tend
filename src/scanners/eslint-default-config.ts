@@ -28,6 +28,11 @@ export function defaultEslintConfigPath(): string {
   return join(tendPackageRoot(), "configs", "default.eslint.config.mjs");
 }
 
+/** Absolute path to the typed variant of the default config (same rules + type information). */
+export function defaultEslintTypedConfigPath(): string {
+  return join(tendPackageRoot(), "configs", "default.eslint.typed.config.mjs");
+}
+
 const ESLINT_CONFIG_FILES = [
   "eslint.config.js",
   "eslint.config.mjs",
@@ -70,6 +75,23 @@ export function findEslintConfigDir(startDir: string, boundaryDir: string): stri
   let dir = resolve(startDir);
   for (;;) {
     if (projectHasEslintConfig(dir)) return dir;
+    if (dir === boundary) return null;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Nearest directory at or above `startDir`, up to and including `boundaryDir`, that holds a
+ * tsconfig.json — or null if none. Used to decide whether a lint group can run type-aware:
+ * typescript-eslint's project service needs at least one tsconfig to build a program from.
+ */
+export function findTsconfigDir(startDir: string, boundaryDir: string): string | null {
+  const boundary = resolve(boundaryDir);
+  let dir = resolve(startDir);
+  for (;;) {
+    if (existsSync(join(dir, "tsconfig.json"))) return dir;
     if (dir === boundary) return null;
     const parent = dirname(dir);
     if (parent === dir) return null;
