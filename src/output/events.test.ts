@@ -16,6 +16,25 @@ describe("EventBus", () => {
     ]);
   });
 
+  it("audit events carry the eligibility funnel (eligible + per-reason exclusions) intact", () => {
+    const bus = new EventBus();
+    const received: TendEvent[] = [];
+    bus.on((e) => received.push(e));
+
+    const audit: TendEvent = {
+      type: "audit",
+      loop: 1,
+      findings: 11,
+      files: 7,
+      scanned: 23,
+      eligible: 2,
+      excluded: { tests: 8, generated: 0, fixtures: 0, outOfScope: 1, reportOnly: 0 },
+    };
+    bus.emit(audit);
+
+    expect(received).toStrictEqual([audit]);
+  });
+
   it("T-098: silent mode (no listener) → no terminal output, loop still runs", () => {
     const bus = new EventBus();
     const sink = vi.spyOn(console, "log");

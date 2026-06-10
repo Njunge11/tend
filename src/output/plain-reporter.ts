@@ -1,6 +1,6 @@
 import { BaseReporter } from "./base-reporter.js";
 import type { TendEvent } from "./events.js";
-import { formatClock, reasonLabel } from "./format.js";
+import { formatAuditFunnel, formatClock, reasonLabel } from "./format.js";
 import { fixStageLabel } from "../fixing/progress.js";
 import type { Reporter, ReporterDeps } from "./reporter.js";
 
@@ -36,7 +36,7 @@ export class PlainReporter extends BaseReporter implements Reporter {
         this.write(this.formatAuditLine(event));
         break;
       case "loop-start":
-        this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.findings} findings across ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
+        this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.findings} eligible findings across ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
         break;
       case "file-start":
         this.fileStartTimes.set(event.file, Date.now());
@@ -72,7 +72,8 @@ export class PlainReporter extends BaseReporter implements Reporter {
     const { glyph } = this.theme;
     const scope = event.scanned != null ? `${event.scanned} files eligible for fixes` : "whole repo";
     const phase = event.loop === 1 ? "initial audit" : `re-audit after fix pass ${event.loop - 1}`;
-    return `${glyph.scanned} ${phase}: fix scope ${scope} ${glyph.bullet} in-scope findings ${event.findings} across ${event.files} files`;
+    const funnel = formatAuditFunnel(event.eligible, event.excluded, glyph.arrow);
+    return `${glyph.scanned} ${phase}: fix scope ${scope} ${glyph.bullet} in-scope findings ${event.findings} across ${event.files} files${funnel}`;
   }
 
   private writeFileResult(event: Extract<TendEvent, { type: "file-result" }>): void {

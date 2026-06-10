@@ -715,9 +715,10 @@ describe("orchestrate", () => {
 
       expect(fixUnit).toHaveBeenCalledTimes(1);
       expect(fixUnit.mock.calls[0]?.[0].file).toBe("apps/whatsapp/inbound.ts");
+      const noExclusions = { tests: 0, generated: 0, fixtures: 0, outOfScope: 0, reportOnly: 0 };
       expect(events.filter((event) => event.type === "audit")).toEqual([
-        { type: "audit", loop: 1, findings: 1, files: 1, scanned: 1 },
-        { type: "audit", loop: 2, findings: 0, files: 0, scanned: 1 },
+        { type: "audit", loop: 1, findings: 1, files: 1, scanned: 1, eligible: 1, excluded: noExclusions },
+        { type: "audit", loop: 2, findings: 0, files: 0, scanned: 1, eligible: 0, excluded: noExclusions },
       ]);
       expect(res.findings.find((f) => f.file === "apps/whatsapp/inbound.ts")?.inScope).toBe(true);
       // The out-of-scope finding is still reported in the store, just tagged out of scope.
@@ -725,6 +726,24 @@ describe("orchestrate", () => {
     } finally {
       repo.cleanup();
     }
+  });
+
+  it("audit event carries the eligibility funnel: eligible + per-reason exclusions", async () => {
+    // a.test.ts is policy-excluded (tests, by default) — the audit event must say so up front.
+    const audit = vi.fn(scriptedAudit([[ai("src/a.ts"), ai("src/a.test.ts")], []]));
+    const fixUnit = vi.fn(keep);
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
+
+    await orchestrate({ audit, fixUnit, config, bus });
+
+    const first = events.find((event) => event.type === "audit");
+    expect(first).toMatchObject({
+      findings: 2,
+      eligible: 1,
+      excluded: { tests: 1, generated: 0, fixtures: 0, outOfScope: 0, reportOnly: 0 },
+    });
   });
 
   it("T-127: --include-tests opts test files back in as fix targets", async () => {

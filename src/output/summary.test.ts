@@ -198,7 +198,9 @@ describe("renderSummary", () => {
 
     const out = renderSummary(report, { plain: true });
 
-    expect(out).toContain("summary fixed=0 couldntFix=1 skippedTests=0 reportOnly=0 left=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=1 skippedTests=0 reportOnly=0 secrets=0");
+    // `unresolvedEligible=` is the single machine key for the left-over eligible bucket.
+    expect(out).not.toMatch(/^summary .*\bleft=/m);
     expect(out).toContain("scanner tool=knip status=ran");
     expect(out).toContain('couldnt-fix retryId=kx7p2q file="src/b.ts"');
     expect(out).toContain('command="tend retry kx7p2q"');
@@ -509,7 +511,7 @@ describe("renderSummary", () => {
     const out = renderSummary(report, { plain: true });
     expect(out).not.toContain("repo-wide");
     expect(out).not.toContain("tend --all");
-    expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 reportOnly=0 left=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 reportOnly=0 secrets=0");
   });
 
   it("renders pending report-only duplicates as report-only, not skipped tests", () => {
@@ -529,9 +531,11 @@ describe("renderSummary", () => {
       inScope: true,
     });
     const { out, plain } = renderAfterJscpdRan(builder);
-    expect(out).toMatch(/skipped tests\s+│ – 0/);
+    // Zero exclusion rows are collapsed out of the run-summary table.
+    expect(out).not.toContain("skipped tests");
     expect(out).toMatch(/report only\s+│ – 1/);
-    expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ 1\s+│ 0\s+│ 0\s+│ 0/);
+    // total 1 = fixed 0 + couldn't fix 0 + left 0 + excluded 1 (the report-only finding).
+    expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ 1\s+│ 0\s+│ 0\s+│ 0\s+│ 1/);
     expect(plain).toContain("skippedTests=0 reportOnly=1 left=0");
     expect(plain).toContain('report-only count=1 reason="unsupported or report-only findings"');
     expect(plain).not.toContain("skipped-tests count=1");
@@ -551,7 +555,7 @@ describe("renderSummary", () => {
     const { out, plain } = renderAfterJscpdRan(builder);
     expect(out).toContain("skipped tests");
     expect(out).toContain("1 (pass --include-tests)");
-    expect(out).toMatch(/unresolved eligible\s+│ – 0/);
+    expect(out).not.toContain("unresolved eligible"); // zero row collapsed
     expect(plain).toContain("skippedTests=1 reportOnly=0 left=0");
     expect(plain).toContain('reason="test files are excluded by default"');
     expect(plain).toContain('command="tend run --include-tests <path...>"');
@@ -592,12 +596,46 @@ describe("renderSummary", () => {
     expect(out).toMatch(/generated\s+│ – 1/);
     expect(out).toMatch(/fixtures\s+│ – 1/);
     expect(out).toMatch(/skipped tests\s+│ – 1/);
-    expect(out).toMatch(/out of scope\s+│ – 1/);
-    expect(out).toMatch(/unresolved eligible\s+│ – 0/);
-    expect(plain).toContain("skippedTests=1 reportOnly=0 left=0 secrets=0 generated=1 fixtures=1 outOfScope=1");
+    // Repo-wide findings outside the scoped files say where they live, not just "out of scope".
+    expect(out).toMatch(/elsewhere in repo \(outside fix scope\)\s+│ – 1/);
+    expect(out).not.toContain("unresolved eligible"); // zero row collapsed
+    expect(plain).toContain("skippedTests=1 reportOnly=0 secrets=0 generated=1 fixtures=1 outOfScope=1");
     expect(plain).toContain("generated count=1");
     expect(plain).toContain("fixtures count=1");
     expect(plain).toContain("out-of-scope count=1");
+  });
+
+  it("default scanner breakdown rows sum: total = fixed + couldn't fix + left + excluded", () => {
+    const builder = reportWith(
+      {
+        ...makeFinding({ tool: "jscpd", rule: "duplicate-code", category: "duplication", file: "src/a.ts" }),
+        status: "fixed",
+        inScope: true,
+      },
+      {
+        ...makeFinding({ tool: "jscpd", rule: "duplicate-code", category: "duplication", file: "src/b.test.ts" }),
+        status: "pending",
+        inScope: true,
+        inFixScope: false,
+        scopeExclusionReason: "tests",
+      },
+      {
+        ...makeFinding({ tool: "jscpd", rule: "duplicate-code", category: "duplication", file: "src/c.ts" }),
+        track: "report-only",
+        status: "pending",
+        inScope: true,
+      },
+    );
+    const { out } = renderAfterJscpdRan(builder);
+    expect(out).toContain("excluded");
+    // total 3 = fixed 1 + couldn't fix 0 + left 0 + excluded 2 (1 test-skipped + 1 report-only).
+    expect(out).toMatch(/jscpd\s+│ ✔ ran\s+│ 3\s+│ 1\s+│ 0\s+│ 0\s+│ 2/);
+
+    // --verbose trades the rollup for the full per-bucket columns.
+    builder.recordScannerStatuses([{ tool: "jscpd", status: "ran" }]);
+    const verbose = renderSummary(builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 }), { verbose: true });
+    expect(verbose).not.toContain("excluded");
+    expect(verbose).toMatch(/jscpd\s+│ ✔ ran\s+│ 3\s+│ 1\s+│ 0\s+│ 0\s+│ 1\s+│ 1\s+│ 0\s+│ 0\s+│ 0/);
   });
 
   it("renders pending non-test AI-fix findings as unresolved eligible", () => {
@@ -612,10 +650,11 @@ describe("renderSummary", () => {
       inScope: true,
     });
     const { out, plain } = renderAfterSonarRan(builder);
-    expect(out).toMatch(/skipped tests\s+│ – 0/);
-    expect(out).toMatch(/report only\s+│ – 0/);
+    expect(out).not.toContain("skipped tests"); // zero rows collapsed
+    expect(out).not.toContain("report only");
     expect(out).toMatch(/unresolved eligible\s+│ – 1/);
     expect(plain).toContain("skippedTests=0 reportOnly=0 left=1");
+    expect(plain).toContain("unresolvedEligible=1");
   });
 
   it("--all scanner scope renders as whole repo, not in your changes", () => {
@@ -686,11 +725,13 @@ describe("renderSummary", () => {
 
     const plain = renderSummary(report, { plain: true });
     expect(plain).toContain(
-      "summary fixed=0 couldntFix=2 skippedTests=0 reportOnly=1 left=1 secrets=0 generated=1 fixtures=1 outOfScope=0 unresolvedEligible=1 timedOutSessionError=1 regressed=1",
+      "summary fixed=0 couldntFix=2 skippedTests=0 reportOnly=1 secrets=0 generated=1 fixtures=1 outOfScope=0 unresolvedEligible=1 timedOutSessionError=1 regressed=1",
     );
     expect(plain).toContain(
       "failureSummary blockingSecrets=0 unresolvedEligible=1 toolFailures=0 failedDeterministic=0 sessionErrors=1 regressions=1 typecheckFailures=0 testFailures=0",
     );
+    // Scanner lines carry `left=` exactly once (the duplicate unresolvedEligible= alias is gone).
+    expect(plain).not.toMatch(/^scanner [^\n]*unresolvedEligible=/m);
     expect(plain).toContain('couldnt-fix retryId=time01 file="src/workflows/signup.ts"');
     expect(plain).toContain('reason="timeout/session error" detail="Claude session failed (exit 143)"');
     expect(plain).not.toMatch(/retryId=time01[^\n]+reason="retries exhausted"/);
