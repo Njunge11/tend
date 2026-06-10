@@ -506,6 +506,13 @@ export function makeFixUnit(deps: FixUnitDeps) {
       return gateUnitChanges(unit, before, deps, {
         usage,
         preexistingIds,
+        // A kept unit is reported "fixed", so the rescan must confirm the target findings are
+        // actually gone. Without this, an edit that still trips the rule (same fingerprint, so
+        // not "introduced") was kept and marked fixed, only for the next loop's re-audit to flip
+        // it back to pending — a false "N/N fixed", a wasted extra pass re-fixing it, and a
+        // finding that never burned per-issue budget because no attempt was ever recorded.
+        // The deterministic gate already requires this (see deterministic.ts).
+        requireResolved: true,
         onProgress: progress,
         repair: repairBrokenTests,
         maxRepairs: deps.maxRepairs,

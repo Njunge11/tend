@@ -696,6 +696,65 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
+  it("reverts when the edit leaves the target finding unresolved (never reports a false 'fixed')", async () => {
+    // The slow-regex case from the field: the AI rewrites the regex, but the scanner still
+    // flags it with the same fingerprint. Same-id findings are in the pre-fix baseline, so the
+    // introduced-findings check passes by definition — only requireResolved catches this.
+    write("src/a.ts", "const re = /(a+)+b/;\n");
+    const target = makeFinding({
+      file: "src/a.ts",
+      rule: "slow-regex",
+      message: "Make sure the regex cannot lead to denial of service",
+      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 20 },
+    });
+    let runs = 0;
+    const session = fakeSession(async () => {
+      runs++;
+      write("src/a.ts", `const re = /(a+)+b/; // attempt ${runs}\n`);
+      return { ok: true, edits: [] };
+    });
+    // Pre-fix baseline, post-fix rescan, and post-repair rescan all still see the finding.
+    const scanFindings = vi.fn(async () => [target]);
+    const work: WorkUnit = { file: "src/a.ts", files: ["src/a.ts"], findings: [target] };
+
+    const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("regression");
+    expect(outcome.failureClass).toBe("regression");
+    expect(outcome.detail).toContain("Fix did not clear target finding(s)");
+    // initial session + one regression-repair attempt, then revert
+    expect(session.calls).toHaveLength(2);
+    expect(read("src/a.ts")).toBe("const re = /(a+)+b/;\n");
+  });
+
+  it("keeps the fix when the regression-repair session clears a finding the first edit missed", async () => {
+    write("src/a.ts", "const re = /(a+)+b/;\n");
+    const target = makeFinding({
+      file: "src/a.ts",
+      rule: "slow-regex",
+      message: "Make sure the regex cannot lead to denial of service",
+      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 20 },
+    });
+    let runs = 0;
+    const session = fakeSession(async () => {
+      runs++;
+      write("src/a.ts", runs === 1 ? "const re = /(a+)+b/; // still bad\n" : "const re = /a+b/;\n");
+      return { ok: true, edits: [] };
+    });
+    // The finding survives the first edit and is gone after the repair session.
+    const scanFindings = vi.fn(async () => (runs >= 2 ? [] : [target]));
+    const work: WorkUnit = { file: "src/a.ts", files: ["src/a.ts"], findings: [target] };
+
+    const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
+
+    expect(outcome.kept).toBe(true);
+    expect(session.calls).toHaveLength(2);
+    // The repair prompt told the session exactly what it failed to clear.
+    expect(session.calls[1]?.prompt).toContain("Fix did not clear target finding(s)");
+    expect(read("src/a.ts")).toBe("const re = /a+b/;\n");
+  });
+
   it("keeps a source fix that incidentally clones a sibling test (report-only collateral)", async () => {
     // jscpd scans the whole repo, so fixing src/a.ts can surface a new clone whose other foot is in
     // src/a.test.ts. Test duplicates are routed report-only and never fixed, so this must not be
