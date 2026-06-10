@@ -328,7 +328,8 @@ export class LiveReporter extends BaseReporter implements Reporter {
     const current = runningList.length > 0
       ? runningList.map((f) => this.fileTitle(f)).join(` ${bullet} `)
       : "";
-    const detail = this.theme.dim(`${cost}${current ? ` ${bullet} ${current}` : ""}`);
+    const currentSuffix = current ? ` ${bullet} ${current}` : "";
+    const detail = this.theme.dim(`${cost}${currentSuffix}`);
     return `fix pass ${this.currentLoop} ${bullet} ${this.fixedFindings}/${this.findingsTotal} fixed ${bullet} ${this.revertedFindings} reverted${detail}`;
   }
 

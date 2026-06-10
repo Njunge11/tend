@@ -309,7 +309,7 @@ export class WorkerSandboxPool {
     }) as Promise<T>;
     // A task cleared from the queue by cancel() never settles; a late in-flight rejection
     // after the race has already rejected must not surface as unhandled.
-    void task.catch(() => undefined);
+    task.catch(() => undefined);
     try {
       return await Promise.race([task, queuedRejection]);
     } finally {

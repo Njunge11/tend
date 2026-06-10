@@ -88,50 +88,51 @@ function charClassBody(body: string): string {
   return out;
 }
 
+function processStarToken(glob: string, i: number): { fragment: string; next: number } {
+  if (glob[i + 1] === "*") {
+    if (glob[i + 2] === "/") return { fragment: "(?:.*/)?", next: i + 2 };
+    return { fragment: ".*", next: i + 1 };
+  }
+  return { fragment: "[^/]*", next: i };
+}
+
+function processBraceToken(glob: string, i: number): { fragment: string; next: number } {
+  const close = findClosingBrace(glob, i);
+  if (close === -1) return { fragment: escapeRegex("{"), next: i };
+  const alternatives = splitAlternatives(glob.slice(i + 1, close));
+  return { fragment: `(?:${alternatives.map(globSource).join("|")})`, next: close };
+}
+
+function processBracketToken(glob: string, i: number): { fragment: string; next: number } {
+  const close = glob.indexOf("]", i + 1);
+  const body = close === -1 ? "" : glob.slice(i + 1, close);
+  if (close === -1 || body === "") return { fragment: escapeRegex("["), next: i };
+  return { fragment: `[${charClassBody(body)}]`, next: close };
+}
+
 function globSource(glob: string): string {
   let source = "";
-  for (let i = 0; i < glob.length; i++) {
+  let i = 0;
+  while (i < glob.length) {
     const char = glob[i]!;
-    const next = glob[i + 1];
     if (char === "*") {
-      if (next === "*") {
-        const after = glob[i + 2];
-        if (after === "/") {
-          source += "(?:.*/)?";
-          i += 2;
-        } else {
-          source += ".*";
-          i += 1;
-        }
-      } else {
-        source += "[^/]*";
-      }
+      const token = processStarToken(glob, i);
+      source += token.fragment;
+      i = token.next;
     } else if (char === "?") {
       source += "[^/]";
     } else if (char === "{") {
-      // `{a,b}` → `(?:a|b)`; each alternative is itself a glob (nesting handled by recursion).
-      // An unmatched `{` is a literal brace.
-      const close = findClosingBrace(glob, i);
-      if (close === -1) {
-        source += escapeRegex(char);
-        continue;
-      }
-      const alternatives = splitAlternatives(glob.slice(i + 1, close));
-      source += `(?:${alternatives.map(globSource).join("|")})`;
-      i = close;
+      const token = processBraceToken(glob, i);
+      source += token.fragment;
+      i = token.next;
     } else if (char === "[") {
-      // `[abc]` / `[a-z]` / `[!abc]` → regex character class. Unclosed or empty `[]` is literal.
-      const close = glob.indexOf("]", i + 1);
-      const body = close === -1 ? "" : glob.slice(i + 1, close);
-      if (close === -1 || body === "") {
-        source += escapeRegex(char);
-        continue;
-      }
-      source += `[${charClassBody(body)}]`;
-      i = close;
+      const token = processBracketToken(glob, i);
+      source += token.fragment;
+      i = token.next;
     } else {
       source += escapeRegex(char);
     }
+    i++;
   }
   return source;
 }
