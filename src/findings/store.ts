@@ -40,9 +40,16 @@ export class FindingStore {
    */
   reconcile(fresh: Finding[], loop: number): void {
     const freshIds = new Set(fresh.map((f) => f.id));
+    const unclaimed = this.collectUnclaimed(fresh);
+    this.resolveMissing(freshIds, unclaimed);
+    this.applyFresh(fresh, loop);
+  }
 
-    // Fresh findings with no exact-fingerprint match, grouped by line-free identity: the
-    // candidates a known-but-absent finding may have drifted into.
+  /**
+   * Fresh findings with no exact-fingerprint match, grouped by line-free identity: the
+   * candidates a known-but-absent finding may have drifted into.
+   */
+  private collectUnclaimed(fresh: Finding[]): Map<string, Finding[]> {
     const unclaimed = new Map<string, Finding[]>();
     for (const incoming of fresh) {
       if (this.findings.has(incoming.id)) continue;
@@ -51,13 +58,21 @@ export class FindingStore {
       if (list) list.push(incoming);
       else unclaimed.set(key, [incoming]);
     }
+    return unclaimed;
+  }
 
-    // Intentionally NOT scoped by `inFixScope`: a finding absent from a fresh scan is genuinely
-    // gone, and that reflects the repo's actual state (a removed secret, a clone the user deleted),
-    // not tend taking credit. Skipping `inFixScope === false` here would wrongly leave genuinely
-    // resolved out-of-scope findings (e.g. a secret the user removed) reported as still unresolved.
-    // The report-only-leak bug is closed upstream by `dispatchableUnits` filtering plans before
-    // unit-building, so tend no longer edits out-of-scope files and this no longer mis-fires.
+  /**
+   * Known findings absent from the fresh scan: re-keyed to a drift candidate if one is
+   * nearby, otherwise marked `fixed`.
+   *
+   * Intentionally NOT scoped by `inFixScope`: a finding absent from a fresh scan is genuinely
+   * gone, and that reflects the repo's actual state (a removed secret, a clone the user deleted),
+   * not tend taking credit. Skipping `inFixScope === false` here would wrongly leave genuinely
+   * resolved out-of-scope findings (e.g. a secret the user removed) reported as still unresolved.
+   * The report-only-leak bug is closed upstream by `dispatchableUnits` filtering plans before
+   * unit-building, so tend no longer edits out-of-scope files and this no longer mis-fires.
+   */
+  private resolveMissing(freshIds: Set<string>, unclaimed: Map<string, Finding[]>): void {
     const missing = [...this.findings.values()].filter((known) => !freshIds.has(known.id));
     // Active records claim drift candidates before already-`fixed` ones, so a stale fixed
     // record with the same identity can't steal the candidate of the genuinely drifted
@@ -66,17 +81,7 @@ export class FindingStore {
     for (const known of missing) {
       const drifted = this.claimDriftMatch(known, unclaimed);
       if (drifted) {
-        // Same finding, new position: re-key to the fresh fingerprint and refresh the
-        // location-dependent fields. Status/attempts/history are NOT touched here — the
-        // claimed fresh id now resolves to this record, so the present-both-loops branch
-        // below applies the usual transitions (reverted → pending, never → fixed).
-        this.findings.delete(known.id);
-        known.id = drifted.id;
-        known.range = drifted.range;
-        known.message = drifted.message;
-        if (drifted.flowPath) known.flowPath = drifted.flowPath;
-        else delete known.flowPath;
-        this.findings.set(known.id, known);
+        this.rekeyDrifted(known, drifted);
         continue;
       }
       known.status = "fixed";
@@ -84,7 +89,26 @@ export class FindingStore {
       delete known.revertDetail;
       delete known.finalFailureClass;
     }
+  }
 
+  /**
+   * Same finding, new position: re-key to the fresh fingerprint and refresh the
+   * location-dependent fields. Status/attempts/history are NOT touched here — the
+   * claimed fresh id now resolves to this record, so the present-both-loops branch in
+   * `applyFresh` applies the usual transitions (reverted → pending, never → fixed).
+   */
+  private rekeyDrifted(known: Finding, drifted: Finding): void {
+    this.findings.delete(known.id);
+    known.id = drifted.id;
+    known.range = drifted.range;
+    known.message = drifted.message;
+    if (drifted.flowPath) known.flowPath = drifted.flowPath;
+    else delete known.flowPath;
+    this.findings.set(known.id, known);
+  }
+
+  /** Bump lastSeenLoop on reappearing findings (reverting fixed/reverted ones) and add new ones. */
+  private applyFresh(fresh: Finding[], loop: number): void {
     for (const incoming of fresh) {
       const known = this.findings.get(incoming.id);
       if (known) {
