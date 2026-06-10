@@ -153,6 +153,47 @@ describe("WorkerSandboxPool", () => {
     expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 1;\n");
   });
 
+  it("does not treat the tend-created node_modules symlink as an unowned file when .gitignore uses the dir-only `node_modules/` pattern", async () => {
+    // The GitHub Node .gitignore template ships `node_modules/` (trailing slash), which matches
+    // directories only — git sees the symlink tend places in the worktree as an untracked FILE,
+    // so without filtering, every patch from every worker was reverted as "unowned".
+    const { repo } = await setupRepo();
+    repo.write(".gitignore", "node_modules/\n");
+    await repo.commit("ignore node_modules dir-only");
+    const base = (await repo.git.revparse(["HEAD"])).trim();
+    mkdirSync(join(repo.dir, "node_modules"), { recursive: true });
+
+    const exec = installRecordingExec();
+    const pool = makeInstallPool(base, exec);
+    const result = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      // prepare() symlinked main's node_modules; confirm git really reports it as untracked
+      // (the condition from the bug report), then collect a legitimate single-file fix.
+      expect(lstatSync(join(sandbox.cwd, "node_modules")).isSymbolicLink()).toBe(true);
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
+      return sandbox.collectPatch(unit(["src/a.ts"]));
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.changedFiles).toEqual(["src/a.ts"]);
+  });
+
+  it("ignores untracked files inside a real node_modules tree when the repo does not ignore node_modules at all", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+
+    const result = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      // Simulate a per-sandbox install in a repo with no .gitignore: every installed file
+      // shows up as untracked, none of it is the worker's doing.
+      mkdirSync(join(sandbox.cwd, "node_modules", "pkg"), { recursive: true });
+      writeFileSync(join(sandbox.cwd, "node_modules", "pkg", "index.js"), "module.exports = {};\n");
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
+      return sandbox.collectPatch(unit(["src/a.ts"]));
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.changedFiles).toEqual(["src/a.ts"]);
+  });
+
   it("leaves the main working tree untouched (no conflict markers) when a patch genuinely conflicts", async () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);

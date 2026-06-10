@@ -98,6 +98,18 @@ function unique(values: string[]): string[] {
   return [...new Set(values.map(normalizeRel))];
 }
 
+/**
+ * Paths tend itself places in the worktree — the node_modules symlink (tryReuseMainDeps) or a
+ * real per-sandbox install. Never the worker's doing, so never counted against patch ownership.
+ * Git can report them as untracked: the common dir-only ignore pattern `node_modules/` does NOT
+ * match the symlink (git classifies a symlink as a file), and a repo with no node_modules ignore
+ * at all reports the whole installed tree. Without this filter every patch in such repos is
+ * reverted as "unowned".
+ */
+function isSandboxInfrastructure(path: string): boolean {
+  return normalizeRel(path).split("/").includes("node_modules");
+}
+
 function isGeneratedRepair(unit: WorkUnit): boolean {
   return unit.strategy === "generated-source-repair" || unit.strategies?.includes("generated-source-repair") === true;
 }
@@ -201,8 +213,12 @@ class GitWorkerSandbox implements WorkerSandbox {
 
   async collectPatch(unit: WorkUnit): Promise<PatchResult> {
     const git = createGit(this.cwd);
-    const tracked = lines(await git.raw(["diff", "--name-only", this.baseSha]));
-    const untracked = lines(await git.raw(["ls-files", "--others", "--exclude-standard"]));
+    const tracked = lines(await git.raw(["diff", "--name-only", this.baseSha])).filter(
+      (file) => !isSandboxInfrastructure(file),
+    );
+    const untracked = lines(await git.raw(["ls-files", "--others", "--exclude-standard"])).filter(
+      (file) => !isSandboxInfrastructure(file),
+    );
     const changedFiles = unique([...tracked, ...untracked]).sort();
     const allowed = new Set(allowedPatchFiles(unit));
     const unowned = changedFiles.filter((file) => !allowed.has(file));
