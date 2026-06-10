@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.2...tend-cli-v0.13.3) (2026-06-10)
+
+
+### Bug Fixes
+
+* **ci:** raise Sonar bridge heap to 12 GB and log heap evolution ([bdebf4f](https://github.com/Njunge11/tend/commit/bdebf4f2875e55e54059aa8f56e430c023e6be64))
+* **ci:** raise Sonar bridge heap to 12 GB and log heap evolution ([5998896](https://github.com/Njunge11/tend/commit/599889621738b2634445621624d7b6ceef586b1b))
+
 ## [0.13.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.1...tend-cli-v0.13.2) (2026-06-10)
 
 
