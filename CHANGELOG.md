@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.12.1...tend-cli-v0.13.0) (2026-06-10)
+
+
+### Features
+
+* preflight model access before running fix passes ([f4dac49](https://github.com/Njunge11/tend/commit/f4dac49763815af4f2465709e5fd432041b8a378))
+* preflight model access before running fix passes ([4602145](https://github.com/Njunge11/tend/commit/4602145db2d9dab9560a8a4f1383e0826dcb3a8a))
+
 ## [0.12.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.12.0...tend-cli-v0.12.1) (2026-06-10)
 
 
