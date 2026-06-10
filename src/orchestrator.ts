@@ -258,6 +258,21 @@ function shouldSplitAfterFailure(unit: WorkUnit, outcome: FixOutcome): boolean {
 }
 
 /**
+ * Loop 2+ re-audits only the tools that previously produced findings, so its status list
+ * covers a subset of the scanners. Merge by tool — overwrite the tools that re-ran, keep
+ * the previous status for the rest — so the final report never drops a scanner that ran
+ * cleanly in loop 1. Previous order is preserved; genuinely new tools are appended.
+ */
+export function mergeScannerStatuses(prev: ScannerStatus[], next: ScannerStatus[]): ScannerStatus[] {
+  const byTool = new Map(next.map((status) => [status.tool, status]));
+  const prevTools = new Set(prev.map((status) => status.tool));
+  return [
+    ...prev.map((status) => byTool.get(status.tool) ?? status),
+    ...next.filter((status) => !prevTools.has(status.tool)),
+  ];
+}
+
+/**
  * The scan → fix → re-audit loop. Terminates on the first of: converged (0 fixable),
  * no-progress (no dispatchable units or an attempted loop changed no attempt/status
  * state), per-issue budget exhaustion (mark unfixable, keep going), or max-loops.
@@ -289,7 +304,8 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
     bus.emit({ type: "scan-start", loop });
     const relevantTools = loop > 1 ? ([...new Set(store.all().map((f) => f.tool))] as Tool[]) : undefined;
     const audited = await deps.audit(loop, relevantTools);
-    scannerStatuses = audited.scannerStatuses ?? scannerStatuses;
+    if (audited.scannerStatuses)
+      scannerStatuses = mergeScannerStatuses(scannerStatuses, audited.scannerStatuses);
     if (loop === 1) {
       runScope =
         audited.scanned == null
