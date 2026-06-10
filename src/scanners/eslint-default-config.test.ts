@@ -1,10 +1,12 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   defaultEslintConfigPath,
+  defaultEslintTypedConfigPath,
   eslintMode,
+  findTsconfigDir,
   projectConfiguresSonarjs,
   projectHasEslintConfig,
 } from "./eslint-default-config.js";
@@ -21,6 +23,27 @@ const file = (name: string, body = "") => writeFileSync(join(dir, name), body);
 describe("defaultEslintConfigPath", () => {
   it("points at the shipped default config file, which exists", () => {
     expect(existsSync(defaultEslintConfigPath())).toBe(true);
+  });
+  it("the shipped typed variant exists too", () => {
+    expect(existsSync(defaultEslintTypedConfigPath())).toBe(true);
+  });
+});
+
+describe("findTsconfigDir", () => {
+  it("finds a tsconfig in the start dir itself", () => {
+    file("tsconfig.json", "{}");
+    expect(findTsconfigDir(dir, dir)).toBe(dir);
+  });
+  it("walks up to the boundary and finds an ancestor tsconfig", () => {
+    file("tsconfig.json", "{}");
+    const nested = join(dir, "src", "deep");
+    mkdirSync(nested, { recursive: true });
+    expect(findTsconfigDir(nested, dir)).toBe(dir);
+  });
+  it("null when no tsconfig exists up to the boundary", () => {
+    const nested = join(dir, "src");
+    mkdirSync(nested);
+    expect(findTsconfigDir(nested, dir)).toBeNull();
   });
 });
 

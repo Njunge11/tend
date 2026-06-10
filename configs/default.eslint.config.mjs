@@ -1,7 +1,9 @@
 // tend's default config, used only when the target project has NO eslint config of its own:
 // eslint's recommended rules + eslint-plugin-sonarjs recommended (bugs + code smells) + the
 // "Sonar way borrowed rules" blocks below, with TS/JSX syntax parsing but NO type information
-// (no tsconfig needed → fast).
+// (no tsconfig needed → fast). When the target project HAS a tsconfig, the scanner selects
+// default.eslint.typed.config.mjs instead, which layers type information on top of this
+// config so sonarjs's type-aware rules fire too.
 // Plugins resolve relative to THIS file → from tend's own node_modules.
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
@@ -97,8 +99,9 @@ const SONAR_WAY_IMPORT_RULES = {
 // Borrowed typescript-eslint rules (TS files only) — the non-type-aware subset. The first
 // four replace their ESLint-core counterparts from SONAR_WAY_CORE_RULES on TS files, per
 // typescript-eslint's extension-rule guidance. Type-aware borrowed rules (await-thenable,
-// no-misused-promises, …) are deliberately NOT here: they need parserOptions.project, and
-// this config stays type-info-free for speed.
+// no-misused-promises, …) are NOT here: they need parserOptions.project(Service), which this
+// base config lacks. They could be added to default.eslint.typed.config.mjs, where type info
+// is available; the typed config already activates sonarjs's own type-aware rules.
 const SONAR_WAY_TS_RULES = {
   "default-param-last": "off",
   "@typescript-eslint/default-param-last": "error", // S1788 approx
