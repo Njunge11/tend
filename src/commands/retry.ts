@@ -1,3 +1,4 @@
+import { hasBlockingFailure } from "../_shared.js";
 import type { Finding } from "../findings/finding.js";
 import { normalizeRevertDetail } from "../findings/revert-detail.js";
 import type { RevertReason } from "../gate/check.js";
@@ -34,16 +35,7 @@ function syncDerivedReportFields(report: Report): void {
   report.depBumps = derived.depBumps;
   report.failureSummary = derived.failureSummary;
   report.unresolvedEligibleCount = derived.unresolvedEligibleCount;
-  const hasBlockingFailure =
-    derived.failureSummary.blockingSecrets > 0 ||
-    derived.failureSummary.unresolvedEligible > 0 ||
-    derived.failureSummary.toolFailures > 0 ||
-    derived.failureSummary.failedDeterministic > 0 ||
-    derived.failureSummary.sessionErrors > 0 ||
-    derived.failureSummary.regressions > 0 ||
-    derived.failureSummary.typecheckFailures > 0 ||
-    derived.failureSummary.testFailures > 0;
-  report.exitStatus = hasBlockingFailure ? 1 : 0;
+  report.exitStatus = hasBlockingFailure(derived.failureSummary) ? 1 : 0;
 }
 
 export function resolveRetryTarget(id: string, findings: Finding[]): Finding | { error: string } {

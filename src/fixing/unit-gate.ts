@@ -150,7 +150,7 @@ export async function gateUnitChanges(
     },
     repair: async (attempt, regressed) => {
       opts.onProgress?.("test-repair", `${attempt}/${opts.maxRepairs ?? 0}`);
-      await (opts.repair ?? (async () => {}))(attempt, regressed);
+      await (opts.repair ?? (() => Promise.resolve()))(attempt, regressed);
     },
     maxRepairs: opts.maxRepairs ?? 0,
     hasTestRunner: deps.hasTestRunner,
