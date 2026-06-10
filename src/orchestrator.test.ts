@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
 import type { Finding, Tool } from "./findings/finding.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
+import { CAPABLE_MODEL } from "./fixing/model-selection.js";
 import { EventBus, type TendEvent } from "./output/events.js";
 import { applyOutcome, dispatchableUnits, orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
 import { FindingStore } from "./findings/store.js";
@@ -783,6 +784,27 @@ describe("orchestrate", () => {
     expect(fixUnit).toHaveBeenCalledTimes(1);
     // The never-attempted finding is not "unresolved eligible" and must not block exit 0.
     expect(res.exitStatus).toBe(0);
+  });
+
+  it("labels file-start with the capable model for a cognitive-complexity unit", async () => {
+    // The fix-pass view shows each job's model from the file-start event; a complexity
+    // refactor must display (and run on) the capable model, not the default.
+    const complexity = ai("src/big.ts", "sonarjs/cognitive-complexity");
+    const audit = vi.fn(scriptedAudit([[complexity, ai("src/plain.ts")], []]));
+    const fixUnit = vi.fn(keep);
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
+
+    await orchestrate({ audit, fixUnit, config, bus });
+
+    const starts = events.filter((event) => event.type === "file-start");
+    expect(starts.find((event) => event.file === "src/big.ts")).toMatchObject({
+      model: CAPABLE_MODEL,
+    });
+    expect(starts.find((event) => event.file === "src/plain.ts")).toMatchObject({
+      model: config.model,
+    });
   });
 
   it("T-127: --include-tests opts test files back in as fix targets", async () => {

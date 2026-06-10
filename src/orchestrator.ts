@@ -48,9 +48,10 @@ export type OrchestrateDeps = {
     maxSessions: number;
     includeTests?: boolean;
     fix?: FixScopeConfig;
-    /** Fix model and its duplication override — used to label each job with the model it ran on. */
+    /** Fix model and its capable-model overrides — used to label each job with the model it ran on. */
     model: string;
     duplicationModel?: string;
+    complexityModel?: string;
   };
   /** Restrict findings to the fix scope (changed files); defaults to all. */
   inScope?: (findings: Finding[]) => Finding[];

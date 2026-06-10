@@ -71,7 +71,8 @@ Zero-config by default. `cosmiconfig` discovers `.tendrc`, `tend.config.js`, a `
   "teethCheck": true,   // reject test edits that pass on the old code
   "includeTests": false,
   "model": "claude-sonnet-4-6",
-  "duplicationModel": "claude-opus-4-6", // optional; capable model for jscpd dedup fixes
+  "duplicationModel": "claude-opus-4-8", // optional; capable model for jscpd dedup fixes
+  "complexityModel": "claude-opus-4-8",  // optional; capable model for cognitive-complexity refactors
   "effort": "high"
 }
 ```
@@ -80,10 +81,11 @@ CLI flags override the config file. `model` is a full model id (default `claude-
 `claude-opus-4-8`) or an alias (`sonnet`, `opus`, `haiku`); `effort` is the reasoning effort (`low | medium | high |
 xhigh | max`, unset → claude's default). Both are passed straight to `claude -p`.
 
-Duplication (jscpd) fixes need more reasoning than localized single-file edits, so a work unit
-containing any duplication finding is fixed with a more capable model — `claude-opus-4-6` by
-default. Override it with `duplicationModel` (an alias or full model id); everything else stays on
-`model`.
+Duplication (jscpd) fixes and cognitive-complexity refactors need more reasoning than localized
+single-file edits, so a work unit containing any duplication or `sonarjs/cognitive-complexity`
+finding is fixed with a more capable model — `claude-opus-4-8` by default. Override per kind with
+`duplicationModel` / `complexityModel` (an alias or full model id); everything else stays on
+`model`. One such finding lifts its whole unit, since a unit's findings share a single session.
 
 ## Scanners
 
