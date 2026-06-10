@@ -1,4 +1,4 @@
-import { FindingSchema, type Finding } from "./finding.js";
+import { FindingSchema, normalizedIdentity, type Finding } from "./finding.js";
 import { normalizeRevertDetail } from "./revert-detail.js";
 import type { FailureClass } from "../session/types.js";
 import { z } from "zod";
@@ -6,6 +6,14 @@ import { z } from "zod";
 type RevertReason = NonNullable<Finding["revertReason"]>;
 
 const StoreSchema = z.array(FindingSchema);
+
+/**
+ * Max line distance for drift re-matching in reconcile. Accepted edits shift findings by the
+ * net lines added/removed above them — small in practice (±1..8 in an observed run). Beyond
+ * this, a same-identity fresh finding is more plausibly a different instance than a shifted
+ * one, and mislinking it would hide a real fix.
+ */
+const MAX_LINE_DRIFT = 25;
 
 /** Holds Finding records keyed by fingerprint and tracks their state across loops. */
 export class FindingStore {
@@ -25,12 +33,24 @@ export class FindingStore {
 
   /**
    * Diff a fresh audit against what the store knows, by fingerprint:
-   *   - known but absent now  → marked `fixed`
+   *   - known but absent now  → re-matched by drift if a same-identity fresh finding sits
+   *     nearby (an accepted edit moved it across a 5-line fingerprint bucket), else `fixed`
    *   - present both loops     → stays as-is, carries attempts/history, bumps lastSeenLoop
    *   - new fingerprint         → added `pending`, firstSeenLoop = loop
    */
   reconcile(fresh: Finding[], loop: number): void {
     const freshIds = new Set(fresh.map((f) => f.id));
+
+    // Fresh findings with no exact-fingerprint match, grouped by line-free identity: the
+    // candidates a known-but-absent finding may have drifted into.
+    const unclaimed = new Map<string, Finding[]>();
+    for (const incoming of fresh) {
+      if (this.findings.has(incoming.id)) continue;
+      const key = normalizedIdentity(incoming);
+      const list = unclaimed.get(key);
+      if (list) list.push(incoming);
+      else unclaimed.set(key, [incoming]);
+    }
 
     // Intentionally NOT scoped by `inFixScope`: a finding absent from a fresh scan is genuinely
     // gone, and that reflects the repo's actual state (a removed secret, a clone the user deleted),
@@ -38,13 +58,31 @@ export class FindingStore {
     // resolved out-of-scope findings (e.g. a secret the user removed) reported as still unresolved.
     // The report-only-leak bug is closed upstream by `dispatchableUnits` filtering plans before
     // unit-building, so tend no longer edits out-of-scope files and this no longer mis-fires.
-    for (const known of this.findings.values()) {
-      if (!freshIds.has(known.id)) {
-        known.status = "fixed";
-        delete known.revertReason;
-        delete known.revertDetail;
-        delete known.finalFailureClass;
+    const missing = [...this.findings.values()].filter((known) => !freshIds.has(known.id));
+    // Active records claim drift candidates before already-`fixed` ones, so a stale fixed
+    // record with the same identity can't steal the candidate of the genuinely drifted
+    // pending finding (which would then be wrongly flipped to fixed).
+    missing.sort((a, b) => Number(a.status === "fixed") - Number(b.status === "fixed"));
+    for (const known of missing) {
+      const drifted = this.claimDriftMatch(known, unclaimed);
+      if (drifted) {
+        // Same finding, new position: re-key to the fresh fingerprint and refresh the
+        // location-dependent fields. Status/attempts/history are NOT touched here — the
+        // claimed fresh id now resolves to this record, so the present-both-loops branch
+        // below applies the usual transitions (reverted → pending, never → fixed).
+        this.findings.delete(known.id);
+        known.id = drifted.id;
+        known.range = drifted.range;
+        known.message = drifted.message;
+        if (drifted.flowPath) known.flowPath = drifted.flowPath;
+        else delete known.flowPath;
+        this.findings.set(known.id, known);
+        continue;
       }
+      known.status = "fixed";
+      delete known.revertReason;
+      delete known.revertDetail;
+      delete known.finalFailureClass;
     }
 
     for (const incoming of fresh) {
@@ -58,6 +96,31 @@ export class FindingStore {
         this.findings.set(incoming.id, { ...incoming, firstSeenLoop: loop, lastSeenLoop: loop });
       }
     }
+  }
+
+  /**
+   * The nearest unclaimed fresh finding with the same line-free identity within
+   * MAX_LINE_DRIFT of `known`, removed from the pool so each fresh finding is claimed at
+   * most once (greedy one-to-one — two same-rule/same-message findings in a file each take
+   * their closest counterpart). Candidates whose fingerprint is already a store key are
+   * skipped: same-bucket duplicates share a fingerprint, and re-keying a second record onto
+   * an id an earlier claim now owns would silently overwrite it.
+   */
+  private claimDriftMatch(
+    known: Finding,
+    unclaimed: Map<string, Finding[]>,
+  ): Finding | undefined {
+    const candidates = unclaimed.get(normalizedIdentity(known));
+    if (!candidates || candidates.length === 0) return undefined;
+    let best: { index: number; distance: number } | undefined;
+    for (const [index, candidate] of candidates.entries()) {
+      if (this.findings.has(candidate.id)) continue;
+      const distance = Math.abs(candidate.range.startLine - known.range.startLine);
+      if (distance > MAX_LINE_DRIFT) continue;
+      if (!best || distance < best.distance) best = { index, distance };
+    }
+    if (!best) return undefined;
+    return candidates.splice(best.index, 1)[0];
   }
 
   /** Findings matching every provided filter (track / status / file). */
