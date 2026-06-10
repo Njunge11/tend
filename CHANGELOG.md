@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.3...tend-cli-v0.10.4) (2026-06-10)
+
+
+### Bug Fixes
+
+* **output:** explain the in-scope vs eligible denominator switch and make tables sum ([0f94901](https://github.com/Njunge11/tend/commit/0f9490199493b7807baa6f0a01fb1e87477b88a5))
+* **output:** explain the in-scope vs eligible denominator switch and make tables sum ([d7e54d9](https://github.com/Njunge11/tend/commit/d7e54d9116dbe8773ac347a74636a0c382450ac1))
+
 ## [0.10.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.2...tend-cli-v0.10.3) (2026-06-10)
 
 
