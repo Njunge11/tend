@@ -253,6 +253,12 @@ class GitWorkerSandbox implements WorkerSandbox {
 export class WorkerSandboxPool {
   private readonly queue: PQueue;
   private readonly applyQueue = new PQueue({ concurrency: 1 });
+  // Serializes `git worktree add`/`remove` on the main repo. Concurrent worktree
+  // creation races on git's shared .git/worktrees admin directory — one invocation
+  // can read another's half-written metadata and die with
+  // "fatal: failed to read .git/worktrees/<name>/commondir". Creation happens once
+  // per sandbox (recycled afterwards), so serializing costs ~nothing.
+  private readonly worktreeAdminQueue = new PQueue({ concurrency: 1 });
   private readonly idle: GitWorkerSandbox[] = [];
   private readonly sandboxes = new Set<GitWorkerSandbox>();
   private counter = 0;
@@ -465,7 +471,11 @@ export class WorkerSandboxPool {
 
   private async runDispose(): Promise<void> {
     await this.queue.onIdle();
-    await Promise.all([...this.sandboxes].map((sandbox) => sandbox.dispose()));
+    // Sequential, not Promise.all: `git worktree remove` mutates the same shared
+    // .git/worktrees admin state that creation does (see worktreeAdminQueue).
+    for (const sandbox of this.sandboxes) {
+      await this.worktreeAdminQueue.add(() => sandbox.dispose());
+    }
     this.idle.length = 0;
     this.sandboxes.clear();
   }
@@ -473,14 +483,16 @@ export class WorkerSandboxPool {
   private async acquire(): Promise<GitWorkerSandbox> {
     const existing = this.idle.pop();
     if (existing) return existing;
-    const parent = this.deps.tempRoot ?? tmpdir();
-    mkdirSync(parent, { recursive: true });
-    const path = `${parent}/${WORKTREE_PREFIX}${process.pid}-${this.counter++}`;
-    const mainGit = createGit(this.deps.mainRoot);
-    await mainGit.raw(["worktree", "add", "--detach", path, this.currentBase]);
-    const sandbox = new GitWorkerSandbox(path, { ...this.deps, exec: this.exec });
-    this.sandboxes.add(sandbox);
-    return sandbox;
+    return this.worktreeAdminQueue.add(async () => {
+      const parent = this.deps.tempRoot ?? tmpdir();
+      mkdirSync(parent, { recursive: true });
+      const path = `${parent}/${WORKTREE_PREFIX}${process.pid}-${this.counter++}`;
+      const mainGit = createGit(this.deps.mainRoot);
+      await mainGit.raw(["worktree", "add", "--detach", path, this.currentBase]);
+      const sandbox = new GitWorkerSandbox(path, { ...this.deps, exec: this.exec });
+      this.sandboxes.add(sandbox);
+      return sandbox;
+    }) as Promise<GitWorkerSandbox>;
   }
 }
 
