@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.4...tend-cli-v0.14.0) (2026-06-10)
+
+
+### Features
+
+* **scanner:** type-aware eslint linting when the project has a tsconfig ([a20c329](https://github.com/Njunge11/tend/commit/a20c329c7d980a0407b3cbf87ae2ce4168574b06))
+* **scanner:** type-aware eslint linting when the project has a tsconfig ([b5369a4](https://github.com/Njunge11/tend/commit/b5369a4a042a787b97a4f634fd65b4cc4cf34876))
+
 ## [0.13.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.3...tend-cli-v0.13.4) (2026-06-10)
 
 
