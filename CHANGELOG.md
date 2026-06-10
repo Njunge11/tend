@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.12.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.11.0...tend-cli-v0.12.0) (2026-06-10)
+
+
+### Features
+
+* **models:** route cognitive-complexity fixes to the capable model ([1c18784](https://github.com/Njunge11/tend/commit/1c1878480d537d07052c51e62c2dd6f44d6f85b8))
+
+
+### Bug Fixes
+
+* audit accounting, fingerprint drift, termination reporting + opus routing for complexity ([5f2928c](https://github.com/Njunge11/tend/commit/5f2928c710719c37c984d398cc8456194faf8d4a))
+* **audit:** exclude unsupported-strategy findings from the eligible population ([4cd9272](https://github.com/Njunge11/tend/commit/4cd92728d49ae0b8c2d521e661f1f4e4d2810651))
+* **report:** persist and surface the loop termination reason ([c0d581b](https://github.com/Njunge11/tend/commit/c0d581b02f830bd448bfaa7e9d4e62a67d99550b))
+* **store:** re-match line-drifted findings in reconcile instead of phantom-fixing them ([2adb216](https://github.com/Njunge11/tend/commit/2adb216f38ac11f1a324f881ec1d4ae192bfb7ef))
+
 ## [0.11.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.4...tend-cli-v0.11.0) (2026-06-10)
 
 
