@@ -19,9 +19,8 @@ import { thinkingEnv } from "./fixing/thinking-budget.js";
 import { modelForUnit } from "./fixing/model-selection.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
-import type { WorkUnit } from "./fixing/dispatch.js";
-import type { Tool } from "./findings/finding.js";
-import { planWorkFromRepairs } from "./fixing/dispatch.js";
+import { planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
+import type { Finding, Tool } from "./findings/finding.js";
 import { planRepair } from "./fixing/repair-strategy.js";
 import {
   mapOwnerRoot,
@@ -34,8 +33,7 @@ import { onTerminationSignals } from "./process/signals.js";
 import { ClaudeSession } from "./session/claude.js";
 import { createStreamActivityScanner } from "./session/stream-activity.js";
 import { runIncrementalTsc, tscCacheFile } from "./fixing/typecheck-cache.js";
-import { orchestrate } from "./orchestrator.js";
-import type { FixOutcome } from "./orchestrator.js";
+import { orchestrate, type FixOutcome } from "./orchestrator.js";
 import { ReportBuilder } from "./report/builder.js";
 import { ReportSchema, type Report } from "./report/schema.js";
 import { renderSummary } from "./output/summary.js";
@@ -54,7 +52,6 @@ import {
 import type { TestOutcome } from "./gate/checks/tests.js";
 import { reasonLabel } from "./output/format.js";
 import { zeroUsage } from "./session/types.js";
-import type { Finding } from "./findings/finding.js";
 
 function effortForFindings(findings: Pick<Finding, "category" | "autofixable">[]): Effort {
   if (findings.length === 0) return "medium";
@@ -177,6 +174,60 @@ async function runTests(
   }
 }
 
+type TestRunner = "vitest" | "jest" | null;
+
+type FinalIntegrationResult =
+  | { ok: true; files: string[] }
+  | { ok: false; files: string[]; detail: string };
+
+/** The slice of the gate deps the final-integration checks consume. */
+type FinalIntegrationGate = {
+  runTsc: () => Promise<{ exitCode: number; output: string }>;
+  runRelated: (files: string[]) => Promise<TestOutcome[]>;
+  scanFindings: (files: string[], tools?: Tool[]) => Promise<unknown[]>;
+};
+
+/** Failure detail when the final whole-run typecheck fails; undefined when clean or skipped. */
+async function finalTypecheckFailure(
+  gate: FinalIntegrationGate,
+  typescript: boolean,
+): Promise<string | undefined> {
+  if (!typescript) return undefined;
+  const tc = await gate.runTsc();
+  if (tc.exitCode === 0) return undefined;
+  return `final integration typecheck failed: ${tc.output}`;
+}
+
+/** Failure detail when the final related-test run errors or fails; undefined when green or skipped. */
+async function finalTestFailure(
+  gate: FinalIntegrationGate,
+  runner: TestRunner,
+  files: string[],
+): Promise<string | undefined> {
+  if (!runner) return undefined;
+  let tests: TestOutcome[];
+  try {
+    tests = await gate.runRelated(files);
+  } catch (error) {
+    return `final integration test run failed: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  const failed = tests.filter((test) => test.status === "fail");
+  if (failed.length === 0) return undefined;
+  return `final integration related tests failed: ${failed.map((test) => test.name).join(", ")}`;
+}
+
+/** Failure detail when the final scanner rescan still finds issues; undefined when clean or skipped. */
+async function finalRescanFailure(
+  gate: FinalIntegrationGate,
+  tools: Tool[],
+  files: string[],
+): Promise<string | undefined> {
+  if (tools.length === 0) return undefined;
+  const findings = await gate.scanFindings(files, tools);
+  if (findings.length === 0) return undefined;
+  return `final integration scanner rescan found ${findings.length} finding${findings.length === 1 ? "" : "s"}`;
+}
+
 async function makeProductionFixUnit(
   config: { model: string; effort?: Effort; thinkingBudget?: number },
   baselineTargets: string[],
@@ -186,17 +237,15 @@ async function makeProductionFixUnit(
   // root. Defaults to the repo cwd for whole-repo / root-package runs.
   ownerRoot: string = cwd,
   bus?: EventBus,
-  detected?: { typescript: boolean; runner: "vitest" | "jest" | null },
+  detected?: { typescript: boolean; runner: TestRunner },
   sandboxPool?: WorkerSandboxPool,
   cancelSignal?: AbortSignal,
 ): Promise<{
   fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
-  finalIntegration: () => Promise<
-    { ok: true; files: string[] } | { ok: false; files: string[]; detail: string }
-  >;
+  finalIntegration: () => Promise<FinalIntegrationResult>;
   typescript: boolean;
-  runner: "vitest" | "jest" | null;
+  runner: TestRunner;
 }> {
   const typescript = detected?.typescript ?? detectTypeScript(ownerRoot);
   const runner = detected?.runner ?? detectTestRunner(ownerRoot) ?? null;
@@ -268,8 +317,10 @@ async function makeProductionFixUnit(
         const r = await child;
         // On timeout/kill exitCode is often undefined; preserve that as the conventional
         // SIGTERM exit so session classification can treat it as a tool timeout.
-        const exitCode = r.exitCode ?? (r.timedOut ? 143 : r.failed ? 1 : 0);
-        return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode };
+        let fallbackExit = 0;
+        if (r.timedOut) fallbackExit = 143;
+        else if (r.failed) fallbackExit = 1;
+        return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? fallbackExit };
       },
     });
 
@@ -389,43 +440,13 @@ async function makeProductionFixUnit(
     finalIntegration: async () => {
       const files = [...acceptedFiles].sort();
       if (files.length === 0) return { ok: true, files };
-      if (typescript) {
-        const tc = await mainGateDeps.runTsc();
-        if (tc.exitCode !== 0)
-          return { ok: false, files, detail: `final integration typecheck failed: ${tc.output}` };
-      }
-      if (runner) {
-        let tests: TestOutcome[];
-        try {
-          tests = await mainGateDeps.runRelated(files);
-        } catch (error) {
-          return {
-            ok: false,
-            files,
-            detail: `final integration test run failed: ${error instanceof Error ? error.message : String(error)}`,
-          };
-        }
-        const failed = tests.filter((test) => test.status === "fail");
-        if (failed.length > 0) {
-          return {
-            ok: false,
-            files,
-            detail: `final integration related tests failed: ${failed.map((test) => test.name).join(", ")}`,
-          };
-        }
-      }
-      const tools = [...acceptedTools];
-      if (tools.length > 0) {
-        const findings = await mainGateDeps.scanFindings(files, tools);
-        if (findings.length > 0) {
-          return {
-            ok: false,
-            files,
-            detail: `final integration scanner rescan found ${findings.length} finding${findings.length === 1 ? "" : "s"}`,
-          };
-        }
-      }
-      return { ok: true, files };
+      // Checks run in order and short-circuit: tests only run after a clean typecheck, the
+      // rescan only after green tests — same sequencing as the per-unit gate.
+      const detail =
+        (await finalTypecheckFailure(mainGateDeps, typescript)) ??
+        (await finalTestFailure(mainGateDeps, runner, files)) ??
+        (await finalRescanFailure(mainGateDeps, [...acceptedTools], files));
+      return detail === undefined ? { ok: true, files } : { ok: false, files, detail };
     },
   };
 }
@@ -439,6 +460,38 @@ function describeScopeNote(
   if (paths.length > 0)
     return `${plural(scope?.length ?? 0, "file")} under ${paths.join(", ")}`;
   return `${plural(scope?.length ?? 0, "changed file")}`;
+}
+
+/**
+ * Resolve the fix scope for `tend run`: null = whole repo (`--all`); otherwise the concrete
+ * file list — explicit path arguments expanded to files, or the files changed vs HEAD.
+ * Returns undefined when the run should end here (empty path scope = error, clean tree =
+ * success), with the message and exit code already reported.
+ */
+async function resolveRunScope(
+  git: ReturnType<typeof createGit>,
+  opts: { all?: boolean; paths?: string[] },
+  reporter: ReturnType<typeof createReporter>,
+): Promise<{ scope: string[] | null } | undefined> {
+  const paths = opts.paths ?? [];
+  if (opts.all) return { scope: null };
+  if (paths.length > 0) {
+    const scope = await filesUnder(git, paths);
+    if (scope.length === 0) {
+      err(`✖ no files under ${paths.join(", ")}`);
+      process.exitCode = 1;
+      return undefined;
+    }
+    return { scope };
+  }
+  const scope = await changedVsHead(git);
+  if (scope.length === 0) {
+    // A clean tree is a success, not an error (CI: nothing to fix → exit 0). Without this
+    // early exit an empty scope fell through to scanner-specific whole-repo defaults.
+    reporter.note("no files changed vs HEAD — nothing to scan. Use --all to fix the whole backlog or pass paths.");
+    return undefined;
+  }
+  return { scope };
 }
 
 async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
@@ -479,29 +532,12 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   });
 
   // Resolve the fix scope once and feed it to everything downstream (test baseline, audit,
-  // fix filter). `null` means the whole repo (`--all`); otherwise it's the concrete file list
-  // to fix — explicit path arguments expanded to files, or the files changed vs HEAD. Resolved
-  // BEFORE the snapshot so a no-op run (nothing changed) exits without touching anything.
+  // fix filter). Resolved BEFORE the snapshot so a no-op run (nothing changed) exits without
+  // touching anything.
   const paths = opts.paths ?? [];
-  let scope: string[] | null;
-  if (opts.all) {
-    scope = null;
-  } else if (paths.length > 0) {
-    scope = await filesUnder(git, paths);
-    if (scope.length === 0) {
-      err(`✖ no files under ${paths.join(", ")}`);
-      process.exitCode = 1;
-      return;
-    }
-  } else {
-    scope = await changedVsHead(git);
-    if (scope.length === 0) {
-      // A clean tree is a success, not an error (CI: nothing to fix → exit 0). Without this
-      // early exit an empty scope fell through to scanner-specific whole-repo defaults.
-      reporter.note("no files changed vs HEAD — nothing to scan. Use --all to fix the whole backlog or pass paths.");
-      return;
-    }
-  }
+  const resolved = await resolveRunScope(git, opts, reporter);
+  if (!resolved) return;
+  const { scope } = resolved;
 
   const snapshot = await Snapshot.capture(git, cwd);
   persist(SNAPSHOT_PATH, snapshot.toJSON());
@@ -571,19 +607,17 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   const stopSignals = onTerminationSignals((signal) => {
     abort.abort();
     sandboxPool.cancel();
-    void sandboxPool
-      .dispose()
-      .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    // Fire-and-forget by design: the handler must return immediately; the process exits
+    // once teardown settles, whether it succeeded or failed.
+    const exit = () => process.exit(signal === "SIGINT" ? 130 : 143);
+    sandboxPool.dispose().then(exit, exit);
   });
 
   // The live view draws concurrently with the orchestration; both share this event loop.
   const start = Date.now();
   const drawing = reporter.run();
   let result;
-  let finalIntegrationResult:
-    | { ok: true; files: string[] }
-    | { ok: false; files: string[]; detail: string }
-    | undefined;
+  let finalIntegrationResult: FinalIntegrationResult | undefined;
   try {
     result = await orchestrate({
       cwd,
