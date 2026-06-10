@@ -1,3 +1,4 @@
+import { GENERATED_SEGMENTS as GENERATED_SEGMENT_NAMES } from "../../configs/generated-segments.mjs";
 import type { Finding, ScopeExclusionReason } from "../findings/finding.js";
 
 export type FixScopeConfig = {
@@ -20,18 +21,7 @@ type ScopeDecision = {
 };
 
 const OUT_OF_SCOPE_SEGMENTS = new Set(["node_modules", ".git"]);
-const GENERATED_SEGMENTS = new Set([
-  ".tend",
-  ".turbo",
-  ".next",
-  ".vercel",
-  "coverage",
-  "dist",
-  "build",
-  "out",
-  "generated",
-  "__generated__",
-]);
+const GENERATED_SEGMENTS = new Set(GENERATED_SEGMENT_NAMES);
 
 const TEST_FILE_RE = /(^|[/\\])[^/\\]+\.(test|spec)\.[cm]?[jt]sx?$/;
 
