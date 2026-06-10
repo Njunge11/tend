@@ -8,6 +8,23 @@ import sonarjs from "eslint-plugin-sonarjs";
 import globals from "globals";
 
 export default [
+  // Skip generated output up front: flat config only auto-ignores node_modules/ and .git/,
+  // and findings in these dirs are excluded from fix scope anyway. Mirrors GENERATED_SEGMENTS
+  // in src/scanners/scope-policy.ts — keep the two lists in sync.
+  {
+    ignores: [
+      "**/dist/**",
+      "**/build/**",
+      "**/out/**",
+      "**/coverage/**",
+      "**/.next/**",
+      "**/.turbo/**",
+      "**/.vercel/**",
+      "**/.tend/**",
+      "**/generated/**",
+      "**/__generated__/**",
+    ],
+  },
   js.configs.recommended,
   {
     files: ["**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"],
