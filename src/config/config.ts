@@ -82,11 +82,11 @@ export async function loadConfig(cwd: string): Promise<TendConfig> {
   return parsed.data;
 }
 
-/** Overlay CLI flags onto a loaded config (flags win). */
+/** Overlay CLI flags onto a loaded config (flags win), re-validating the merged result. */
 export function applyCliOverrides(config: TendConfig, overrides: CliOverrides): TendConfig {
   const result = { ...config };
   for (const [key, value] of Object.entries(overrides)) {
     if (value !== undefined) (result as Record<string, unknown>)[key] = value;
   }
-  return result;
+  return ConfigSchema.parse(result);
 }

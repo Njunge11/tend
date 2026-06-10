@@ -142,6 +142,36 @@ describe("buildProgram", () => {
     expect(h.run).not.toHaveBeenCalled();
   });
 
+  it("rejects --max-loops with a non-numeric value", async () => {
+    const h = handlers();
+    await expect(program(h).parseAsync(["run", "--max-loops", "abc"], { from: "user" })).rejects.toThrow(
+      /--max-loops expected a positive integer/,
+    );
+    expect(h.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects --max-loops 0", async () => {
+    const h = handlers();
+    await expect(program(h).parseAsync(["run", "--max-loops", "0"], { from: "user" })).rejects.toThrow(
+      /--max-loops expected a positive integer/,
+    );
+    expect(h.run).not.toHaveBeenCalled();
+  });
+
+  it("rejects --max-sessions -1", async () => {
+    const h = handlers();
+    await expect(
+      program(h).parseAsync(["run", "--max-sessions", "-1"], { from: "user" }),
+    ).rejects.toThrow(/--max-sessions expected a positive integer/);
+    expect(h.run).not.toHaveBeenCalled();
+  });
+
+  it("accepts --max-loops 3", async () => {
+    const h = handlers();
+    await program(h).parseAsync(["run", "--max-loops", "3"], { from: "user" });
+    expect(h.run).toHaveBeenCalledWith(expect.objectContaining({ maxLoops: 3 }));
+  });
+
   it("T-117: unknown command → help/error", async () => {
     const h = handlers();
     await expect(program(h).parseAsync(["definitely-not-a-tend-command"], { from: "user" })).rejects.toThrow(
