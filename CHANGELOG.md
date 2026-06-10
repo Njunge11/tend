@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.0...tend-cli-v0.13.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* require the gate rescan to confirm target findings are resolved ([bee4d02](https://github.com/Njunge11/tend/commit/bee4d02ed813f5d4f4fa04b4c9113ee4fab0341e))
+* require the gate rescan to confirm target findings are resolved ([83a8db0](https://github.com/Njunge11/tend/commit/83a8db0c3e71b49c1cf5c2e6544266319801a087))
+
 ## [0.13.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.12.1...tend-cli-v0.13.0) (2026-06-10)
 
 
