@@ -1,6 +1,6 @@
 {
   "name": "tend-cli",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Audit a JS/TS repo with established scanners, then fix the findings with parallel AI sessions in a safe scan-fix-rescan loop.",
   "keywords": [
     "lint",

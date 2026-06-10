@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.2...tend-cli-v0.10.3) (2026-06-10)
+
+
+### Bug Fixes
+
+* **cli:** validate --max-loops/--max-sessions as positive integers ([eabc8b0](https://github.com/Njunge11/tend/commit/eabc8b027113e8483dd6d680be7e9257a4762afb))
+* **eslint:** ignore generated dirs in the bundled default config ([304ce9d](https://github.com/Njunge11/tend/commit/304ce9dffc2b3af7656efe470f32382e86740817))
+* **gate:** fail closed when the test runner's JSON report is missing or unparseable ([1a2a9c2](https://github.com/Njunge11/tend/commit/1a2a9c2c3e63cf3cf968a41ac94007f7f9bffe9b))
+* harden CLI validation, cancellation, scope globs, and gate robustness ([f10637b](https://github.com/Njunge11/tend/commit/f10637b6e40e255893f45244ab03d28a6ac8074b))
+* **report:** merge scanner statuses across loops instead of replacing them ([9896e98](https://github.com/Njunge11/tend/commit/9896e987a6f3e1aaade34305fc6d2247aca21428))
+* **run:** exit cleanly on a clean tree instead of scanning the whole repo ([5863f03](https://github.com/Njunge11/tend/commit/5863f031bdfb3200bad244a31d830d0fed259572))
+* **run:** propagate Ctrl-C so a cancelled run stops instead of draining the backlog ([81091ea](https://github.com/Njunge11/tend/commit/81091ea5c690510182c1c1aa62138a9049b1e350))
+* **scope:** support brace alternation and character classes in fix.include/exclude globs ([f51e040](https://github.com/Njunge11/tend/commit/f51e040e51c27c2e9d07c1f28fc7ad4fc9327746))
+
 ## [0.10.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.10.1...tend-cli-v0.10.2) (2026-06-09)
 
 
