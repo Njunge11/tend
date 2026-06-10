@@ -107,6 +107,17 @@ function classifyPending(f: Finding, includeTests: boolean): PendingBucket {
     if (f.scopeExclusionReason === "tests") return "skippedTests";
     return "outOfScope";
   }
+  // A finding whose planned repair strategy is "unsupported" never reaches the dispatcher
+  // (dispatchableUnits drops the plan), so it is not eligible. Bucket it by the planner's
+  // reason so the audit funnel, the fix-pass denominator, and the final summary all describe
+  // the population the dispatcher actually attempts.
+  if (f.repairStrategy === "unsupported") {
+    if (f.repairStrategyReason === "tests") return "skippedTests";
+    if (f.repairStrategyReason === "generated") return "generated";
+    if (f.repairStrategyReason === "fixtures") return "fixtures";
+    if (f.repairStrategyReason === "out-of-scope") return "outOfScope";
+    return "reportOnly"; // "report-only", "generated-source-not-found"
+  }
   if (f.track === "report-only") return "reportOnly";
   if (f.track === "ai-fix" && !includeTests && isTestFile(f.file))
     return "skippedTests";

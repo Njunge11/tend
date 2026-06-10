@@ -50,6 +50,10 @@ function isUnresolvedEligibleFinding(
     finding.inScope !== false &&
     finding.inReportScope !== false &&
     finding.inFixScope !== false &&
+    // The dispatcher never attempts plans with an "unsupported" strategy, so such a finding
+    // can't be "unresolved eligible" — counting it would block exit 0 on work tend will
+    // never do (and the summary buckets it as report-only, not unresolved).
+    finding.repairStrategy !== "unsupported" &&
     (fixPolicy.includeTests || !isTestFile(finding.file))
   );
 }
