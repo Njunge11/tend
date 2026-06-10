@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.1...tend-cli-v0.13.2) (2026-06-10)
+
+
+### Bug Fixes
+
+* **ci:** give the Sonar JS/TS bridge enough heap to finish analysis ([096e998](https://github.com/Njunge11/tend/commit/096e9987c2f9c4445f9bb97f99c9c761111637be))
+* **ci:** give the Sonar JS/TS bridge enough heap to finish analysis ([183a139](https://github.com/Njunge11/tend/commit/183a1394164b15699e2f557e5311e99b1f8c9d4b))
+
 ## [0.13.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.0...tend-cli-v0.13.1) (2026-06-10)
 
 
