@@ -87,6 +87,31 @@ describe("runTestPhase — apply / repair window", () => {
     expect(repair).toHaveBeenCalledTimes(2);
   });
 
+  it("runRelated rejects (runner crashed / unparseable report) → reject, never pass", async () => {
+    const runRelated = vi.fn().mockRejectedValue(new Error("vitest wrote no JSON report (exit 1)"));
+    const repair = vi.fn();
+    const r = await runTestPhase({ baseline, runRelated, repair, maxRepairs: 3 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("session-error");
+      expect(r.detail).toContain("Could not verify tests");
+      expect(r.detail).toContain("vitest wrote no JSON report (exit 1)");
+    }
+    expect(repair).not.toHaveBeenCalled();
+  });
+
+  it("runRelated fails on the re-run inside the repair window → reject", async () => {
+    const runRelated = vi
+      .fn()
+      .mockResolvedValueOnce([fail("greenTest")])
+      .mockRejectedValue(new Error("runner crashed"));
+    const repair = vi.fn().mockResolvedValue(undefined);
+    const r = await runTestPhase({ baseline, runRelated, repair, maxRepairs: 3 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("session-error");
+    expect(repair).toHaveBeenCalledTimes(1);
+  });
+
   it("T-060: no test suite → degrades to pass with a warning", async () => {
     const runRelated = vi.fn();
     const repair = vi.fn();

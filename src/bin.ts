@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 import { buildProgram, type CliHandlers } from "./cli.js";
@@ -98,11 +99,31 @@ function loadReport(): Report {
   return ReportSchema.parse(loadJson<unknown>(REPORT_PATH));
 }
 
+// Unique JSON-report path per runTests invocation; concurrent gates never collide.
+let testReportSeq = 0;
+
+/** Shape shared by vitest's and jest's JSON reporters (the parts we read). */
+type TestRunnerReport = {
+  testResults?: {
+    assertionResults?: {
+      fullName?: string;
+      title?: string;
+      status: string;
+    }[];
+  }[];
+};
+
 /**
  * Run the detected test runner over the given files and parse pass/fail per test.
  * `files` are repo-relative; `root` is the package that owns them (the cwd the runner
  * executes in). Files are re-based onto `root` so `vitest related` / `jest
  * --findRelatedTests` resolve them inside the owning package, not the repo root.
+ *
+ * The JSON report goes to a temp file (same pattern as jscpdReportPath): a test that
+ * writes to stdout (console.log) interleaves noise with a stdout reporter and makes it
+ * unparseable. A missing or unparseable report on a non-clean run THROWS — `[]` must
+ * always mean "no related tests", or a fix that breaks tests passes the gate as if no
+ * tests existed.
  */
 async function runTests(
   runner: "vitest" | "jest",
@@ -111,25 +132,36 @@ async function runTests(
   repoRoot: string = cwd,
 ): Promise<TestOutcome[]> {
   const targets = toOwnerRelative(files, repoRoot, root);
+  const reportFile = join(tmpdir(), `tend-tests-${process.pid}-${testReportSeq++}.json`);
   const args =
     runner === "vitest"
-      ? ["vitest", "related", ...targets, "--run", "--reporter=json"]
-      : ["jest", "--findRelatedTests", ...targets, "--json"];
+      ? ["vitest", "related", ...targets, "--run", "--reporter=json", `--outputFile=${reportFile}`]
+      : ["jest", "--findRelatedTests", ...targets, "--json", `--outputFile=${reportFile}`, "--passWithNoTests"];
   const res = await execa("npx", args, {
     cwd: root,
     reject: false,
     timeout: TEST_TIMEOUT_MS,
   });
   try {
-    const json = JSON.parse(res.stdout) as {
-      testResults?: {
-        assertionResults?: {
-          fullName?: string;
-          title?: string;
-          status: string;
-        }[];
-      }[];
-    };
+    if (!existsSync(reportFile)) {
+      // Both runners write the report even when nothing relates (vitest exits 0 with an
+      // empty report; jest gets --passWithNoTests). No report + clean exit → genuinely
+      // no related tests. Anything else (crash, missing binary, timeout) is a failure.
+      if (res.exitCode === 0) return [];
+      const cause = res.timedOut
+        ? `timed out after ${TEST_TIMEOUT_MS}ms`
+        : `exit ${res.exitCode ?? "unknown"}`;
+      const output = `${res.stderr ?? ""}\n${res.stdout ?? ""}`.trim().slice(0, 2000);
+      throw new Error(`${runner} wrote no JSON report (${cause}):\n${output}`);
+    }
+    let json: TestRunnerReport;
+    try {
+      json = JSON.parse(readFileSync(reportFile, "utf8")) as TestRunnerReport;
+    } catch (error) {
+      throw new Error(
+        `could not parse ${runner} JSON report: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     const outcomes: TestOutcome[] = [];
     for (const file of json.testResults ?? []) {
       for (const a of file.assertionResults ?? []) {
@@ -140,8 +172,8 @@ async function runTests(
       }
     }
     return outcomes;
-  } catch {
-    return [];
+  } finally {
+    rmSync(reportFile, { force: true });
   }
 }
 
@@ -156,6 +188,7 @@ async function makeProductionFixUnit(
   bus?: EventBus,
   detected?: { typescript: boolean; runner: "vitest" | "jest" | null },
   sandboxPool?: WorkerSandboxPool,
+  cancelSignal?: AbortSignal,
 ): Promise<{
   fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
@@ -169,13 +202,23 @@ async function makeProductionFixUnit(
   const runner = detected?.runner ?? detectTestRunner(ownerRoot) ?? null;
   const buildArgs = detectBuildCommand(ownerRoot);
   const pm = detectPackageManager(ownerRoot);
-  const baseline = new Set<string>(
-    runner && baselineTargets.length > 0
-      ? (await runTests(runner, baselineTargets, ownerRoot, cwd))
+  let baseline = new Set<string>();
+  if (runner && baselineTargets.length > 0) {
+    try {
+      baseline = new Set(
+        (await runTests(runner, baselineTargets, ownerRoot, cwd))
           .filter((t) => t.status === "pass")
-          .map((t) => t.name)
-      : [],
-  );
+          .map((t) => t.name),
+      );
+    } catch (error) {
+      // Degrading is safe here: an empty baseline only means no test counts as
+      // "previously green", so the gate can't attribute regressions — its own
+      // related-test runs still fail closed when the runner errors.
+      err(
+        `⚠ test baseline capture failed; continuing with an empty baseline: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   const makeGateDeps = (sandbox?: WorkerSandbox) => {
     const repoRoot = sandbox?.cwd ?? cwd;
     const gateOwnerRoot = sandbox ? mapOwnerRoot(cwd, ownerRoot, sandbox.cwd) : ownerRoot;
@@ -288,6 +331,7 @@ async function makeProductionFixUnit(
       maxRepairs: 3,
       // Share the one cap so the subprocess kill and the session-timeout wrapper never diverge.
       sessionTimeoutMs: CLAUDE_TIMEOUT_MS,
+      cancelSignal,
       onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
     });
 
@@ -351,7 +395,16 @@ async function makeProductionFixUnit(
           return { ok: false, files, detail: `final integration typecheck failed: ${tc.output}` };
       }
       if (runner) {
-        const tests = await mainGateDeps.runRelated(files);
+        let tests: TestOutcome[];
+        try {
+          tests = await mainGateDeps.runRelated(files);
+        } catch (error) {
+          return {
+            ok: false,
+            files,
+            detail: `final integration test run failed: ${error instanceof Error ? error.message : String(error)}`,
+          };
+        }
         const failed = tests.filter((test) => test.status === "fail");
         if (failed.length > 0) {
           return {
@@ -425,6 +478,31 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     includeTests: opts.includeTests,
   });
 
+  // Resolve the fix scope once and feed it to everything downstream (test baseline, audit,
+  // fix filter). `null` means the whole repo (`--all`); otherwise it's the concrete file list
+  // to fix — explicit path arguments expanded to files, or the files changed vs HEAD. Resolved
+  // BEFORE the snapshot so a no-op run (nothing changed) exits without touching anything.
+  const paths = opts.paths ?? [];
+  let scope: string[] | null;
+  if (opts.all) {
+    scope = null;
+  } else if (paths.length > 0) {
+    scope = await filesUnder(git, paths);
+    if (scope.length === 0) {
+      err(`✖ no files under ${paths.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+  } else {
+    scope = await changedVsHead(git);
+    if (scope.length === 0) {
+      // A clean tree is a success, not an error (CI: nothing to fix → exit 0). Without this
+      // early exit an empty scope fell through to scanner-specific whole-repo defaults.
+      reporter.note("no files changed vs HEAD — nothing to scan. Use --all to fix the whole backlog or pass paths.");
+      return;
+    }
+  }
+
   const snapshot = await Snapshot.capture(git, cwd);
   persist(SNAPSHOT_PATH, snapshot.toJSON());
   reporter.note("snapshot saved · undo: tend undo");
@@ -441,24 +519,6 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   }
   if (missing.length > 0)
     reporter.note(`skipping missing external scanners: ${missing.join(", ")}`);
-
-  // Resolve the fix scope once and feed it to everything downstream (test baseline, audit,
-  // fix filter). `null` means the whole repo (`--all`); otherwise it's the concrete file list
-  // to fix — explicit path arguments expanded to files, or the files changed vs HEAD.
-  const paths = opts.paths ?? [];
-  let scope: string[] | null;
-  if (opts.all) {
-    scope = null;
-  } else if (paths.length > 0) {
-    scope = await filesUnder(git, paths);
-    if (scope.length === 0) {
-      err(`✖ no files under ${paths.join(", ")}`);
-      process.exitCode = 1;
-      return;
-    }
-  } else {
-    scope = await changedVsHead(git);
-  }
 
   // Capture the pristine test baseline (which tests are green before any fix), scoped to the
   // files we'll touch. Relating against "." runs the whole suite and can take many minutes.
@@ -491,6 +551,9 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     maxSandboxes: config.maxSessions,
     packageManager: pm,
   });
+  // Run-wide cancellation: aborted on Ctrl-C / SIGTERM so pending work units are skipped and
+  // in-flight `claude` subprocesses are killed instead of draining the whole backlog first.
+  const abort = new AbortController();
   const { fixUnit, deterministicFixUnit, finalIntegration } = await makeProductionFixUnit(
     config,
     baselineTargets,
@@ -498,12 +561,16 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     bus,
     { typescript, runner },
     sandboxPool,
+    abort.signal,
   );
 
-  // On Ctrl-C / SIGTERM, tear down sandboxes (remove worktrees) before exiting so a cancelled run
-  // leaves the repo exactly as a clean completion would. dispose() is memoized, so this and the
-  // finally path below await the same teardown — neither races process.exit ahead of removal.
+  // On Ctrl-C / SIGTERM, stop starting new work (abort + cancel), then tear down sandboxes
+  // (remove worktrees) before exiting so a cancelled run leaves the repo exactly as a clean
+  // completion would. dispose() is memoized, so this and the finally path below await the
+  // same teardown — neither races process.exit ahead of removal.
   const stopSignals = onTerminationSignals((signal) => {
+    abort.abort();
+    sandboxPool.cancel();
     void sandboxPool
       .dispose()
       .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
@@ -532,6 +599,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       deterministicFixUnit,
       config,
       inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
+      signal: abort.signal,
       bus,
     });
     finalIntegrationResult = await finalIntegration();

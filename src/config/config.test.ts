@@ -101,4 +101,23 @@ describe("applyCliOverrides", () => {
     expect(merged.maxSessions).toBe(8);
     expect(merged.perIssueBudget).toBe(3); // untouched
   });
+
+  it("rejects NaN overrides via schema re-validation", async () => {
+    const base = await loadConfig(dir);
+    expect(() => applyCliOverrides(base, { maxLoops: NaN })).toThrow();
+    expect(() => applyCliOverrides(base, { maxSessions: NaN })).toThrow();
+  });
+
+  it("rejects zero and negative overrides via schema re-validation", async () => {
+    const base = await loadConfig(dir);
+    expect(() => applyCliOverrides(base, { maxLoops: 0 })).toThrow();
+    expect(() => applyCliOverrides(base, { maxSessions: -1 })).toThrow();
+  });
+
+  it("accepts valid overrides after re-validation", async () => {
+    const base = await loadConfig(dir);
+    const merged = applyCliOverrides(base, { maxLoops: 3, maxSessions: 2 });
+    expect(merged.maxLoops).toBe(3);
+    expect(merged.maxSessions).toBe(2);
+  });
 });

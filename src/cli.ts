@@ -1,4 +1,4 @@
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { existsSync } from "node:fs";
 
 export type CliHandlers = {
@@ -33,11 +33,21 @@ const RUN_OPTION_NAMES = new Set([
   "--verbose",
 ]);
 
+function positiveInt(flag: string): (v: string) => number {
+  return (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new InvalidArgumentError(`${flag} expected a positive integer, got "${v}"`);
+    }
+    return n;
+  };
+}
+
 function addRunOptions(command: Command): Command {
   return command
     .option("--all", "fix the entire backlog, not just changed files")
-    .option("--max-loops <n>", "cap on fix loops", (v) => parseInt(v, 10))
-    .option("--max-sessions <n>", "concurrent AI sessions", (v) => parseInt(v, 10))
+    .option("--max-loops <n>", "cap on fix loops", positiveInt("--max-loops"))
+    .option("--max-sessions <n>", "concurrent AI sessions", positiveInt("--max-sessions"))
     .option("--model <model>", "model for fixes: sonnet (default), opus, haiku, or a full model id")
     .option("--effort <level>", "reasoning effort for fixes: low | medium | high | xhigh | max")
     .option("--include-tests", "also fix findings in test files (excluded by default)")

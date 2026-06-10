@@ -318,6 +318,47 @@ describe("WorkerSandboxPool", () => {
     expect(exec.installCalls).toHaveLength(1);
   });
 
+  it("cancel: queued withSandbox calls reject promptly, no new sandbox is created, in-flight work finishes", async () => {
+    const { snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1); // one slot, so the second call stays queued
+
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    const inFlight = pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      await blocked;
+      return sandbox.cwd;
+    });
+    await delay(20); // let the first call occupy the slot
+    const queued = pool.withSandbox(unit(["src/b.ts"]), async (sandbox) => sandbox.cwd);
+    queued.catch(() => undefined);
+
+    pool.cancel();
+    // The queued call rejects without waiting for the in-flight one (still blocked here).
+    await expect(queued).rejects.toThrow(/cancelled/);
+    // New calls after cancel reject immediately.
+    await expect(pool.withSandbox(unit(["src/b.ts"]), async () => "never")).rejects.toThrow(/cancelled/);
+
+    release();
+    const inFlightCwd = await inFlight; // in-flight work is not rejected out from under its sandbox
+
+    // Only the in-flight sandbox's worktree ever existed — none was spawned for the queued unit.
+    const worktrees = await createGit(repo!.dir).raw(["worktree", "list", "--porcelain"]);
+    expect(worktrees).toContain(inFlightCwd);
+    expect(worktrees.match(/tend-worker-/g)?.length).toBe(1);
+  });
+
+  it("cancel then dispose still removes existing worktrees", async () => {
+    const { snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+    const cwd = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd);
+
+    pool.cancel();
+    await pool.dispose();
+
+    expect(existsSync(cwd)).toBe(false);
+    expect(await createGit(repo!.dir).raw(["worktree", "list", "--porcelain"])).not.toContain(cwd);
+  });
+
   it("dispose is idempotent — safe to call more than once (signal + finally paths)", async () => {
     const { snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);

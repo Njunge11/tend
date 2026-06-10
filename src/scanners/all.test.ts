@@ -80,6 +80,28 @@ describe("buildAudit", () => {
     runEslintSonarjs.mockReset();
   });
 
+  it("an explicitly-empty scope scans NOTHING — never falls through to whole-repo scanner defaults", async () => {
+    const which = vi.fn(async () => true);
+    const spawn = vi.fn();
+    const audit = buildAudit({
+      cwd: "/repo",
+      which,
+      spawn,
+      scope: [], // e.g. clean tree: no files changed vs HEAD
+    });
+
+    const result = await audit(1);
+
+    expect(runEslintSonarjs).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    expect(result).toStrictEqual({
+      findings: [],
+      allScannersMissing: false,
+      scanned: 0,
+      scannerStatuses: [],
+    });
+  });
+
   it("a null scope scans the whole repo and leaves the scanned count generic", async () => {
     runEslintSonarjs.mockResolvedValueOnce({
       tool: "sonarjs",

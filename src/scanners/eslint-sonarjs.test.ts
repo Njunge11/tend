@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +75,21 @@ describe("runEslintSonarjs (Node API, bundled eslint)", () => {
         }),
       ]),
     );
+  });
+
+  it("default mode skips generated dirs (dist/) on a whole-repo scan while still linting src/", async () => {
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    mkdirSync(join(dir, "dist"));
+    mkdirSync(join(dir, "src"));
+    writeFileSync(join(dir, "dist", "code.js"), DUP_BRANCHES);
+    writeFileSync(join(dir, "src", "code.js"), DUP_BRANCHES);
+
+    const res = await runEslintSonarjs({ cwd: dir, files: ["."], loop: 1 });
+
+    expect(res.error).toBeUndefined();
+    const files = res.findings.map((f) => f.file);
+    expect(files).toContain("src/code.js"); // sibling src/ file still linted
+    expect(files.some((f) => f.startsWith("dist/"))).toBe(false); // dist/ ignored by the default config
   });
 
   it("layer mode → project's own rules AND sonarjs in one pass", async () => {

@@ -142,6 +142,11 @@ export function buildAudit(
   deps: AuditDeps,
 ): (loop: number, tools?: Tool[]) => Promise<AuditResult> {
   return async (loop, tools) => {
+    // An explicitly-empty scope means "scan nothing" — never fall through to the
+    // scanner-specific whole-repo defaults (eslint/semgrep treat no paths as scan-everything).
+    if (deps.scope !== null && deps.scope.length === 0) {
+      return { findings: [], allScannersMissing: false, scanned: 0, scannerStatuses: [] };
+    }
     const files = deps.scope ?? ["."];
     const scanDeps = tools ? { ...deps, tools } : deps;
     const { results, scannerStatuses } = await runScanners(scanDeps, files, loop);

@@ -1,3 +1,4 @@
+import { GENERATED_SEGMENTS as GENERATED_SEGMENT_NAMES } from "../../configs/generated-segments.mjs";
 import type { Finding, ScopeExclusionReason } from "../findings/finding.js";
 
 export type FixScopeConfig = {
@@ -20,18 +21,7 @@ type ScopeDecision = {
 };
 
 const OUT_OF_SCOPE_SEGMENTS = new Set(["node_modules", ".git"]);
-const GENERATED_SEGMENTS = new Set([
-  ".tend",
-  ".turbo",
-  ".next",
-  ".vercel",
-  "coverage",
-  "dist",
-  "build",
-  "out",
-  "generated",
-  "__generated__",
-]);
+const GENERATED_SEGMENTS = new Set(GENERATED_SEGMENT_NAMES);
 
 const TEST_FILE_RE = /(^|[/\\])[^/\\]+\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -51,15 +41,61 @@ function escapeRegex(char: string): string {
   return char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
 }
 
-function globToRegex(pattern: string): RegExp {
-  const normalized = normalizePath(pattern);
-  let source = "^";
-  for (let i = 0; i < normalized.length; i++) {
-    const char = normalized[i]!;
-    const next = normalized[i + 1];
+/** Index of the `}` matching the `{` at `open`, honouring nested braces; -1 when unmatched. */
+function findClosingBrace(glob: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < glob.length; i++) {
+    if (glob[i] === "{") depth++;
+    else if (glob[i] === "}") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** Split a brace body on top-level commas only, so nested alternations stay intact. */
+function splitAlternatives(body: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const char of body) {
+    if (char === "{") depth++;
+    else if (char === "}") depth--;
+    if (char === "," && depth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts;
+}
+
+/** Glob class body (between brackets) → regex class body. Leading `!`/`^` negates; `-` ranges pass through. */
+function charClassBody(body: string): string {
+  let out = "";
+  let start = 0;
+  if (body[0] === "!" || body[0] === "^") {
+    out += "^";
+    start = 1;
+  }
+  for (let i = start; i < body.length; i++) {
+    const char = body[i]!;
+    out += char === "-" ? char : char.replace(/[\\\]^[]/, "\\$&");
+  }
+  return out;
+}
+
+function globSource(glob: string): string {
+  let source = "";
+  for (let i = 0; i < glob.length; i++) {
+    const char = glob[i]!;
+    const next = glob[i + 1];
     if (char === "*") {
       if (next === "*") {
-        const after = normalized[i + 2];
+        const after = glob[i + 2];
         if (after === "/") {
           source += "(?:.*/)?";
           i += 2;
@@ -72,12 +108,36 @@ function globToRegex(pattern: string): RegExp {
       }
     } else if (char === "?") {
       source += "[^/]";
+    } else if (char === "{") {
+      // `{a,b}` → `(?:a|b)`; each alternative is itself a glob (nesting handled by recursion).
+      // An unmatched `{` is a literal brace.
+      const close = findClosingBrace(glob, i);
+      if (close === -1) {
+        source += escapeRegex(char);
+        continue;
+      }
+      const alternatives = splitAlternatives(glob.slice(i + 1, close));
+      source += `(?:${alternatives.map(globSource).join("|")})`;
+      i = close;
+    } else if (char === "[") {
+      // `[abc]` / `[a-z]` / `[!abc]` → regex character class. Unclosed or empty `[]` is literal.
+      const close = glob.indexOf("]", i + 1);
+      const body = close === -1 ? "" : glob.slice(i + 1, close);
+      if (close === -1 || body === "") {
+        source += escapeRegex(char);
+        continue;
+      }
+      source += `[${charClassBody(body)}]`;
+      i = close;
     } else {
       source += escapeRegex(char);
     }
   }
-  source += "$";
-  return new RegExp(source);
+  return source;
+}
+
+function globToRegex(pattern: string): RegExp {
+  return new RegExp(`^${globSource(normalizePath(pattern))}$`);
 }
 
 function matchesPattern(path: string, pattern: string): boolean {

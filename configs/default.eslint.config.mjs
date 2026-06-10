@@ -6,8 +6,13 @@ import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import sonarjs from "eslint-plugin-sonarjs";
 import globals from "globals";
+import { GENERATED_SEGMENTS } from "./generated-segments.mjs";
 
 export default [
+  // Skip generated output up front: flat config only auto-ignores node_modules/ and .git/,
+  // and findings in these dirs are excluded from fix scope anyway (scope-policy.ts derives
+  // its exclusion list from the same shared module).
+  { ignores: GENERATED_SEGMENTS.map((segment) => `**/${segment}/**`) },
   js.configs.recommended,
   {
     files: ["**/*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"],

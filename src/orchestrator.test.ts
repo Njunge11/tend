@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
-import type { Finding } from "./findings/finding.js";
+import type { Finding, Tool } from "./findings/finding.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
 import { EventBus, type TendEvent } from "./output/events.js";
 import { applyOutcome, dispatchableUnits, orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
@@ -58,6 +58,35 @@ describe("orchestrate", () => {
     // three files fixed in one batch → 3 fixUnit calls, but only 2 audits (initial + one re-audit)
     expect(fixUnit).toHaveBeenCalledTimes(3);
     expect(audit).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps loop-1 scanner statuses for tools not re-audited in later loops", async () => {
+    // Loop 2 re-audits only the tools that produced findings (sonarjs here), so its status
+    // list is a subset. The final report must still carry gitleaks' clean loop-1 status.
+    const audit = vi.fn(async (loop: number, tools?: Tool[]): Promise<AuditResult> => {
+      if (loop === 1) {
+        return {
+          findings: [ai("src/a.ts")],
+          scannerStatuses: [
+            { tool: "sonarjs", status: "ran" },
+            { tool: "gitleaks", status: "ran" },
+          ],
+        };
+      }
+      expect(tools).toEqual(["sonarjs"]);
+      return {
+        findings: [],
+        scannerStatuses: [{ tool: "sonarjs", status: "failed", reason: "crashed on re-audit" }],
+      };
+    });
+
+    const res = await orchestrate({ audit, fixUnit: vi.fn(keep), config });
+
+    expect(audit).toHaveBeenCalledTimes(2);
+    expect(res.scannerStatuses).toEqual([
+      { tool: "sonarjs", status: "failed", reason: "crashed on re-audit" },
+      { tool: "gitleaks", status: "ran" },
+    ]);
   });
 
   it("T-103: secrets surfaced, excluded from fixes, exit non-zero, code fixes still proceed", async () => {

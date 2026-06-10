@@ -79,15 +79,22 @@ export async function runTestPhase(deps: RunTestPhaseDeps): Promise<TestPhaseRes
     return { ok: true, warning: "No test suite detected — behavior can't be verified" };
   }
 
-  let regressed = regressions(deps.baseline, await deps.runRelated());
-  if (regressed.length === 0) return pass();
-
-  for (let attempt = 1; attempt <= deps.maxRepairs; attempt++) {
-    await deps.repair(attempt, regressed);
-    regressed = regressions(deps.baseline, await deps.runRelated());
+  try {
+    let regressed = regressions(deps.baseline, await deps.runRelated());
     if (regressed.length === 0) return pass();
-  }
 
-  const names = regressed.map((o) => o.name).join(", ");
-  return reject("broke-test", `Fix left previously-green test(s) red: ${names}`);
+    for (let attempt = 1; attempt <= deps.maxRepairs; attempt++) {
+      await deps.repair(attempt, regressed);
+      regressed = regressions(deps.baseline, await deps.runRelated());
+      if (regressed.length === 0) return pass();
+    }
+
+    const names = regressed.map((o) => o.name).join(", ");
+    return reject("broke-test", `Fix left previously-green test(s) red: ${names}`);
+  } catch (error) {
+    // A runner that can't produce results must fail the gate (revert the fix), never
+    // pass as if no tests existed.
+    const detail = error instanceof Error ? error.message : String(error);
+    return reject("session-error", `Could not verify tests — the test run failed: ${detail}`);
+  }
 }
