@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { DEFAULT_MODEL } from "../fixing/model-selection.js";
 import { applyCliOverrides, loadConfig } from "./config.js";
 
 let dir: string;
@@ -32,7 +33,7 @@ describe("loadConfig", () => {
         includeGenerated: false,
         includeFixtures: false,
       },
-      model: "claude-sonnet-4-6",
+      model: DEFAULT_MODEL,
     });
   });
 
@@ -57,8 +58,8 @@ describe("loadConfig", () => {
     });
   });
 
-  it("model: defaults to claude-sonnet-4-6, overridable by config file and CLI flag", async () => {
-    expect((await loadConfig(dir)).model).toBe("claude-sonnet-4-6");
+  it("model: defaults to DEFAULT_MODEL, overridable by config file and CLI flag", async () => {
+    expect((await loadConfig(dir)).model).toBe(DEFAULT_MODEL);
 
     writeFileSync(join(dir, ".tendrc.json"), JSON.stringify({ model: "opus" }));
     expect((await loadConfig(dir)).model).toBe("opus");

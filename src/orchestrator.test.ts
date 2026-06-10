@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
 import type { Finding, Tool } from "./findings/finding.js";
 import type { WorkUnit } from "./fixing/dispatch.js";
-import { CAPABLE_MODEL } from "./fixing/model-selection.js";
+import { CAPABLE_MODEL, DEFAULT_MODEL } from "./fixing/model-selection.js";
 import { EventBus, type TendEvent } from "./output/events.js";
 import { applyOutcome, dispatchableUnits, orchestrate, type AuditResult, type FixOutcome } from "./orchestrator.js";
 import { FindingStore } from "./findings/store.js";
@@ -14,7 +14,7 @@ import { filterToChanged } from "./scanners/scope.js";
 import { tmpRepo } from "../test/helpers/tmp-repo.js";
 import { ReportSchema } from "./report/schema.js";
 
-const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
+const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: DEFAULT_MODEL };
 
 const ai = (file: string, rule = "r1", line = 1): Finding =>
   makeFinding({ tool: "sonarjs", file, rule, range: { startLine: line, startCol: 0, endLine: line, endCol: 1 } });

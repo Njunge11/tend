@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../../test/helpers/make-finding.js";
-import { CAPABLE_MODEL, modelForUnit } from "./model-selection.js";
+import { CAPABLE_MODEL, DEFAULT_MODEL, modelForUnit } from "./model-selection.js";
 
-const config = { model: "sonnet" };
+const config = { model: DEFAULT_MODEL };
 
 describe("modelForUnit", () => {
-  it("pins the capable default to current Opus", () => {
+  it("pins both tiers to full model+version ids", () => {
+    expect(DEFAULT_MODEL).toBe("claude-sonnet-4-6");
     expect(CAPABLE_MODEL).toBe("claude-opus-4-8");
   });
 
@@ -20,8 +21,8 @@ describe("modelForUnit", () => {
   });
 
   it("uses the default model for non-duplication findings", () => {
-    expect(modelForUnit([makeFinding({ category: "dead-code" })], config)).toBe("sonnet");
-    expect(modelForUnit([makeFinding({ category: "smell" })], config)).toBe("sonnet");
+    expect(modelForUnit([makeFinding({ category: "dead-code" })], config)).toBe(DEFAULT_MODEL);
+    expect(modelForUnit([makeFinding({ category: "smell" })], config)).toBe(DEFAULT_MODEL);
   });
 
   it("lifts a mixed unit to the capable model if any finding is duplication", () => {
@@ -41,7 +42,7 @@ describe("modelForUnit", () => {
   });
 
   it("uses the default model for an empty unit", () => {
-    expect(modelForUnit([], config)).toBe("sonnet");
+    expect(modelForUnit([], config)).toBe(DEFAULT_MODEL);
   });
 
   it("lets a configured duplicationModel override the capable default", () => {

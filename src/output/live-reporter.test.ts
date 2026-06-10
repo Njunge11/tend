@@ -150,17 +150,17 @@ describe("LiveReporter", () => {
       reporter.onEvent({ type: "audit", loop: 1, findings: 2, files: 1, scanned: 1 });
       // One unit, two findings — the stable denominator.
       reporter.onEvent({ type: "loop-start", loop: 1, files: ["src/a.ts"], concurrency: 1, findings: 2 });
-      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code", model: "claude-opus-4-6" });
+      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code", model: "claude-opus-4-8" });
       // The multi-finding batch times out and is split: this is the split-parent placeholder
       // ("left", findings 0). It must NOT advance the denominator or any counter.
       reporter.onEvent({ type: "file-result", loop: 1, file: "src/a.ts", outcome: "left", findings: 0, reason: "regression" });
 
       // The split retries run as single-finding units; each one fixes one finding. The total
       // stays 2 even though three file-results landed for the one file.
-      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code", model: "claude-opus-4-6" });
+      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code", model: "claude-opus-4-8" });
       reporter.onEvent({ type: "file-stage", loop: 1, file: "src/a.ts", stage: "typecheck" });
       reporter.onEvent({ type: "file-result", loop: 1, file: "src/a.ts", outcome: "fixed", findings: 1 });
-      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code", model: "claude-opus-4-6" });
+      reporter.onEvent({ type: "file-start", loop: 1, file: "src/a.ts", rule: "duplicate-code", model: "claude-opus-4-8" });
       reporter.onEvent({ type: "file-result", loop: 1, file: "src/a.ts", outcome: "fixed", findings: 1 });
       reporter.onEvent({ type: "loop-complete", loop: 1, fixed: 1, reverted: 1, remaining: 0, estimatedCostUsd: 0 });
       reporter.onEvent({ type: "scan-start", loop: 2 });

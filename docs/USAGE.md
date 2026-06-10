@@ -51,7 +51,7 @@ All flags apply to root-level runs and `tend run`:
 | `--all` | fix the whole repo backlog, not just changed files |
 | `--max-loops <n>` | cap on fix loops (default `5`) |
 | `--max-sessions <n>` | concurrent AI sessions (default `4`) |
-| `--model <model>` | full model id (default `claude-sonnet-4-6`), or an alias: `sonnet`, `opus`, `haiku` |
+| `--model <model>` | full model id for fixes (default `claude-sonnet-4-6`) |
 | `--effort <level>` | reasoning effort: `low \| medium \| high \| xhigh \| max` |
 | `--include-tests` | also fix findings in test files (excluded by default) |
 | `--plain` | one-line-per-event output for pipes/CI (no color, no spinners) |
@@ -77,15 +77,16 @@ Zero-config by default. `cosmiconfig` discovers `.tendrc`, `tend.config.js`, a `
 }
 ```
 
-CLI flags override the config file. `model` is a full model id (default `claude-sonnet-4-6`, e.g.
-`claude-opus-4-8`) or an alias (`sonnet`, `opus`, `haiku`); `effort` is the reasoning effort (`low | medium | high |
-xhigh | max`, unset → claude's default). Both are passed straight to `claude -p`.
+CLI flags override the config file. `model` is a full model id (default `claude-sonnet-4-6`);
+`effort` is the reasoning effort (`low | medium | high | xhigh | max`, unset → claude's default).
+Both are passed straight to `claude -p`, so the model named in config, output, and the report is
+exactly the model that ran.
 
 Duplication (jscpd) fixes and cognitive-complexity refactors need more reasoning than localized
 single-file edits, so a work unit containing any duplication or `sonarjs/cognitive-complexity`
 finding is fixed with a more capable model — `claude-opus-4-8` by default. Override per kind with
-`duplicationModel` / `complexityModel` (an alias or full model id); everything else stays on
-`model`. One such finding lifts its whole unit, since a unit's findings share a single session.
+`duplicationModel` / `complexityModel` (a full model id); everything else stays on `model`. One
+such finding lifts its whole unit, since a unit's findings share a single session.
 
 ## Scanners
 

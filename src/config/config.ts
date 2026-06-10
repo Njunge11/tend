@@ -1,5 +1,6 @@
 import { cosmiconfig } from "cosmiconfig";
 import { z } from "zod";
+import { DEFAULT_MODEL } from "../fixing/model-selection.js";
 
 export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORT_LEVELS)[number];
@@ -30,19 +31,22 @@ export const ConfigSchema = z.object({
   test: z.string().optional(),
   teethCheck: z.boolean().default(true),
   includeTests: z.boolean().default(false),
-  /** Model passed to `claude -p` for fixes — a full model id (or an alias like sonnet/opus/haiku). */
-  model: z.string().default("claude-sonnet-4-6"),
   /**
-   * Model for duplication (jscpd) fixes — an alias or full model id. Cross-file
-   * dedup needs more reasoning than the default model, so these go to a more
-   * capable model. Unset → a built-in capable default (see model-selection.ts).
+   * Full model id passed to `claude -p` for fixes. Unset → {@link DEFAULT_MODEL}.
+   * All model policy lives in model-selection.ts; this schema only carries the
+   * user's overrides.
+   */
+  model: z.string().default(DEFAULT_MODEL),
+  /**
+   * Full model id for duplication (jscpd) fixes. Cross-file dedup needs more
+   * reasoning than the default model, so these go to a more capable model.
+   * Unset → CAPABLE_MODEL (see model-selection.ts).
    */
   duplicationModel: z.string().optional(),
   /**
-   * Model for cognitive-complexity refactors — an alias or full model id. Reducing
-   * complexity means rewriting a whole function without changing behavior, so these
-   * go to a more capable model. Unset → a built-in capable default (see
-   * model-selection.ts).
+   * Full model id for cognitive-complexity refactors. Reducing complexity means
+   * rewriting a whole function without changing behavior, so these go to a more
+   * capable model. Unset → CAPABLE_MODEL (see model-selection.ts).
    */
   complexityModel: z.string().optional(),
   /** Reasoning effort for fixes; unset → claude's own default. */

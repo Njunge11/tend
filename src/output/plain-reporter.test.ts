@@ -37,7 +37,7 @@ describe("PlainReporter", () => {
         excluded: { tests: 8, generated: 0, fixtures: 0, outOfScope: 1, reportOnly: 0 },
       },
       { type: "loop-start", loop: 1, files: ["a.ts", "b.ts"], concurrency: 4, findings: 4 },
-      { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity", model: "claude-opus-4-6" },
+      { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity", model: "claude-opus-4-8" },
       { type: "file-stage", loop: 1, file: "a.ts", stage: "typecheck" },
       { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed", findings: 2 },
       { type: "file-result", loop: 1, file: "b.ts", outcome: "reverted", findings: 2, reason: "broke-test" },
@@ -57,7 +57,7 @@ describe("PlainReporter", () => {
     expect(lines.some((l) => l.includes("fix pass 1") && l.includes("4 eligible findings across 2 files") && l.includes("4 concurrent"))).toBe(true);
     expect(lines).toContain("progress a.ts: typecheck");
     // The fixed line shows the model the job ran on, verbatim.
-    expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("claude-opus-4-6"))).toBe(true);
+    expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("claude-opus-4-8"))).toBe(true);
     expect(lines.some((l) => l.includes("reverted b.ts") && l.includes("broke tests"))).toBe(true);
     // loop-complete now renders an intermediate summary line.
     expect(lines.some((l) => l.includes("loop 1:") && l.includes("1 fixed") && l.includes("1 reverted") && l.includes("$0.42"))).toBe(true);

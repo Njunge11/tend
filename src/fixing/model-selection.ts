@@ -1,6 +1,19 @@
 import type { Finding } from "../findings/finding.js";
 
 /**
+ * Single source of truth for every model tend runs. No other module names a model:
+ * the config default, special-case escalation, and the session spawn all resolve
+ * through the constants and {@link modelForUnit} here.
+ *
+ * Both constants are full model+version ids, pinned deliberately so a run's model
+ * is explicit in config, output, and reports. When a new model generation ships,
+ * bump them HERE and nowhere else.
+ */
+
+/** Model for ordinary fixes when none is configured. */
+export const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+/**
  * The more capable model for fixes that restructure code rather than tweak it.
  * Cross-file duplication means reasoning about several call sites at once and
  * extracting a shared abstraction; cognitive-complexity findings demand a
