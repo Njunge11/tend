@@ -31,6 +31,8 @@ export type FixUnitDeps = UnitGateDeps & {
   onProgress?: (event: FixProgressEvent) => void;
   /** Hard cap for one AI session. Defaults to the production child-process timeout. */
   sessionTimeoutMs?: number;
+  /** Global run cancellation (Ctrl-C): aborts the in-flight AI session's subprocess. */
+  cancelSignal?: AbortSignal;
   /** Hard cap for a gate pass. Individual subprocesses also have their own timeouts. */
   gateTimeoutMs?: number;
 };
@@ -242,6 +244,11 @@ async function runSessionWithTimeout(
 ): Promise<SessionResult> {
   const timeoutMs = deps.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
   const controller = new AbortController();
+  // Chain the run-wide cancel signal (Ctrl-C) into this session's controller so the
+  // `claude` subprocess is killed instead of running its full course after cancellation.
+  const onCancel = (): void => controller.abort();
+  if (deps.cancelSignal?.aborted) controller.abort();
+  else deps.cancelSignal?.addEventListener("abort", onCancel, { once: true });
   const run = deps.session
     .run({ ...request, signal: controller.signal })
     .catch((error): SessionResult => ({
@@ -252,7 +259,13 @@ async function runSessionWithTimeout(
       usage: zeroUsage(),
     }));
 
-  if (!timeoutEnabled(timeoutMs)) return run;
+  if (!timeoutEnabled(timeoutMs)) {
+    try {
+      return await run;
+    } finally {
+      deps.cancelSignal?.removeEventListener("abort", onCancel);
+    }
+  }
 
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timedOut = new Promise<SessionResult>((resolve) => {
@@ -272,6 +285,7 @@ async function runSessionWithTimeout(
     return await Promise.race([run, timedOut]);
   } finally {
     if (timeout) clearTimeout(timeout);
+    deps.cancelSignal?.removeEventListener("abort", onCancel);
   }
 }
 

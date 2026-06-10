@@ -241,6 +241,10 @@ export class WorkerSandboxPool {
   private readonly sandboxes = new Set<GitWorkerSandbox>();
   private counter = 0;
   private disposing?: Promise<void>;
+  private cancelled = false;
+  // Rejecters for withSandbox calls still WAITING in the queue; cancel() fires them so queued
+  // work rejects promptly instead of starting a fresh sandbox after Ctrl-C.
+  private readonly queuedRejecters = new Set<(error: Error) => void>();
   private readonly exec: Exec;
   // The base every new sandbox forks from. Starts at the run snapshot and ADVANCES after each
   // accepted patch (see advanceBase), so a later session forks from main's already-fixed state
@@ -254,8 +258,35 @@ export class WorkerSandboxPool {
     this.currentBase = deps.snapshotSha;
   }
 
+  /**
+   * Stop accepting and starting work (Ctrl-C / SIGTERM): queued withSandbox calls reject
+   * promptly with SandboxSetupError("cancelled") instead of spawning new sandboxes, and the
+   * queue is cleared so dispose() never waits on work that was never started. In-flight
+   * sandboxes are left to finish — their AI sessions are killed separately via the run's
+   * AbortSignal, so they return quickly with a failure outcome.
+   */
+  cancel(): void {
+    if (this.cancelled) return;
+    this.cancelled = true;
+    this.queue.clear();
+    const error = new SandboxSetupError("cancelled");
+    for (const reject of [...this.queuedRejecters]) reject(error);
+    this.queuedRejecters.clear();
+  }
+
   async withSandbox<T>(unit: WorkUnit, run: (sandbox: WorkerSandbox) => Promise<T>): Promise<T> {
-    return this.queue.add(async () => {
+    if (this.cancelled) throw new SandboxSetupError("cancelled");
+    let rejectQueued!: (error: Error) => void;
+    const queuedRejection = new Promise<never>((_, reject) => {
+      rejectQueued = reject;
+      this.queuedRejecters.add(reject);
+    });
+    const task = this.queue.add(async () => {
+      // Started: this call is now in-flight, not queued — it runs to its natural end (its AI
+      // session is killed via the run's cancel signal) rather than being rejected out from
+      // under a live sandbox.
+      this.queuedRejecters.delete(rejectQueued);
+      if (this.cancelled) throw new SandboxSetupError("cancelled");
       let sandbox: GitWorkerSandbox;
       try {
         sandbox = await this.acquire();
@@ -276,6 +307,14 @@ export class WorkerSandboxPool {
         this.idle.push(sandbox);
       }
     }) as Promise<T>;
+    // A task cleared from the queue by cancel() never settles; a late in-flight rejection
+    // after the race has already rejected must not surface as unhandled.
+    void task.catch(() => undefined);
+    try {
+      return await Promise.race([task, queuedRejection]);
+    } finally {
+      this.queuedRejecters.delete(rejectQueued);
+    }
   }
 
   /**

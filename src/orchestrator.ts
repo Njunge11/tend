@@ -52,6 +52,8 @@ export type OrchestrateDeps = {
   };
   /** Restrict findings to the fix scope (changed files); defaults to all. */
   inScope?: (findings: Finding[]) => Finding[];
+  /** Run cancellation (Ctrl-C): pending units are skipped, no new loop starts. */
+  signal?: AbortSignal;
   bus?: EventBus;
 };
 
@@ -279,6 +281,10 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
   let usage = zeroUsage();
 
   while (true) {
+    if (deps.signal?.aborted) {
+      termination = "no-progress";
+      break;
+    }
     loop++;
     bus.emit({ type: "scan-start", loop });
     const relevantTools = loop > 1 ? ([...new Set(store.all().map((f) => f.tool))] as Tool[]) : undefined;
@@ -402,7 +408,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
           });
           return { unit, outcome };
         },
-        { concurrency: config.maxSessions },
+        { concurrency: config.maxSessions, signal: deps.signal },
       );
       for (const { unit, outcome } of outcomes) {
         applyOutcome(store, unit, outcome, config.perIssueBudget);
@@ -471,6 +477,7 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
 
       const splitOutcomes: DispatchOutcome[] = [{ unit: work, outcome, apply: false }];
       for (const split of smaller) {
+        if (deps.signal?.aborted) break;
         bus.emit({ type: "file-start", loop, file: split.file, rule: split.findings[0]?.rule, model: modelForUnit(split.findings, config) });
         const splitOutcome = await deps.fixUnit(split, loop);
         bus.emit({
@@ -498,13 +505,14 @@ export async function orchestrate(deps: OrchestrateDeps): Promise<OrchestrateRes
         const batches = chunkUnit(unit, FIX_BATCH_SIZE);
         const results: DispatchOutcome[] = [];
         for (const batch of batches) {
+          if (deps.signal?.aborted) break;
           const batchResults = await fixWithSplitFallback(batch);
           results.push(...batchResults);
           if (batchResults.some((r) => r.outcome.failureClass === "rate-limit")) break;
         }
         return results;
       },
-      { concurrency: config.maxSessions },
+      { concurrency: config.maxSessions, signal: deps.signal },
     );
     const outcomes = outcomesNested.flat();
     for (const { unit, outcome, apply } of outcomes) {

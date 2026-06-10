@@ -156,4 +156,29 @@ describe("dispatch — p-queue", () => {
     const results = await dispatch(files, async (u) => u.file, { concurrency: 2 });
     expect(results.sort()).toStrictEqual(["a", "b", "c", "d", "e"]);
   });
+
+  it("skips units not yet started once the signal aborts — no outcome for them", async () => {
+    const abort = new AbortController();
+    const ran: string[] = [];
+    const results = await dispatch(
+      ["a", "b", "c", "d"].map(mkUnit),
+      async (u) => {
+        ran.push(u.file);
+        abort.abort(); // cancel mid-run: only the first unit ever starts
+        return u.file;
+      },
+      { concurrency: 1, signal: abort.signal },
+    );
+    expect(ran).toStrictEqual(["a"]);
+    expect(results).toStrictEqual(["a"]);
+  });
+
+  it("runs everything when the signal never aborts", async () => {
+    const abort = new AbortController();
+    const results = await dispatch(["a", "b"].map(mkUnit), async (u) => u.file, {
+      concurrency: 2,
+      signal: abort.signal,
+    });
+    expect(results.sort()).toStrictEqual(["a", "b"]);
+  });
 });

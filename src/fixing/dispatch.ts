@@ -180,12 +180,25 @@ export function planWorkFromRepairs(plans: RepairPlan[]): WorkUnit[] {
   return units;
 }
 
-/** Run each work unit through `runUnit`, capped at `concurrency` concurrent sessions. */
+/**
+ * Run each work unit through `runUnit`, capped at `concurrency` concurrent sessions.
+ * Units not yet started when `opts.signal` aborts are skipped — they produce no outcome
+ * (so they can never be recorded as fixed) and no new session is spawned for them.
+ */
 export async function dispatch<T>(
   units: WorkUnit[],
   runUnit: (unit: WorkUnit) => Promise<T>,
-  opts: { concurrency: number },
+  opts: { concurrency: number; signal?: AbortSignal },
 ): Promise<T[]> {
   const queue = new PQueue({ concurrency: opts.concurrency });
-  return Promise.all(units.map((unit) => queue.add(() => runUnit(unit)) as Promise<T>));
+  const skipped = Symbol("skipped");
+  const settled = await Promise.all(
+    units.map(
+      (unit) =>
+        queue.add(
+          async (): Promise<T | typeof skipped> => (opts.signal?.aborted ? skipped : runUnit(unit)),
+        ) as Promise<T | typeof skipped>,
+    ),
+  );
+  return settled.filter((result) => result !== skipped) as T[];
 }

@@ -156,6 +156,7 @@ async function makeProductionFixUnit(
   bus?: EventBus,
   detected?: { typescript: boolean; runner: "vitest" | "jest" | null },
   sandboxPool?: WorkerSandboxPool,
+  cancelSignal?: AbortSignal,
 ): Promise<{
   fixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
   deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>;
@@ -288,6 +289,7 @@ async function makeProductionFixUnit(
       maxRepairs: 3,
       // Share the one cap so the subprocess kill and the session-timeout wrapper never diverge.
       sessionTimeoutMs: CLAUDE_TIMEOUT_MS,
+      cancelSignal,
       onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
     });
 
@@ -491,6 +493,9 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     maxSandboxes: config.maxSessions,
     packageManager: pm,
   });
+  // Run-wide cancellation: aborted on Ctrl-C / SIGTERM so pending work units are skipped and
+  // in-flight `claude` subprocesses are killed instead of draining the whole backlog first.
+  const abort = new AbortController();
   const { fixUnit, deterministicFixUnit, finalIntegration } = await makeProductionFixUnit(
     config,
     baselineTargets,
@@ -498,12 +503,16 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     bus,
     { typescript, runner },
     sandboxPool,
+    abort.signal,
   );
 
-  // On Ctrl-C / SIGTERM, tear down sandboxes (remove worktrees) before exiting so a cancelled run
-  // leaves the repo exactly as a clean completion would. dispose() is memoized, so this and the
-  // finally path below await the same teardown — neither races process.exit ahead of removal.
+  // On Ctrl-C / SIGTERM, stop starting new work (abort + cancel), then tear down sandboxes
+  // (remove worktrees) before exiting so a cancelled run leaves the repo exactly as a clean
+  // completion would. dispose() is memoized, so this and the finally path below await the
+  // same teardown — neither races process.exit ahead of removal.
   const stopSignals = onTerminationSignals((signal) => {
+    abort.abort();
+    sandboxPool.cancel();
     void sandboxPool
       .dispose()
       .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
@@ -532,6 +541,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       deterministicFixUnit,
       config,
       inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
+      signal: abort.signal,
       bus,
     });
     finalIntegrationResult = await finalIntegration();
