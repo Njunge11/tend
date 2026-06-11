@@ -184,41 +184,33 @@ export function renderSummary(
   if (opts.plain)
     return renderPlainSummary(report, b, theme, Boolean(opts.verbose));
 
-  const lines: string[] = [];
-  lines.push(theme.dim(glyph.rule.repeat(RULE_WIDTH)));
   const headlineMeta = `${glyph.bullet} ${report.loops} fix passes ${glyph.bullet} ${formatDuration(report.durationMs)}`;
-  lines.push(`done ${theme.dim(headlineMeta)}`);
-  lines.push("");
-  lines.push(theme.bold("run summary"));
-  lines.push(renderOverallTable(report, b, theme));
-
-  lines.push("");
-  lines.push(theme.bold("scanner breakdown"));
-  lines.push(renderScannerBreakdownTable(report, theme, opts.verbose));
+  const lines: string[] = [
+    theme.dim(glyph.rule.repeat(RULE_WIDTH)),
+    `done ${theme.dim(headlineMeta)}`,
+    "",
+    theme.bold("run summary"),
+    renderOverallTable(report, b, theme),
+    "",
+    theme.bold("scanner breakdown"),
+    renderScannerBreakdownTable(report, theme, opts.verbose),
+  ];
 
   const couldntFix = couldntFixFindings(b);
   if (couldntFix.length > 0) {
-    lines.push("");
-    lines.push(theme.bold("couldn't fix"));
-    lines.push(renderCouldntFixSummaryTable(couldntFix));
+    lines.push("", theme.bold("couldn't fix"), renderCouldntFixSummaryTable(couldntFix));
     if (opts.verbose) {
-      lines.push("");
-      lines.push(theme.bold("couldn't fix retry details"));
-      lines.push(renderCouldntFixDetailTable(couldntFix, theme));
+      lines.push("", theme.bold("couldn't fix retry details"), renderCouldntFixDetailTable(couldntFix, theme));
     }
   }
 
   if (b.secrets.length > 0) {
-    lines.push("");
-    lines.push(theme.bold("secrets"));
-    lines.push(renderSecretsTable(b.secrets, theme));
+    lines.push("", theme.bold("secrets"), renderSecretsTable(b.secrets, theme));
   }
 
   if (opts.verbose) lines.push("", renderVerbose(report, theme));
 
-  lines.push("");
-  lines.push(theme.bold("next commands"));
-  lines.push(renderNextCommandsTable());
+  lines.push("", theme.bold("next commands"), renderNextCommandsTable());
 
   return lines.join("\n");
 }
@@ -233,13 +225,13 @@ function renderPlainSummary(
     `done ${theme.glyph.bullet} ${report.loops} fix passes ${theme.glyph.bullet} ${formatDuration(report.durationMs)}`,
     plainSummaryLine(report, b),
     plainAiUsageLine(report),
+    ...plainStrategyLines(report),
+    ...plainFailureLines(report),
+    ...plainScannerLines(report),
+    ...plainCouldntFixLines(b),
+    ...plainSecretLines(b),
+    ...plainExclusionLines(b),
   ];
-  lines.push(...plainStrategyLines(report));
-  lines.push(...plainFailureLines(report));
-  lines.push(...plainScannerLines(report));
-  lines.push(...plainCouldntFixLines(b));
-  lines.push(...plainSecretLines(b));
-  lines.push(...plainExclusionLines(b));
   if (verbose) lines.push(...plainVerboseLines(report));
   lines.push(
     'next command="tend diff" command="git add -p" command="tend undo"',
