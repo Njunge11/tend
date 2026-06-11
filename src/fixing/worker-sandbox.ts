@@ -219,7 +219,7 @@ class GitWorkerSandbox implements WorkerSandbox {
     const untracked = lines(await git.raw(["ls-files", "--others", "--exclude-standard"])).filter(
       (file) => !isSandboxInfrastructure(file),
     );
-    const changedFiles = unique([...tracked, ...untracked]).sort();
+    const changedFiles = unique([...tracked, ...untracked]).sort((a, b) => a.localeCompare(b));
     const allowed = new Set(allowedPatchFiles(unit));
     const unowned = changedFiles.filter((file) => !allowed.has(file));
     if (unowned.length > 0) {
@@ -230,7 +230,7 @@ class GitWorkerSandbox implements WorkerSandbox {
         changedFiles,
       };
     }
-    const allowedFiles = [...allowed].sort();
+    const allowedFiles = [...allowed].sort((a, b) => a.localeCompare(b));
     if (allowedFiles.length === 0 || changedFiles.length === 0)
       return { ok: true, patch: "", changedFiles };
     if (untracked.length > 0) {

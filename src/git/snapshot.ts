@@ -122,7 +122,7 @@ export class Snapshot {
   async changedSince(_git: SimpleGit): Promise<string[]> {
     const currentTree = await writeWorkingTree(this.root);
     const diff = await createGit(this.root).raw(["diff", "--name-only", this.sha, currentTree]);
-    return lines(diff).sort();
+    return lines(diff).sort((a, b) => a.localeCompare(b));
   }
 
   /** Restore a single file to its captured contents (worktree only — the user's index is untouched). */
