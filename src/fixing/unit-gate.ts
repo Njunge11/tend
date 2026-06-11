@@ -94,8 +94,27 @@ function isDeadCodeFinding(finding: Finding): boolean {
   );
 }
 
+/**
+ * Rules whose canonical remedy IS deletion: removing the flagged code is the fix, not a
+ * suppression. A subclass constructor that only calls super (the rule's fix is "remove this
+ * constructor") leaves nothing to add, so the correct fix arrives as a delete-only diff that
+ * the anti-suppression heuristic would otherwise revert. The rest of the gate still verifies
+ * such fixes the same as any other: typecheck, related tests, and the post-fix rescan that
+ * proves the finding resolved without regressions.
+ */
+const DELETE_ONLY_FIX_RULES = new Set([
+  "no-useless-constructor", // S6647
+  "@typescript-eslint/no-useless-constructor", // S6647 (TS extension variant)
+  "sonarjs/no-redundant-jump", // S3626 — remove the trailing continue/return
+  "no-lone-blocks", // S1199 — remove the redundant braces
+]);
+
+function isDeleteOnlyFixable(finding: Finding): boolean {
+  return isDeadCodeFinding(finding) || DELETE_ONLY_FIX_RULES.has(finding.rule);
+}
+
 function allowsDeleteOnly(unit: WorkUnit): boolean {
-  return unit.findings.length > 0 && unit.findings.every(isDeadCodeFinding);
+  return unit.findings.length > 0 && unit.findings.every(isDeleteOnlyFixable);
 }
 
 type GateUnitOptions = {

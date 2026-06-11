@@ -2,7 +2,7 @@ import { BaseReporter } from "./base-reporter.js";
 import type { TendEvent } from "./events.js";
 import { formatAuditFunnel, formatClock, reasonLabel } from "./format.js";
 import { fixStageLabel } from "../fixing/progress.js";
-import type { Reporter, ReporterDeps } from "./reporter.js";
+import type { Reporter } from "./reporter.js";
 
 /**
  * The non-TTY / CI / piped / `--plain` view: one line per meaningful event, no spinners, no
@@ -12,10 +12,6 @@ import type { Reporter, ReporterDeps } from "./reporter.js";
 export class PlainReporter extends BaseReporter implements Reporter {
   private readonly fileStartTimes = new Map<string, number>();
   private readonly models = new Map<string, string>();
-
-  constructor(deps: ReporterDeps) {
-    super(deps);
-  }
 
   onEvent(event: TendEvent): void {
     const { glyph } = this.theme;
