@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.14.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.0...tend-cli-v0.14.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* apply tend's own type-aware scan fixes across src ([e411b65](https://github.com/Njunge11/tend/commit/e411b65cc56d0861b2aa734503358451dbe535c2))
+* **gate:** allow delete-only diffs for deletion-is-the-fix rules + apply tend's own type-aware scan fixes ([21a485e](https://github.com/Njunge11/tend/commit/21a485ed12c76d7eaad59c204cb701d2b9df4ac4))
+* **gate:** allow delete-only diffs for rules whose canonical fix is deletion ([e2da04f](https://github.com/Njunge11/tend/commit/e2da04fb0ab73580c5dd194a3ac911b1d12c2142))
+
 ## [0.14.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.13.4...tend-cli-v0.14.0) (2026-06-10)
 
 
