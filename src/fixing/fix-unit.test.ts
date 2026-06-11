@@ -463,6 +463,50 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/unused.ts")).toBe("");
   });
 
+  it("allows delete-only disk edits for rules whose canonical fix is deletion (no-useless-constructor)", async () => {
+    const before =
+      "export class PlainReporter extends BaseReporter {\n  constructor(deps: ReporterDeps) {\n    super(deps);\n  }\n}\n";
+    const after = "export class PlainReporter extends BaseReporter {\n}\n";
+    write("src/reporter.ts", before);
+    const session = diskSession({ "src/reporter.ts": after }, { ok: true, edits: [] });
+    const work: WorkUnit = {
+      file: "src/reporter.ts",
+      files: ["src/reporter.ts"],
+      findings: [
+        makeFinding({
+          tool: "sonarjs",
+          rule: "no-useless-constructor",
+          category: "smell",
+          file: "src/reporter.ts",
+          message: "Useless constructor.",
+        }),
+      ],
+    };
+
+    const outcome = await makeFixUnit(deps(session))(work);
+
+    expect(outcome.kept).toBe(true);
+    expect(read("src/reporter.ts")).toBe(after);
+  });
+
+  it("keeps delete-only disk edits rejected when a delete-only-fix rule is mixed with an ordinary finding", async () => {
+    const before = "export class A extends B {\n  constructor() {\n    super();\n  }\n}\nconst eq = x == y;\n";
+    write("src/a.ts", before);
+    const session = diskSession({ "src/a.ts": "const eq = x == y;\n" }, { ok: true, edits: [] });
+    const work: WorkUnit = {
+      file: "src/a.ts",
+      files: ["src/a.ts"],
+      findings: [
+        makeFinding({ tool: "sonarjs", rule: "no-useless-constructor", category: "smell", file: "src/a.ts" }),
+        makeFinding({ file: "src/a.ts", message: "Use === instead of ==" }),
+      ],
+    };
+
+    const outcome = await makeFixUnit(deps(session))(work);
+
+    expectSuppressionRevert(outcome, "src/a.ts", before);
+  });
+
   it("keeps delete-only disk edits rejected for non-dead-code work units", async () => {
     write("src/a.ts", "export function brokenButReal() {\n  return a == b;\n}\n");
     const session = diskSession({ "src/a.ts": "" }, { ok: true, edits: [] });

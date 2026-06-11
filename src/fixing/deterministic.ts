@@ -36,7 +36,7 @@ function strategiesFor(unit: WorkUnit): DeterministicRepairStrategy[] {
 }
 
 function packageNameFromFindingMessage(message: string): string | undefined {
-  const match = message.match(/:\s*(@?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?)(?:\s|$)/);
+  const match = /:\s*(@?[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)?)(?:\s|$)/.exec(message);
   return match?.[1];
 }
 

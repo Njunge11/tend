@@ -94,7 +94,7 @@ export function buildProgram(handlers: CliHandlers): Command {
   const program = new Command();
   program.name("tend").description("Audit a JS/TS repo and fix findings with AI in a safe loop.");
   program.exitOverride(); // throw instead of process.exit, so callers/tests can handle errors
-  program.addHelpCommand(true);
+  program.helpCommand(true);
 
   const run = program
     .command("run")

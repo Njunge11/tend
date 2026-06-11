@@ -98,7 +98,7 @@ export async function loadConfig(cwd: string): Promise<TendConfig> {
 export function applyCliOverrides(config: TendConfig, overrides: CliOverrides): TendConfig {
   const result = { ...config };
   for (const [key, value] of Object.entries(overrides)) {
-    if (value !== undefined) (result as Record<string, unknown>)[key] = value;
+    if (value != undefined) (result as Record<string, unknown>)[key] = value;
   }
   return ConfigSchema.parse(result);
 }

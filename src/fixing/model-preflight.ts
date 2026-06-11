@@ -19,9 +19,9 @@
 /** Runs one `claude -p` ping against `model` and returns its stdout + exit code. */
 export type ModelPing = (model: string) => Promise<{ stdout: string; exitCode: number }>;
 
-export type ModelPreflightFailure = { model: string; detail: string };
+type ModelPreflightFailure = { model: string; detail: string };
 
-export type ModelPreflightResult = { ok: true } | { ok: false; failures: ModelPreflightFailure[] };
+type ModelPreflightResult = { ok: true } | { ok: false; failures: ModelPreflightFailure[] };
 
 type ResultPayload = { type?: string; is_error?: boolean; result?: string };
 

@@ -67,7 +67,7 @@ function stripGeneratedExtension(file: string): string {
 }
 
 function sourceMappingUrl(contents: string): string | undefined {
-  const match = contents.match(/[#@]\s*sourceMappingURL=([^\s]+)/);
+  const match = /[#@]\s*sourceMappingURL=([^\s]+)/.exec(contents);
   if (!match?.[1] || match[1].startsWith("data:")) return undefined;
   return decodeURIComponent(match[1]);
 }
@@ -133,13 +133,13 @@ function tsdownEntries(cwd: string): string[] {
   if (!existsSync(configPath)) return [];
   const contents = readFileSync(configPath, "utf8");
   const entries = new Set<string>();
-  const arrayMatch = contents.match(/entry\s*:\s*\[([^\]]+)\]/s);
+  const arrayMatch = /entry\s*:\s*\[([^\]]+)\]/s.exec(contents);
   if (arrayMatch?.[1]) {
     for (const match of arrayMatch[1].matchAll(/["']([^"']+)["']/g)) {
       if (match[1]) entries.add(normalizePath(match[1]));
     }
   }
-  const stringMatch = contents.match(/entry\s*:\s*["']([^"']+)["']/);
+  const stringMatch = /entry\s*:\s*["']([^"']+)["']/.exec(contents);
   if (stringMatch?.[1]) entries.add(normalizePath(stringMatch[1]));
   return [...entries];
 }

@@ -149,7 +149,7 @@ function statusAttemptSnapshot(store: FindingStore): string {
   return store
     .all()
     .map((f) => `${f.id}:${f.status}:${f.attempts}`)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .join("|");
 }
 

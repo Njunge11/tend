@@ -440,7 +440,7 @@ async function makeProductionFixUnit(
     fixUnit,
     deterministicFixUnit: makeDeterministicFixUnit(mainGateDeps),
     finalIntegration: async () => {
-      const files = [...acceptedFiles].sort();
+      const files = [...acceptedFiles].sort((a, b) => a.localeCompare(b));
       if (files.length === 0) return { ok: true, files };
       // Checks run in order and short-circuit: tests only run after a clean typecheck, the
       // rescan only after green tests — same sequencing as the per-unit gate.
@@ -496,6 +496,37 @@ async function resolveRunScope(
   return { scope };
 }
 
+/**
+ * Probe every model this run can route to. Reports each unreachable model and returns false
+ * so the caller can abort before any work starts; true means all models are reachable.
+ */
+async function verifyModelAccess(
+  config: Parameters<typeof distinctRunModels>[0],
+): Promise<boolean> {
+  const preflight = await preflightModels(distinctRunModels(config), async (model) => {
+    const r = await execa(
+      "claude",
+      [
+        ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
+        "--no-session-persistence",
+        "-p",
+        "Reply with: ok",
+        "--model",
+        model,
+        "--max-turns",
+        "1",
+        "--output-format",
+        "json",
+      ],
+      { reject: false, timeout: MODEL_PREFLIGHT_TIMEOUT_MS },
+    );
+    return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? 1 };
+  });
+  if (preflight.ok) return true;
+  for (const failure of preflight.failures) err(`✖ model "${failure.model}": ${failure.detail}`);
+  return false;
+}
+
 async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // Resolve color/interactivity once, then paint the header immediately so the screen is
   // never blank while we take the snapshot. (`--no-color` arrives from commander as color:false.)
@@ -545,27 +576,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // exits 0 for an unknown model, so without this a typo'd --model silently burns
   // entire fix passes as no-op session errors (see model-preflight.ts).
   reporter.note("verifying model access…");
-  const preflight = await preflightModels(distinctRunModels(config), async (model) => {
-    const r = await execa(
-      "claude",
-      [
-        ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
-        "--no-session-persistence",
-        "-p",
-        "Reply with: ok",
-        "--model",
-        model,
-        "--max-turns",
-        "1",
-        "--output-format",
-        "json",
-      ],
-      { reject: false, timeout: MODEL_PREFLIGHT_TIMEOUT_MS },
-    );
-    return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? 1 };
-  });
-  if (!preflight.ok) {
-    for (const failure of preflight.failures) err(`✖ model "${failure.model}": ${failure.detail}`);
+  if (!(await verifyModelAccess(config))) {
     process.exitCode = 1;
     return;
   }

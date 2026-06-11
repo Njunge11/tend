@@ -20,7 +20,7 @@ export const isTestFile = (file: string): boolean => TEST_FILE_RE.test(file);
 
 /** A test file's owning code file (so both go to the same worker); else the file itself. */
 function ownerOf(file: string): string {
-  const m = file.match(TEST_FILE_RE);
+  const m = TEST_FILE_RE.exec(file);
   return m ? `${m[1]}.${m[3]}` : file;
 }
 
@@ -148,7 +148,7 @@ function mergeUnits(a: WorkUnit, b: WorkUnit): WorkUnit {
   addUnique(a.files, b.files);
   addUnique(a.findings, b.findings);
   addUnique(a.verificationTargets ?? (a.verificationTargets = []), b.verificationTargets ?? []);
-  a.strategy = strategies.sort((left, right) => strategyPriority(right) - strategyPriority(left))[0];
+  a.strategy = strategies.toSorted((left, right) => strategyPriority(right) - strategyPriority(left))[0];
   a.strategies = strategies;
   if (!a.files.includes(a.file)) a.file = a.files[0] ?? a.file;
   return a;
