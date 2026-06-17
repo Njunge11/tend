@@ -1,4 +1,4 @@
-import { simpleGit, type SimpleGit } from "simple-git";
+import { simpleGit, type SimpleGit, type SimpleGitOptions } from "simple-git";
 
 const UNSAFE_GIT_ENV_KEYS = [
   "EDITOR",
@@ -19,6 +19,10 @@ export function gitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return env;
 }
 
-export function createGit(root: string, extraEnv: NodeJS.ProcessEnv = {}): SimpleGit {
-  return simpleGit(root).env(gitEnv(extraEnv));
+export function createGit(
+  root: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+  options: Partial<SimpleGitOptions> = {},
+): SimpleGit {
+  return simpleGit(root, options).env(gitEnv(extraEnv));
 }

@@ -487,8 +487,16 @@ export class WorkerSandboxPool {
       const parent = this.deps.tempRoot ?? tmpdir();
       mkdirSync(parent, { recursive: true });
       const path = `${parent}/${WORKTREE_PREFIX}${process.pid}-${this.counter++}`;
-      const mainGit = createGit(this.deps.mainRoot);
-      await mainGit.raw(["worktree", "add", "--detach", path, this.currentBase]);
+      // `worktree add` checks out the tree, which fires the repo's post-checkout hook — and per
+      // githooks(5) the hook's exit status becomes the command's exit status. A repo with a
+      // husky-style post-checkout hook that fails inside our bare detached sandbox would make
+      // worktree creation exit non-zero, which tend reads as "sandbox setup failed" before any AI
+      // runs. tend's sandbox is internal plumbing, never a checkout the user's hooks should
+      // observe, so disable ALL hooks for this one invocation via core.hooksPath=/dev/null (covers
+      // every hook framework, not just husky's HUSKY=0). simple-git blocks core.hooksPath by
+      // default, so opt in explicitly with unsafe.allowUnsafeHooksPath.
+      const mainGit = createGit(this.deps.mainRoot, {}, { unsafe: { allowUnsafeHooksPath: true } });
+      await mainGit.raw(["-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", path, this.currentBase]);
       const sandbox = new GitWorkerSandbox(path, { ...this.deps, exec: this.exec });
       this.sandboxes.add(sandbox);
       return sandbox;
