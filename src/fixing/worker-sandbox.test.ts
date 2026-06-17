@@ -125,6 +125,24 @@ describe("WorkerSandboxPool", () => {
     expect(seen).not.toContain(repo.dir);
   });
 
+  it("creates the sandbox worktree even when the repo has a failing post-checkout hook", async () => {
+    // `git worktree add` checks out the tree and fires post-checkout. A husky-style hook that
+    // exits non-zero (or assumes the main worktree's layout) used to abort sandbox creation and
+    // silently break tend on any such repo. The worktree add now runs with hooks disabled.
+    const { snapshotSha } = await setupRepo();
+    if (!repo) throw new Error("repo not set");
+    const hooksDir = join(repo.dir, ".git", "hooks");
+    mkdirSync(hooksDir, { recursive: true });
+    const hook = join(hooksDir, "post-checkout");
+    writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    const pool = makePool(snapshotSha, 1);
+    const cwd = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => sandbox.cwd);
+
+    expect(existsSync(cwd)).toBe(true);
+    expect(cwd).not.toBe(repo.dir);
+  });
+
   it("keeps failed worker edits inside the sandbox", async () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);
