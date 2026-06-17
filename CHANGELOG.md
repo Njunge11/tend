@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.1...tend-cli-v0.14.2) (2026-06-17)
+
+
+### Bug Fixes
+
+* **sandbox:** disable repo hooks when creating sandbox worktrees ([68011f2](https://github.com/Njunge11/tend/commit/68011f2ae03a31216dbf5f6b45d774467478762f))
+* **sandbox:** disable repo hooks when creating sandbox worktrees ([c8e8eb2](https://github.com/Njunge11/tend/commit/c8e8eb2a8c2576c510b143d2fe3ee7776325b94b))
+
 ## [0.14.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.0...tend-cli-v0.14.1) (2026-06-11)
 
 
