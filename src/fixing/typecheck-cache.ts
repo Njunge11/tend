@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 
 type Exec = (
@@ -61,15 +62,40 @@ type IncrementalTscDeps = {
 };
 
 /**
+ * Resolve the project's REAL TypeScript compiler entry (`typescript/bin/tsc`) from `cwd`, or
+ * null when TypeScript isn't installed there. Running this directly with `node` instead of
+ * `npx tsc` matters: when `npx` can't find a local `tsc` it silently runs a registry package
+ * literally named `tsc` (a decoy that prints "This is not the tsc command you are looking for"
+ * and exits non-zero) — which the gate reads as a typecheck failure and reverts the fix. Direct
+ * resolution can never hit that decoy.
+ */
+function resolveTscBin(cwd: string): string | null {
+  try {
+    return createRequire(join(cwd, "noop.js")).resolve("typescript/bin/tsc");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Run `tsc --noEmit` with an incremental cache. Ensures the cache directory exists, then
  * runs tsc. tsc itself tolerates a missing or corrupt build-info file (it rebuilds from
  * scratch and overwrites), so correctness is unaffected — only cold runs are slower.
+ *
+ * Prefers the project's resolved `typescript` binary run via `node`; only when TypeScript can't
+ * be resolved does it fall back to `npx --no-install tsc` (which at least never *installs* the
+ * decoy). See {@link resolveTscBin}.
  */
 export async function runIncrementalTsc(
   deps: IncrementalTscDeps,
 ): Promise<{ exitCode: number; output: string }> {
   mkdirSync(dirname(deps.cacheFile), { recursive: true });
-  const r = await deps.exec("npx", incrementalTscArgs(deps.cacheFile), {
+  const baseArgs = incrementalTscArgs(deps.cacheFile); // ["tsc", "--noEmit", "--incremental", ...]
+  const tscBin = resolveTscBin(deps.cwd);
+  const [file, args]: [string, string[]] = tscBin
+    ? [process.execPath, [tscBin, ...baseArgs.slice(1)]]
+    : ["npx", ["--no-install", ...baseArgs]];
+  const r = await deps.exec(file, args, {
     cwd: deps.cwd,
     reject: false,
     timeout: deps.timeoutMs ?? TSC_TIMEOUT_MS,

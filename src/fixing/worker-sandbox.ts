@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 /** Prefix every tend sandbox worktree directory carries, so we can recognize our own. */
 const WORKTREE_PREFIX = "tend-worker-";
@@ -138,6 +138,10 @@ class GitWorkerSandbox implements WorkerSandbox {
   // Tracks how deps were last set up so a recycled sandbox doesn't redo equivalent work:
   // "reuse" symlinks the main node_modules; "install" is a real per-worktree install.
   private preparedMode: "none" | "reuse" | "install" = "none";
+  // Per-package node_modules symlinks this sandbox created (mirrorWorkspaceNodeModules), tracked so
+  // a later reinstall can tear them ALL down first — a real `pnpm/npm install` must never reach the
+  // main checkout's node_modules through a leftover symlink and mutate it.
+  private mirroredLinks: string[] = [];
   // The commit this sandbox was last reset to. Its patch is diffed against THIS base — never the
   // pool's current base, which may have advanced under concurrent same-run sandboxes.
   private baseSha: string;
@@ -186,12 +190,66 @@ class GitWorkerSandbox implements WorkerSandbox {
     const mainModules = join(this.deps.mainRoot, "node_modules");
     if (!existsSync(mainModules)) return false;
     const link = join(this.cwd, "node_modules");
-    if (existsSync(link)) return true;
-    symlinkSync(mainModules, link, "junction");
+    if (!existsSync(link)) symlinkSync(mainModules, link, "junction");
+    // Monorepos (pnpm / yarn / npm workspaces) keep a per-package node_modules, and the package's
+    // own bins (tsc, vitest, …) live THERE — not at the repo root. The gate runs `tsc --noEmit`
+    // and related tests from the owning package dir inside the sandbox, so without these the
+    // package's tools resolve to nothing. With `npx`, a missing local `tsc` silently runs a
+    // registry decoy that exits non-zero, so every fix is reverted as a false "broke typecheck".
+    // Mirror each workspace package's node_modules too, at its repo-relative path.
+    this.mirrorWorkspaceNodeModules();
     return true;
   }
 
+  /**
+   * Symlink every workspace package's node_modules from the main repo into this worktree (root
+   * already linked by the caller). Best-effort: a package whose link can't be created just falls
+   * back to whatever the root link resolves. The walk prunes node_modules/.git and common build
+   * output so it stays cheap even on large monorepos.
+   */
+  private mirrorWorkspaceNodeModules(): void {
+    const SKIP = new Set([".git", ".next", ".turbo", ".vercel", "dist", "build", "out", "coverage", ".cache"]);
+    const pkgRoots: string[] = [];
+    const readChildren = (absDir: string) => {
+      try {
+        return readdirSync(absDir, { withFileTypes: true });
+      } catch {
+        return [];
+      }
+    };
+    const walk = (absDir: string, depth: number): void => {
+      if (depth > 6) return;
+      for (const e of readChildren(absDir)) {
+        if (!e.isDirectory()) continue;
+        if (e.name === "node_modules") {
+          const rel = relative(this.deps.mainRoot, absDir);
+          if (rel) pkgRoots.push(rel); // skip the repo root (already linked)
+          continue; // never descend into node_modules
+        }
+        if (SKIP.has(e.name)) continue;
+        walk(join(absDir, e.name), depth + 1);
+      }
+    };
+    walk(this.deps.mainRoot, 0);
+    for (const rel of pkgRoots) {
+      const target = join(this.deps.mainRoot, rel, "node_modules");
+      const link = join(this.cwd, rel, "node_modules");
+      if (existsSync(link)) continue;
+      try {
+        mkdirSync(dirname(link), { recursive: true });
+        symlinkSync(target, link, "junction");
+        this.mirroredLinks.push(link);
+      } catch {
+        /* best-effort: fall back to the root node_modules link */
+      }
+    }
+  }
+
   private removeNodeModulesLink(): void {
+    // Tear down the mirrored per-package links FIRST: a reinstall must not write back into the
+    // main checkout's node_modules through one of them. Each is a symlink we created, so removing
+    // it never touches a real installed tree.
+    for (const link of this.mirroredLinks.splice(0)) rmSync(link, { force: true });
     const link = join(this.cwd, "node_modules");
     // Only ever remove a symlink we created; never recurse into a real installed tree.
     rmSync(link, { force: true });

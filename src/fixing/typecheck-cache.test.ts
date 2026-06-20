@@ -142,4 +142,38 @@ describe("runIncrementalTsc", () => {
     const result = await runIncrementalTsc({ exec, cwd: dir, cacheFile });
     expect(result.exitCode).toBe(1);
   });
+
+  it("runs the project's resolved tsc via node — never `npx tsc`, which can run a registry decoy", async () => {
+    // A resolvable `typescript` package in cwd (no exports field → subpath resolves off disk).
+    mkdirSync(join(dir, "node_modules", "typescript", "bin"), { recursive: true });
+    writeFileSync(
+      join(dir, "node_modules", "typescript", "package.json"),
+      JSON.stringify({ name: "typescript", version: "5.0.0" }),
+    );
+    writeFileSync(join(dir, "node_modules", "typescript", "bin", "tsc"), "#!/usr/bin/env node\n");
+    const cacheFile = tscCacheFile(join(dir, ".tend", "cache"), dir, dir);
+    const exec = fakeTsc(0);
+
+    await runIncrementalTsc({ exec, cwd: dir, cacheFile });
+
+    const call = exec.calls[0];
+    expect(call?.file).toBe(process.execPath); // node, not npx
+    // realpath may prefix /private on macOS, so match the suffix rather than the exact path.
+    expect(call?.args[0]).toMatch(/[/\\]node_modules[/\\]typescript[/\\]bin[/\\]tsc$/);
+    expect(call?.args).not.toContain("npx");
+    expect(call?.args).toContain(cacheFile);
+  });
+
+  it("falls back to `npx --no-install` when typescript isn't resolvable (never auto-installs the decoy)", async () => {
+    // dir has no typescript installed → can't resolve the real compiler.
+    const cacheFile = tscCacheFile(join(dir, ".tend", "cache"), dir, dir);
+    const exec = fakeTsc(0);
+
+    await runIncrementalTsc({ exec, cwd: dir, cacheFile });
+
+    const call = exec.calls[0];
+    expect(call?.file).toBe("npx");
+    expect(call?.args).toContain("--no-install"); // never `npx tsc` (which would fetch the decoy)
+    expect(call?.args).toContain(cacheFile);
+  });
 });
