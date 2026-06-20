@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.2...tend-cli-v0.14.3) (2026-06-20)
+
+
+### Bug Fixes
+
+* **sandbox:** make per-package node_modules and the real tsc resolve in monorepos ([c6ee10a](https://github.com/Njunge11/tend/commit/c6ee10afa3d2b4251b31ffec3b058b29aab000e2))
+* **sandbox:** make per-package node_modules and the real tsc resolve in monorepos ([77f9363](https://github.com/Njunge11/tend/commit/77f9363d91a2c5104c2db2c30411a49e2c10c2f3))
+
 ## [0.14.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.1...tend-cli-v0.14.2) (2026-06-17)
 
 
