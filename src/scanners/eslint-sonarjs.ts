@@ -301,7 +301,8 @@ function eslintWorkerPath(): string | null {
   return null;
 }
 
-type WorkerReply = { id: number; result?: ScanResult; error?: string };
+type ScanRequest = { id: number; ctx: ScanContext };
+export type WorkerReply = { id: number; result?: ScanResult; error?: string };
 
 function isReplyFor(message: unknown, id: number): boolean {
   return typeof message === "object" && message !== null && (message as WorkerReply).id === id;
@@ -310,6 +311,32 @@ function isReplyFor(message: unknown, id: number): boolean {
 /** The capability {@link runEslintSonarjs} needs from a worker — the seam tests inject a stub at. */
 export interface EslintScanWorker {
   scan(ctx: ScanContext): Promise<ScanResult>;
+}
+
+/** The message channel the worker process serves over (real impl: execa getEachMessage/sendMessage). */
+export interface EslintWorkerTransport {
+  requests(): AsyncIterable<ScanRequest>;
+  reply(message: WorkerReply): Promise<void>;
+}
+
+/**
+ * The worker process's serve loop, lifted out of the entry shim so it's unit-testable IN-PROCESS:
+ * for each scan request from the transport, run it and reply with the result, or reply with an
+ * error if the scan throws. Returns when the request stream ends (the parent closed the channel).
+ * `scan` is injectable so the error branch is testable; production uses {@link runEslintSonarjsInProcess}.
+ */
+export async function serveEslintScans(
+  transport: EslintWorkerTransport,
+  scan: (ctx: ScanContext) => Promise<ScanResult> = runEslintSonarjsInProcess,
+): Promise<void> {
+  for await (const { id, ctx } of transport.requests()) {
+    try {
+      const result = await scan(ctx);
+      await transport.reply({ id, result });
+    } catch (err) {
+      await transport.reply({ id, error: err instanceof Error ? (err.stack ?? err.message) : String(err) });
+    }
+  }
 }
 
 /**

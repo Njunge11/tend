@@ -12,7 +12,10 @@ import {
   eslintSonarjsScanner,
   runEslintSonarjs,
   runEslintSonarjsInProcess,
+  serveEslintScans,
   type EslintScanWorker,
+  type EslintWorkerTransport,
+  type WorkerReply,
 } from "./eslint-sonarjs.js";
 
 const raw = (stdout: string, exitCode = 1): SpawnResult => ({ stdout, stderr: "", exitCode });
@@ -387,6 +390,71 @@ describe("runEslintSonarjsInProcess — the work the worker runs", () => {
     const res = await runEslintSonarjsInProcess({ cwd: join(dir, "does-not-exist"), files: ["x.ts"], loop: 1 });
     expect(res.tool).toBe("sonarjs");
     expect(res.findings).toEqual([]);
+  });
+});
+
+/**
+ * The worker process's serve loop, tested in-process via a fake transport (no subprocess needed):
+ * it answers each request with its scan result, turns a scan failure into an error reply, and ends
+ * when the request stream closes. This is the behaviour that the forked worker entry binds execa to.
+ */
+describe("serveEslintScans — worker serve loop", () => {
+  const ctxA: ScanContext = { cwd: "/x", files: ["a.ts"], loop: 1 };
+  const okResult: ScanResult = { tool: "sonarjs", findings: [], skipped: false };
+
+  /** A transport that replays a fixed list of requests and collects every reply. */
+  const transportOf = (requests: { id: number; ctx: ScanContext }[], sink: WorkerReply[]): EslintWorkerTransport => ({
+    requests: async function* () {
+      yield* requests;
+    },
+    reply: async (message) => {
+      sink.push(message);
+    },
+  });
+
+  it("replies with each request's scan result, in order", async () => {
+    const sink: WorkerReply[] = [];
+    await serveEslintScans(
+      transportOf(
+        [
+          { id: 1, ctx: ctxA },
+          { id: 2, ctx: ctxA },
+        ],
+        sink,
+      ),
+      async () => okResult,
+    );
+    expect(sink).toEqual([
+      { id: 1, result: okResult },
+      { id: 2, result: okResult },
+    ]);
+  });
+
+  it("turns a scan failure into an error reply instead of throwing", async () => {
+    const sink: WorkerReply[] = [];
+    await serveEslintScans(transportOf([{ id: 7, ctx: ctxA }], sink), () => Promise.reject(new Error("scan exploded")));
+    expect(sink).toHaveLength(1);
+    expect(sink[0]?.id).toBe(7);
+    expect(sink[0]?.error).toContain("scan exploded");
+  });
+
+  it("returns without replying when the channel yields no requests", async () => {
+    const sink: WorkerReply[] = [];
+    await serveEslintScans(transportOf([], sink), async () => okResult);
+    expect(sink).toEqual([]);
+  });
+
+  it("uses the real in-process scan by default to produce findings", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tend-eslint-serve-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "code.js"), "export function pick(c) {\n  if (c) { return 42; } else { return 42; }\n}\n");
+    const sink: WorkerReply[] = [];
+    try {
+      await serveEslintScans(transportOf([{ id: 1, ctx: { cwd: dir, files: ["code.js"], loop: 1 } }], sink));
+      expect(sink[0]?.result?.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

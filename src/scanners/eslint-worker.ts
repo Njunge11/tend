@@ -1,26 +1,18 @@
 /**
- * Persistent child-process entry for the eslint+sonarjs scan. tend forks this ONCE (via execa's
- * `execaNode`, IPC enabled) and reuses it across audits — see EslintWorker in eslint-sonarjs.ts —
- * so the heavy TypeScript program that type-aware linting builds (projectService) stays warm
- * between loops, yet lives in a separate process whose own heap never weighs on tend's and which
- * execa reclaims on disposal / when tend exits.
+ * Child-process entry for the eslint+sonarjs scan. tend forks this once (via execa's execaNode,
+ * IPC enabled) and reuses it across audits — see EslintWorker in eslint-sonarjs.ts — so the heavy
+ * TypeScript program that type-aware linting builds stays warm between loops while living in a
+ * separate heap that never weighs on tend's.
  *
- * Protocol (execa IPC): the parent sends `{ id, ctx }`; this replies `{ id, result }` or
- * `{ id, error }`. `getEachMessage()` yields requests until the parent closes the channel, at which
- * point the loop ends and this process exits.
+ * This file is ONLY the glue that binds execa's real IPC channel to {@link serveEslintScans}; all
+ * the behaviour (read request → scan → reply, error handling, channel close) lives there and is
+ * unit-tested in-process. It runs solely inside a forked subprocess, so it can't carry coverage.
  */
 import { getEachMessage, sendMessage } from "execa";
-import { runEslintSonarjsInProcess } from "./eslint-sonarjs.js";
 import type { ScanContext } from "./scanner.js";
+import { serveEslintScans } from "./eslint-sonarjs.js";
 
-type ScanRequest = { id: number; ctx: ScanContext };
-
-for await (const message of getEachMessage()) {
-  const { id, ctx } = message as ScanRequest;
-  try {
-    const result = await runEslintSonarjsInProcess(ctx);
-    await sendMessage({ id, result });
-  } catch (err) {
-    await sendMessage({ id, error: err instanceof Error ? (err.stack ?? err.message) : String(err) });
-  }
-}
+await serveEslintScans({
+  requests: () => getEachMessage() as AsyncIterable<{ id: number; ctx: ScanContext }>,
+  reply: (message) => sendMessage(message),
+});
