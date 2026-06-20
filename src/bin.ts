@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { execa } from "execa";
 import { buildProgram, type CliHandlers } from "./cli.js";
 import { buildAudit, scanFiles, scannerAvailability } from "./scanners/all.js";
+import { disposeEslintWorker } from "./scanners/eslint-sonarjs.js";
 import { realSpawn, realWhich } from "./scanners/exec.js";
 import { filterToChanged } from "./scanners/scope.js";
 import { changedVsHead, filesUnder, assertGitRepo } from "./git/repo.js";
@@ -649,6 +650,8 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   const stopSignals = onTerminationSignals((signal) => {
     abort.abort();
     sandboxPool.cancel();
+    // Kill the eslint worker too: its open IPC channel would otherwise keep this process alive.
+    disposeEslintWorker();
     // Fire-and-forget by design: the handler must return immediately; the process exits
     // once teardown settles, whether it succeeded or failed.
     const exit = () => process.exit(signal === "SIGINT" ? 130 : 143);
@@ -682,6 +685,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     if (!finalIntegrationResult.ok) result.exitStatus = 1;
   } finally {
     stopSignals();
+    disposeEslintWorker(); // close the worker's IPC channel so the process can exit
     await sandboxPool.dispose();
     reporter.close(); // unblock the view if orchestration threw before emitting `done`
   }
@@ -772,6 +776,7 @@ async function runRetry(id: string): Promise<void> {
       return fixUnit(unit, 1);
     },
   }).finally(async () => {
+    disposeEslintWorker();
     await retrySandboxPool?.dispose();
   });
 
