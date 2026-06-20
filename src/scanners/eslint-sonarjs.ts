@@ -307,6 +307,11 @@ function isReplyFor(message: unknown, id: number): boolean {
   return typeof message === "object" && message !== null && (message as WorkerReply).id === id;
 }
 
+/** The capability {@link runEslintSonarjs} needs from a worker — the seam tests inject a stub at. */
+export interface EslintScanWorker {
+  scan(ctx: ScanContext): Promise<ScanResult>;
+}
+
 /**
  * A persistent Node worker (execa `execaNode`, IPC enabled) that runs the eslint+sonarjs scan out
  * of tend's process.
@@ -340,7 +345,7 @@ function spawnEslintChild(workerPath: string) {
 }
 type EslintChild = ReturnType<typeof spawnEslintChild>;
 
-class EslintWorker {
+export class EslintWorker implements EslintScanWorker {
   private child: EslintChild | null = null;
   private nextId = 1;
   private tail: Promise<unknown> = Promise.resolve();
@@ -348,19 +353,17 @@ class EslintWorker {
   constructor(private readonly workerPath: string) {}
 
   private ensureChild(): EslintChild {
-    if (this.child) return this.child;
+    // `connected` is the live IPC-channel state: false the moment the child exits/dies, so a dead
+    // handle is replaced deterministically (no reliance on the exit callback having run yet).
+    if (this.child?.connected) return this.child;
     const child = spawnEslintChild(this.workerPath);
     this.child = child;
-    // execa rejects this promise when the child exits or is killed; swallow it and drop the handle
-    // so the next scan respawns. A scan awaiting a reply rejects independently via getOneMessage.
-    void child.then(
-      () => {
-        if (this.child === child) this.child = null;
-      },
-      () => {
-        if (this.child === child) this.child = null;
-      },
-    );
+    // Swallow execa's exit/kill rejection and drop the handle so the next scan respawns. A scan
+    // awaiting a reply rejects independently via getOneMessage.
+    const drop = (): void => {
+      if (this.child === child) this.child = null;
+    };
+    void child.then(drop, drop);
     return child;
   }
 
@@ -375,10 +378,9 @@ class EslintWorker {
 
   /** Run a scan, serialized after any in-flight scan (the worker holds one warm program). */
   scan(ctx: ScanContext): Promise<ScanResult> {
-    const result = this.tail.then(
-      () => this.dispatch(ctx),
-      () => this.dispatch(ctx),
-    );
+    // `tail` is kept always-resolved (the swallow below), so the next scan starts whether the
+    // previous one resolved or rejected — no separate rejected handler needed here.
+    const result = this.tail.then(() => this.dispatch(ctx));
     this.tail = result.then(
       () => undefined,
       () => undefined,
@@ -422,9 +424,14 @@ export function disposeEslintWorker(): void {
  * dies (including its own OOM) is reported as a scanner failure for this loop and NOT retried
  * in-process, which would just re-OOM tend; the next scan respawns the worker.
  */
-export async function runEslintSonarjs(ctx: ScanContext): Promise<ScanResult> {
+export async function runEslintSonarjs(
+  ctx: ScanContext,
+  // The worker to delegate to. Omitted in production (resolves the shared worker); tests pass a
+  // stub to drive the success/degrade/fallback contract, or `null` to exercise the fallback.
+  workerOverride?: EslintScanWorker | null,
+): Promise<ScanResult> {
   if (process.env["TEND_ESLINT_INPROCESS"] === "1") return runEslintSonarjsInProcess(ctx);
-  const worker = eslintWorker();
+  const worker = workerOverride === undefined ? eslintWorker() : workerOverride;
   if (!worker) return runEslintSonarjsInProcess(ctx);
   try {
     return await worker.scan(ctx);

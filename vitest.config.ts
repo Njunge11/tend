@@ -14,6 +14,7 @@ export default defineConfig({
       exclude: [
         "src/**/*.test.ts",
         "src/bin.ts", // CLI entry shim — nothing meaningful to cover
+        "src/scanners/eslint-worker.ts", // worker entry — only ever runs inside a forked subprocess, so parent-process coverage can't observe it
         "**/*.d.ts",
       ],
     },

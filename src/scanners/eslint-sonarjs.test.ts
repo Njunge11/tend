@@ -1,12 +1,19 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { execaNode } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { SpawnResult } from "./scanner.js";
+import type { ScanContext, ScanResult, SpawnResult } from "./scanner.js";
 import { ctx, fixture } from "./_test-helpers.js";
-import { eslintSonarjsScanner, runEslintSonarjs, runEslintSonarjsInProcess } from "./eslint-sonarjs.js";
+import {
+  disposeEslintWorker,
+  EslintWorker,
+  eslintSonarjsScanner,
+  runEslintSonarjs,
+  runEslintSonarjsInProcess,
+  type EslintScanWorker,
+} from "./eslint-sonarjs.js";
 
 const raw = (stdout: string, exitCode = 1): SpawnResult => ({ stdout, stderr: "", exitCode });
 
@@ -294,56 +301,206 @@ describe("runEslintSonarjs (per-file config resolution in a monorepo)", () => {
   });
 });
 
-describe("runEslintSonarjs — child-process isolation", () => {
+/**
+ * The public function's job is to DELEGATE to a worker and shape the outcome: pass a success
+ * straight through, degrade a failure into a scanner-error result (never throw), and fall back to
+ * an in-process scan when there is no worker. Tested with an injected stub worker so the contract
+ * holds regardless of how the real worker is implemented.
+ */
+describe("runEslintSonarjs — delegation contract", () => {
   let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "tend-eslint-child-"));
+    dir = mkdtempSync(join(tmpdir(), "tend-eslint-deleg-"));
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
     writeFileSync(join(dir, "code.js"), "export function pick(c) {\n  if (c) { return 42; } else { return 42; }\n}\n");
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("the in-process form produces sonarjs findings (the body the worker child runs)", async () => {
-    const res = await runEslintSonarjsInProcess({ cwd: dir, files: ["code.js"], loop: 1 });
+  const SCAN: ScanContext = { cwd: "/anywhere", files: ["a.ts"], loop: 1 };
+
+  it("passes the worker's successful result straight through", async () => {
+    const out: ScanResult = { tool: "sonarjs", findings: [], skipped: false };
+    const worker: EslintScanWorker = { scan: async () => out };
+    expect(await runEslintSonarjs(SCAN, worker)).toBe(out);
+  });
+
+  it("degrades a worker failure into an error result instead of throwing", async () => {
+    const worker: EslintScanWorker = {
+      scan: () => Promise.reject(new Error("worker died")),
+    };
+    expect(await runEslintSonarjs(SCAN, worker)).toEqual({
+      tool: "sonarjs",
+      findings: [],
+      skipped: false,
+      error: "worker died",
+    });
+  });
+
+  it("degrades a non-Error rejection by stringifying it", async () => {
+    const worker: EslintScanWorker = {
+      // eslint-disable-next-line prefer-promise-reject-errors
+      scan: () => Promise.reject("plain string failure"),
+    };
+    const res = await runEslintSonarjs(SCAN, worker);
+    expect(res.error).toBe("plain string failure");
+    expect(res.findings).toEqual([]);
+  });
+
+  it("falls back to a real in-process scan when there is no worker", async () => {
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 }, null);
     expect(res.error).toBeUndefined();
     expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
   });
 
-  it("TEND_ESLINT_INPROCESS=1 forces the in-process path and still returns findings", async () => {
+  it("TEND_ESLINT_INPROCESS=1 forces in-process and never touches the worker", async () => {
+    const worker: EslintScanWorker = {
+      scan: () => Promise.reject(new Error("worker should not be called")),
+    };
     const prev = process.env["TEND_ESLINT_INPROCESS"];
     process.env["TEND_ESLINT_INPROCESS"] = "1";
     try {
-      const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 });
+      const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 }, worker);
       expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
     } finally {
       if (prev === undefined) delete process.env["TEND_ESLINT_INPROCESS"];
       else process.env["TEND_ESLINT_INPROCESS"] = prev;
     }
   });
+});
 
-  // Real end-to-end coverage of the forked-worker contract, only when the worker has been built.
-  // Forks the actual worker, drives one scan over its IPC channel, and asserts it both returns
-  // findings AND stays alive for a SECOND scan (the warm-program reuse that makes it persistent) —
-  // proof the heavy lint runs out-of-process. Skipped on a source-only run (no dist/), which is
-  // fine: the public function falls back to in-process there and the two tests above cover it.
-  const builtWorker = join(process.cwd(), "dist", "scanners", "eslint-worker.js");
-  it.runIf(existsSync(builtWorker))("the persistent worker answers scans over execa IPC and is reusable", async () => {
-    const child = execaNode(builtWorker, [], { ipc: true, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-    type Reply = { id: number; result?: { findings: { rule: string }[] }; error?: string };
-    const scan = async (id: number): Promise<Reply> => {
-      await child.sendMessage({ id, ctx: { cwd: dir, files: ["code.js"], loop: 1 } });
-      return (await child.getOneMessage({ filter: (m) => (m as Reply).id === id })) as Reply;
-    };
+describe("runEslintSonarjsInProcess — the work the worker runs", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tend-eslint-inproc-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "code.js"), "export function pick(c) {\n  if (c) { return 42; } else { return 42; }\n}\n");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("produces sonarjs findings for code that has a smell", async () => {
+    const res = await runEslintSonarjsInProcess({ cwd: dir, files: ["code.js"], loop: 1 });
+    expect(res.error).toBeUndefined();
+    expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+  });
+
+  it("returns a ScanResult rather than throwing when the target cannot be linted", async () => {
+    const res = await runEslintSonarjsInProcess({ cwd: join(dir, "does-not-exist"), files: ["x.ts"], loop: 1 });
+    expect(res.tool).toBe("sonarjs");
+    expect(res.findings).toEqual([]);
+  });
+});
+
+/**
+ * Behaviour of the persistent worker pool, driven against a controllable fixture worker that speaks
+ * the same IPC contract. Asserts the OBSERVABLE guarantees — answers scans out-of-process, reuses
+ * one warm process, keeps requests separate, surfaces worker errors, recovers from a crash, and is
+ * disposed cleanly — without reaching into the pool's internals.
+ */
+describe("EslintWorker — persistent worker pool", () => {
+  const fixtureWorker = fileURLToPath(new URL("./__fixtures__/ipc-test-worker.mjs", import.meta.url));
+  type EchoResult = ScanResult & { workerPid?: number; echoedFiles?: string[] };
+  /** Build a scan request whose `scanId` tells the fixture worker how to behave. */
+  const request = (command: string, files: string[] = ["a.ts"]): ScanContext => ({
+    cwd: "/x",
+    files,
+    loop: 1,
+    scanId: command,
+  });
+
+  let worker: EslintWorker;
+  beforeEach(() => {
+    worker = new EslintWorker(fixtureWorker);
+  });
+  afterEach(() => worker.dispose());
+
+  const isAlive = (pid: number): boolean => {
     try {
-      const first = await scan(1);
-      expect(first.error).toBeUndefined();
-      expect(first.result?.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
-      // Reuse: the same warm worker answers a second scan (it did not exit after the first).
-      const second = await scan(2);
-      expect(second.result?.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
-    } finally {
-      child.kill();
-      await child.catch(() => undefined);
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
     }
+  };
+
+  it("answers a scan from a separate process", async () => {
+    const res = (await worker.scan(request("ok"))) as EchoResult;
+    expect(res.tool).toBe("sonarjs");
+    expect(typeof res.workerPid).toBe("number");
+    expect(res.workerPid).not.toBe(process.pid);
+  });
+
+  it("returns each request its own result (no cross-talk)", async () => {
+    const res = (await worker.scan(request("ok", ["only-this.ts"]))) as EchoResult;
+    expect(res.echoedFiles).toEqual(["only-this.ts"]);
+  });
+
+  it("reuses one warm process across scans", async () => {
+    const first = (await worker.scan(request("ok"))) as EchoResult;
+    const second = (await worker.scan(request("ok"))) as EchoResult;
+    expect(second.workerPid).toBe(first.workerPid);
+  });
+
+  it("answers concurrent scans correctly", async () => {
+    const results = (await Promise.all([
+      worker.scan(request("slow", ["one.ts"])),
+      worker.scan(request("ok", ["two.ts"])),
+    ])) as EchoResult[];
+    expect(results[0]?.echoedFiles).toEqual(["one.ts"]);
+    expect(results[1]?.echoedFiles).toEqual(["two.ts"]);
+  });
+
+  it("rejects when the worker reports an error for a scan", async () => {
+    await expect(worker.scan(request("error"))).rejects.toThrow("worker boom");
+  });
+
+  it("rejects the in-flight scan when the worker crashes, then respawns a fresh process for the next", async () => {
+    const before = (await worker.scan(request("ok"))) as EchoResult;
+    await expect(worker.scan(request("crash"))).rejects.toThrow();
+    const after = (await worker.scan(request("ok"))) as EchoResult;
+    expect(after.tool).toBe("sonarjs");
+    expect(after.workerPid).not.toBe(before.workerPid); // a new process, not the dead one
+  });
+
+  it("dispose() kills the worker process, is idempotent, and a later scan respawns", async () => {
+    const pid = ((await worker.scan(request("ok"))) as EchoResult).workerPid!;
+    worker.dispose();
+    worker.dispose(); // idempotent — must not throw
+    for (let i = 0; i < 40 && isAlive(pid); i++) await delay(50);
+    expect(isAlive(pid)).toBe(false);
+
+    const after = (await worker.scan(request("ok"))) as EchoResult;
+    expect(after.workerPid).not.toBe(pid);
+  });
+});
+
+describe("disposeEslintWorker (module singleton)", () => {
+  it("is safe to call when no worker has been created", () => {
+    expect(() => disposeEslintWorker()).not.toThrow();
+  });
+});
+
+// End-to-end through the PUBLIC api against the real built worker — covers worker resolution, the
+// shared singleton, and disposal. Skipped on a source-only run (no dist/), where the other tests
+// already cover the in-process fallback.
+describe("runEslintSonarjs — real built worker", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tend-eslint-built-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "code.js"), "export function pick(c) {\n  if (c) { return 42; } else { return 42; }\n}\n");
+  });
+  afterEach(() => {
+    disposeEslintWorker();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const builtWorker = join(process.cwd(), "dist", "scanners", "eslint-worker.js");
+  it.runIf(existsSync(builtWorker))("scans via the real worker process and returns findings", async () => {
+    const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 });
+    expect(res.error).toBeUndefined();
+    expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+    // Reuse: a second scan goes through the same warm worker and still works.
+    const again = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 });
+    expect(again.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
   });
 });
