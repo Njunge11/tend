@@ -143,6 +143,58 @@ describe("WorkerSandboxPool", () => {
     expect(cwd).not.toBe(repo.dir);
   });
 
+  it("mirrors a workspace package's node_modules into the sandbox so its bins (tsc) resolve", async () => {
+    // pnpm/workspaces keep the package's own bins in apps/<pkg>/node_modules, NOT the repo root.
+    // The gate runs tsc from the package dir inside the sandbox; without this link `npx tsc` finds
+    // nothing and silently runs a registry decoy that exits non-zero → every fix false-reverts.
+    const { snapshotSha } = await setupRepo();
+    if (!repo) throw new Error("repo not set");
+    repo.write("node_modules/.bin/rootmarker", "root\n");
+    repo.write("apps/dashboard/package.json", '{"name":"dashboard"}\n');
+    repo.write("apps/dashboard/node_modules/.bin/tsc", "#!/bin/sh\n");
+
+    const pool = new WorkerSandboxPool({ mainRoot: repo.dir, snapshotSha, maxSandboxes: 1, packageManager: "pnpm" });
+    pools.push(pool);
+
+    const seen = await pool.withSandbox(unit(["apps/dashboard/x.ts"]), async (sandbox) => ({
+      rootLinked: existsSync(join(sandbox.cwd, "node_modules", ".bin", "rootmarker")),
+      pkgLinked: existsSync(join(sandbox.cwd, "apps", "dashboard", "node_modules", ".bin", "tsc")),
+    }));
+
+    expect(seen.rootLinked).toBe(true);
+    expect(seen.pkgLinked).toBe(true);
+  });
+
+  it("tears down mirrored package links before a reinstall, so install never writes into main node_modules", async () => {
+    const { snapshotSha } = await setupRepo();
+    if (!repo) throw new Error("repo not set");
+    repo.write("node_modules/.bin/rootmarker", "root\n");
+    repo.write("apps/dashboard/package.json", '{"name":"dashboard"}\n');
+    repo.write("apps/dashboard/node_modules/.bin/tsc", "#!/bin/sh\n");
+
+    const exec = installRecordingExec();
+    const pool = makeInstallPool(snapshotSha, exec);
+
+    // 1) A source-only unit reuses deps → mirrors apps/dashboard/node_modules.
+    const mirroredAfterReuse = await pool.withSandbox(unit(["apps/dashboard/x.ts"]), async (sandbox) =>
+      existsSync(join(sandbox.cwd, "apps", "dashboard", "node_modules")),
+    );
+
+    // 2) A manifest unit on the recycled sandbox forces a reinstall — the mirrored link must be gone.
+    const manifestUnit: WorkUnit = {
+      file: "apps/dashboard/package.json",
+      files: ["apps/dashboard/package.json"],
+      findings: [makeFinding({ file: "apps/dashboard/package.json" })],
+    };
+    const mirroredAfterReinstall = await pool.withSandbox(manifestUnit, async (sandbox) =>
+      existsSync(join(sandbox.cwd, "apps", "dashboard", "node_modules")),
+    );
+
+    expect(mirroredAfterReuse).toBe(true);
+    expect(mirroredAfterReinstall).toBe(false); // torn down before the install ran
+    expect(exec.installCalls.length).toBeGreaterThan(0); // a real reinstall actually happened
+  });
+
   it("keeps failed worker edits inside the sandbox", async () => {
     const { repo, snapshotSha } = await setupRepo();
     const pool = makePool(snapshotSha, 1);
