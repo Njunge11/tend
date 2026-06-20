@@ -2,10 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execaNode } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SpawnResult } from "./scanner.js";
 import { ctx, fixture } from "./_test-helpers.js";
-import { eslintSonarjsScanner, runEslintSonarjs } from "./eslint-sonarjs.js";
+import { eslintSonarjsScanner, runEslintSonarjs, runEslintSonarjsInProcess } from "./eslint-sonarjs.js";
 
 const raw = (stdout: string, exitCode = 1): SpawnResult => ({ stdout, stderr: "", exitCode });
 
@@ -290,5 +291,59 @@ describe("runEslintSonarjs (per-file config resolution in a monorepo)", () => {
     expect(rules).toContain("eqeqeq");
     expect(rules).toContain("sonarjs/no-all-duplicated-branches");
     expect(res.findings.find((f) => f.rule === "eqeqeq")?.file).toBe("apps/dashboard/sample.ts");
+  });
+});
+
+describe("runEslintSonarjs — child-process isolation", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "tend-eslint-child-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+    writeFileSync(join(dir, "code.js"), "export function pick(c) {\n  if (c) { return 42; } else { return 42; }\n}\n");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("the in-process form produces sonarjs findings (the body the worker child runs)", async () => {
+    const res = await runEslintSonarjsInProcess({ cwd: dir, files: ["code.js"], loop: 1 });
+    expect(res.error).toBeUndefined();
+    expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+  });
+
+  it("TEND_ESLINT_INPROCESS=1 forces the in-process path and still returns findings", async () => {
+    const prev = process.env["TEND_ESLINT_INPROCESS"];
+    process.env["TEND_ESLINT_INPROCESS"] = "1";
+    try {
+      const res = await runEslintSonarjs({ cwd: dir, files: ["code.js"], loop: 1 });
+      expect(res.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env["TEND_ESLINT_INPROCESS"];
+      else process.env["TEND_ESLINT_INPROCESS"] = prev;
+    }
+  });
+
+  // Real end-to-end coverage of the forked-worker contract, only when the worker has been built.
+  // Forks the actual worker, drives one scan over its IPC channel, and asserts it both returns
+  // findings AND stays alive for a SECOND scan (the warm-program reuse that makes it persistent) —
+  // proof the heavy lint runs out-of-process. Skipped on a source-only run (no dist/), which is
+  // fine: the public function falls back to in-process there and the two tests above cover it.
+  const builtWorker = join(process.cwd(), "dist", "scanners", "eslint-worker.js");
+  it.runIf(existsSync(builtWorker))("the persistent worker answers scans over execa IPC and is reusable", async () => {
+    const child = execaNode(builtWorker, [], { ipc: true, stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+    type Reply = { id: number; result?: { findings: { rule: string }[] }; error?: string };
+    const scan = async (id: number): Promise<Reply> => {
+      await child.sendMessage({ id, ctx: { cwd: dir, files: ["code.js"], loop: 1 } });
+      return (await child.getOneMessage({ filter: (m) => (m as Reply).id === id })) as Reply;
+    };
+    try {
+      const first = await scan(1);
+      expect(first.error).toBeUndefined();
+      expect(first.result?.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+      // Reuse: the same warm worker answers a second scan (it did not exit after the first).
+      const second = await scan(2);
+      expect(second.result?.findings.some((f) => f.rule.startsWith("sonarjs/"))).toBe(true);
+    } finally {
+      child.kill();
+      await child.catch(() => undefined);
+    }
   });
 });
