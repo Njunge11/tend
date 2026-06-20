@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.3...tend-cli-v0.14.4) (2026-06-20)
+
+
+### Bug Fixes
+
+* **scanner:** run eslint+sonarjs in a persistent worker process to stop heap-OOM crashes ([4276892](https://github.com/Njunge11/tend/commit/4276892153ff656144d2c849d7314222d2618974))
+* **scanner:** run eslint+sonarjs in a persistent worker process to stop heap-OOM crashes ([129e7f0](https://github.com/Njunge11/tend/commit/129e7f05725fafa61ebf5c8b856e2308da680b15))
+
 ## [0.14.3](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.2...tend-cli-v0.14.3) (2026-06-20)
 
 
