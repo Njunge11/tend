@@ -3,7 +3,6 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execaNode } from "execa";
 import { ESLint, type Linter } from "eslint";
-import sonarjs from "eslint-plugin-sonarjs";
 import type { Finding } from "../findings/finding.js";
 import { normalize, type RawFinding } from "../findings/normalize.js";
 import {
@@ -16,6 +15,7 @@ import {
   type EslintMode,
 } from "./eslint-default-config.js";
 import { toRepoRelative } from "./paths.js";
+import { installTypeScriptResolutionHook, resolveProjectTypeScript } from "./project-typescript.js";
 import type { ScanContext, ScanResult, Scanner, SpawnResult } from "./scanner.js";
 
 type EslintMessage = {
@@ -143,17 +143,61 @@ const TYPED_PARSER_LAYER: Linter.Config = {
   languageOptions: { parserOptions: { projectService: true } },
 };
 
+const TEND_DIR = dirname(fileURLToPath(import.meta.url));
+let typeScriptPinned = false;
+let sonarjsRecommendedCache: Linter.Config | null = null;
+
+/**
+ * Bind eslint-plugin-sonarjs's `require("typescript")` to the ANALYZED PROJECT's TypeScript, so its
+ * type-aware rules read `TypeFlags` bit values from the same TypeScript that typescript-eslint's
+ * project service builds the program with. TypeScript 6.0 renumbered the `TypeFlags` enum, so a
+ * version skew (e.g. tend resolving its bundled TS 6.x while the project is on 5.x) makes those
+ * rules' bitmask checks silently fail and emit phantom findings — chiefly `function-return-type` on
+ * every discriminated-union return, which then revert-loops because no source edit can clear them.
+ *
+ * Anchored on the scanned file's directory (pnpm's strict layout reaches typescript from a package
+ * dir, not the repo root); falls back to tend's bundled copy when the project ships none. One
+ * attempt per process — the plugin caches typescript at first load, so this must run before that.
+ */
+function pinProjectTypeScript(anchorDir: string): void {
+  if (typeScriptPinned) return;
+  typeScriptPinned = true;
+  const tsPath = resolveProjectTypeScript(anchorDir, TEND_DIR);
+  if (tsPath) installTypeScriptResolutionHook(tsPath);
+}
+
+/** The directory to resolve the project's TypeScript from: the first concrete scan target's dir. */
+function scanAnchorDir(cwd: string, files: string[]): string {
+  const concrete = files.find((file) => file && file !== ".");
+  return concrete ? dirname(resolve(cwd, concrete)) : cwd;
+}
+
+/**
+ * Load sonarjs's recommended config. The plugin's FIRST load is this dynamic import, which runs
+ * only after {@link pinProjectTypeScript} — a static `import` would bind typescript before the hook
+ * is installed, reintroducing the skew. Cached: one program-wide plugin instance.
+ */
+async function loadSonarjsRecommended(): Promise<Linter.Config> {
+  if (!sonarjsRecommendedCache) {
+    const sonarjs = (await import("eslint-plugin-sonarjs")).default;
+    sonarjsRecommendedCache = sonarjs.configs.recommended as Linter.Config;
+  }
+  return sonarjsRecommendedCache;
+}
+
 /** Lint one group through the Node API; ESLint returns absolute filePaths regardless of cwd. */
-function eslintOptionsForGroup(group: LintGroup, typed: boolean = group.typed): ESLint.Options {
+function eslintOptionsForGroup(
+  group: LintGroup,
+  sonarjsRecommended: Linter.Config,
+  typed: boolean = group.typed,
+): ESLint.Options {
   const options: ESLint.Options = { cwd: group.cwd, errorOnUnmatchedPattern: false };
   if (group.mode === "default") {
     options.overrideConfigFile = typed ? defaultEslintTypedConfigPath() : defaultEslintConfigPath();
   } else if (group.mode === "layer") {
     // Append sonarjs ON TOP of the project's discovered config (the CLI `--config` flag can't —
     // it replaces). `defer` adds nothing: the project already configures sonarjs itself.
-    options.overrideConfig = typed
-      ? [sonarjs.configs.recommended, TYPED_PARSER_LAYER]
-      : [sonarjs.configs.recommended];
+    options.overrideConfig = typed ? [sonarjsRecommended, TYPED_PARSER_LAYER] : [sonarjsRecommended];
   }
   return options;
 }
@@ -167,19 +211,19 @@ function isTypedParseFailure(msg: EslintMessage): boolean {
   return msg.ruleId === null && /project service|projectService|parserOptions\.project|allowDefaultProject/i.test(msg.message);
 }
 
-async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
+async function lintGroup(group: LintGroup, sonarjsRecommended: Linter.Config): Promise<EslintResult[]> {
   if (!group.typed) {
-    const eslint = new ESLint(eslintOptionsForGroup(group));
+    const eslint = new ESLint(eslintOptionsForGroup(group, sonarjsRecommended));
     return (await eslint.lintFiles(group.targets)) as EslintResult[];
   }
 
   let results: EslintResult[];
   try {
-    const eslint = new ESLint(eslintOptionsForGroup(group, true));
+    const eslint = new ESLint(eslintOptionsForGroup(group, sonarjsRecommended, true));
     results = (await eslint.lintFiles(group.targets)) as EslintResult[];
   } catch {
     // Type-aware run failed outright (e.g. unparseable tsconfig) → whole group falls back.
-    const eslint = new ESLint(eslintOptionsForGroup(group, false));
+    const eslint = new ESLint(eslintOptionsForGroup(group, sonarjsRecommended, false));
     return (await eslint.lintFiles(group.targets)) as EslintResult[];
   }
 
@@ -188,7 +232,7 @@ async function lintGroup(group: LintGroup): Promise<EslintResult[]> {
   const failed = results.filter((r) => r.messages.some(isTypedParseFailure));
   if (failed.length === 0) return results;
   const failedPaths = new Set(failed.map((r) => r.filePath));
-  const eslint = new ESLint(eslintOptionsForGroup(group, false));
+  const eslint = new ESLint(eslintOptionsForGroup(group, sonarjsRecommended, false));
   const rescued = (await eslint.lintFiles([...failedPaths])) as EslintResult[];
   return [...results.filter((r) => !failedPaths.has(r.filePath)), ...rescued];
 }
@@ -197,9 +241,13 @@ function messageMatchesFinding(message: Linter.LintMessage, finding: Finding): b
   return message.ruleId === finding.rule && message.line === finding.range.startLine;
 }
 
-async function fixGroup(group: LintGroup, findings: Finding[]): Promise<EslintResult[]> {
+async function fixGroup(
+  group: LintGroup,
+  findings: Finding[],
+  sonarjsRecommended: Linter.Config,
+): Promise<EslintResult[]> {
   const options: ESLint.Options = {
-    ...eslintOptionsForGroup(group),
+    ...eslintOptionsForGroup(group, sonarjsRecommended),
     fix: (message) => findings.some((finding) => messageMatchesFinding(message, finding)),
     fixTypes: ["problem", "suggestion", "layout"],
   };
@@ -217,12 +265,14 @@ export async function applyEslintFixesForFindings(ctx: ScanContext, findings: Fi
   const files = [...new Set(findings.map((finding) => finding.file))];
   if (files.length === 0) return { changed: false };
 
+  pinProjectTypeScript(scanAnchorDir(ctx.cwd, files));
+  const sonarjsRecommended = await loadSonarjsRecommended();
   try {
     const results: EslintResult[] = [];
     for (const file of files) {
       const fileFindings = findings.filter((finding) => finding.file === file);
       for (const group of groupByConfig({ ...ctx, files: [file] })) {
-        results.push(...(await fixGroup(group, fileFindings)));
+        results.push(...(await fixGroup(group, fileFindings, sonarjsRecommended)));
       }
     }
     await ESLint.outputFixes(results as Awaited<ReturnType<ESLint["lintFiles"]>>);
@@ -245,6 +295,8 @@ export async function applyEslintFixesForFindings(ctx: ScanContext, findings: Fi
  * form is used by that child, by the autofix path, and as a dev/test fallback.
  */
 export async function runEslintSonarjsInProcess(ctx: ScanContext): Promise<ScanResult> {
+  pinProjectTypeScript(scanAnchorDir(ctx.cwd, ctx.files));
+  const sonarjsRecommended = await loadSonarjsRecommended();
   // Whole-repo scan: one pass rooted at ctx.cwd, mode decided there.
   const wholeRepoMode = eslintMode(ctx.cwd);
   const groups: LintGroup[] =
@@ -266,7 +318,7 @@ export async function runEslintSonarjsInProcess(ctx: ScanContext): Promise<ScanR
   try {
     const results: EslintResult[] = [];
     for (const group of groups) {
-      results.push(...(await lintGroup(group)));
+      results.push(...(await lintGroup(group, sonarjsRecommended)));
     }
     const findings = mapEslintResults(results, ctx).map((r) => normalize(r, ctx.loop));
     return { tool: "sonarjs", findings, skipped: false };
