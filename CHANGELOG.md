@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.6](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.5...tend-cli-v0.14.6) (2026-06-27)
+
+
+### Bug Fixes
+
+* **scanner:** redirect typescript subpaths so type-aware sonarjs uses the project's TS ([080c7c9](https://github.com/Njunge11/tend/commit/080c7c94ff5e4d97267b23df0d442ba9732f7b72))
+
 ## [0.14.5](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.4...tend-cli-v0.14.5) (2026-06-27)
 
 
