@@ -182,17 +182,18 @@ function classFromOutcome(outcome: FixOutcome): FailureClass | undefined {
 }
 
 function isTerminalNoBurnFailure(outcome: FixOutcome): boolean {
-  return outcome.failureClass === "tool-timeout" || outcome.failureClass === "no-op";
+  return outcome.failureClass === "no-op";
 }
 
 /**
+ * Some failures deserve a bounded retry window smaller than the normal per-issue budget.
  * Gate failures (regression/typecheck/broke-test) already ran an in-dispatch repair session
- * before reverting (see `runRegressionRepair`/the gate's test-repair window in fix-unit.ts).
- * Re-dispatching the whole unit from scratch repeats that expensive work and almost never
- * succeeds, so cap these classes at a single re-dispatch instead of burning the full per-issue
- * budget — bounding worst-case wall-clock from ~budget×(initial+repair) to ~2×.
+ * before reverting, so re-dispatching from scratch repeatedly is rarely useful. Tool timeouts
+ * are different: they may succeed in a later loop after earlier fixes simplify the file, but
+ * they still need a hard cap so one oversized refactor cannot loop forever.
  */
 const LIMITED_RETRY_FAILURE_CLASSES: ReadonlySet<FailureClass> = new Set([
+  "tool-timeout",
   "regression",
   "typecheck",
   "broke-test",

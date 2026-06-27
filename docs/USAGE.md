@@ -82,11 +82,13 @@ CLI flags override the config file. `model` is a full model id (default `claude-
 Both are passed straight to `claude -p`, so the model named in config, output, and the report is
 exactly the model that ran.
 
-Duplication (jscpd) fixes and cognitive-complexity refactors need more reasoning than localized
-single-file edits, so a work unit containing any duplication or `sonarjs/cognitive-complexity`
-finding is fixed with a more capable model — `claude-opus-4-8` by default. Override per kind with
-`duplicationModel` / `complexityModel` (a full model id); everything else stays on `model`. One
-such finding lifts its whole unit, since a unit's findings share a single session.
+Duplication (jscpd) fixes, cognitive-complexity refactors, and high-risk Knip dead-code cleanup
+need more reasoning than localized single-file edits, so those units are fixed with a more
+capable model — `claude-opus-4-8` by default. High-risk Knip cleanup includes `unused-file` and
+`unused-export` / `unused-type` in wiring-heavy paths such as `trpc`, `db`, `router`, `auth`,
+`api`, and `server`. Override duplication/complexity per kind with `duplicationModel` /
+`complexityModel` (a full model id); everything else stays on `model`. One such finding lifts its
+whole unit, since a unit's findings share a single session.
 
 At startup tend pings every model the run can route to (a few seconds, fractions of a cent) and
 fails fast on one that doesn't exist or isn't accessible — `claude -p` itself exits 0 for an

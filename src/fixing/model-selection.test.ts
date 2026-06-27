@@ -20,6 +20,42 @@ describe("modelForUnit", () => {
     expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
   });
 
+  it("uses the capable model for knip unused-file cleanup", () => {
+    const unit = [
+      makeFinding({
+        tool: "knip",
+        rule: "unused-file",
+        category: "dead-code",
+        file: "apps/admin/lib/trpc/query-client.ts",
+      }),
+    ];
+    expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
+  });
+
+  it("uses the capable model for knip unused exports in wiring-heavy files", () => {
+    const unit = [
+      makeFinding({
+        tool: "knip",
+        rule: "unused-export",
+        category: "dead-code",
+        file: "apps/admin/lib/db/index.ts",
+      }),
+    ];
+    expect(modelForUnit(unit, config)).toBe(CAPABLE_MODEL);
+  });
+
+  it("keeps simple knip unused exports on the default model", () => {
+    const unit = [
+      makeFinding({
+        tool: "knip",
+        rule: "unused-export",
+        category: "dead-code",
+        file: "apps/admin/lib/format-name.ts",
+      }),
+    ];
+    expect(modelForUnit(unit, config)).toBe(DEFAULT_MODEL);
+  });
+
   it("uses the default model for non-duplication findings", () => {
     expect(modelForUnit([makeFinding({ category: "dead-code" })], config)).toBe(DEFAULT_MODEL);
     expect(modelForUnit([makeFinding({ category: "smell" })], config)).toBe(DEFAULT_MODEL);
