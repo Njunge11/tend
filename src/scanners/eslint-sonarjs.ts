@@ -148,16 +148,19 @@ let typeScriptPinned = false;
 let sonarjsRecommendedCache: Linter.Config | null = null;
 
 /**
- * Bind eslint-plugin-sonarjs's `require("typescript")` to the ANALYZED PROJECT's TypeScript, so its
- * type-aware rules read `TypeFlags` bit values from the same TypeScript that typescript-eslint's
- * project service builds the program with. TypeScript 6.0 renumbered the `TypeFlags` enum, so a
- * version skew (e.g. tend resolving its bundled TS 6.x while the project is on 5.x) makes those
- * rules' bitmask checks silently fail and emit phantom findings — chiefly `function-return-type` on
- * every discriminated-union return, which then revert-loops because no source edit can clear them.
+ * Bind the WHOLE type-aware toolchain to ONE TypeScript instance — the analyzed project's — so
+ * eslint-plugin-sonarjs (which reads `TypeFlags` from its `require("typescript")`) and
+ * typescript-eslint's `projectService` (which builds the program from `typescript/lib/tsserverlibrary`)
+ * agree on `TypeFlags` numbering. They otherwise resolve to different TypeScripts (TS 6.0 renumbered
+ * the enum), and the mismatch emits phantom findings — chiefly `function-return-type` on every
+ * discriminated-union return — that no source edit can clear, which then revert-loops. See
+ * {@link installTypeScriptResolutionHook} for why the subpath redirect (not just bare `typescript`)
+ * is required.
  *
  * Anchored on the scanned file's directory (pnpm's strict layout reaches typescript from a package
- * dir, not the repo root); falls back to tend's bundled copy when the project ships none. One
- * attempt per process — the plugin caches typescript at first load, so this must run before that.
+ * dir, not the repo root); falls back to tend's bundled copy when the project ships none — in either
+ * case the whole toolchain shares that single instance. One attempt per process — the plugin and the
+ * project service cache typescript at first load, so this must run before that.
  */
 function pinProjectTypeScript(anchorDir: string): void {
   if (typeScriptPinned) return;
