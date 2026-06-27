@@ -88,7 +88,8 @@ capable model — `claude-opus-4-8` by default. High-risk Knip cleanup includes 
 `unused-export` / `unused-type` in wiring-heavy paths such as `trpc`, `db`, `router`, `auth`,
 `api`, and `server`. Override duplication/complexity per kind with `duplicationModel` /
 `complexityModel` (a full model id); everything else stays on `model`. One such finding lifts its
-whole unit, since a unit's findings share a single session.
+whole unit, since a unit's findings share a single session. The live output shows the model chosen
+for each file before the repair session starts.
 
 At startup tend pings every model the run can route to (a few seconds, fractions of a cent) and
 fails fast on one that doesn't exist or isn't accessible — `claude -p` itself exits 0 for an
