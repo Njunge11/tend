@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.7](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.6...tend-cli-v0.14.7) (2026-06-27)
+
+
+### Bug Fixes
+
+* trigger release for timeout routing ([951cd9a](https://github.com/Njunge11/tend/commit/951cd9ae809acb8e4349cd467990b9ff3bfffa43))
+
 ## [0.14.6](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.5...tend-cli-v0.14.6) (2026-06-27)
 
 
