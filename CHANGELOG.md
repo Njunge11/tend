@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.5](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.4...tend-cli-v0.14.5) (2026-06-27)
+
+
+### Bug Fixes
+
+* **scanner:** pin sonarjs to the project's TypeScript to stop phantom findings ([893d9c8](https://github.com/Njunge11/tend/commit/893d9c8e2f6d403236b8952e4caf324da306e3a6))
+
 ## [0.14.4](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.3...tend-cli-v0.14.4) (2026-06-20)
 
 
