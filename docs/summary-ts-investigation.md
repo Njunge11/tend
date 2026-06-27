@@ -54,30 +54,22 @@ All findings below come from instrumented runs of `tend run src/output/summary.t
 
 Status: `tsc` clean, **452 tests pass**, build clean. (Shipping: Fix C + Fix A only.)
 
+### D — Timed-out findings marked terminally unfixable  ✅
+- **Cause:** `tool-timeout` was classified as a terminal "no-burn" failure. A single-finding
+  unit that timed out had no split path, was marked `unfixable` immediately, and was never
+  retried against a later, cleaner base.
+- **Fix:** `tool-timeout` now uses the same bounded retry window as expensive gate failures
+  instead of the terminal no-burn path. `no-op` stays terminal, and `rate-limit` remains
+  retryable infrastructure.
+- **Proof:** regression coverage now asserts a timed-out batch splits to single findings, retries
+  those timed-out findings once in a later loop, and only then marks them unfixable if they still
+  time out. Full suite: **567 tests pass**, typecheck clean.
+
 ---
 
 ## Remaining issues (NOT fixed)
 
-### 1 — Timed-out findings are marked terminally unfixable, never retried  ⛔ (highest priority)
-This is why `summary.ts` still does not reach a clean **exit 0**.
-
-- **Code:** `orchestrator.ts:173` classifies `tool-timeout` as a terminal "no-burn" failure;
-  `:209-211` sets `finding.status = "unfixable"` immediately (no attempt burned, **no re-queue**).
-  `shouldSplitAfterFailure` (`:241`) only splits multi-finding units, so a single `duplicate-code`
-  unit that times out has no retry path at all.
-- **Consequence:** in a bounded-cap run, hard `duplicate-code` findings time out **once** and are
-  permanently unfixable. Observed: a 5-min-cap run reached 5 fixed, **4 timed-out → unfixable**,
-  and therefore could not converge to 0.
-- **Why it's now wrong:** the terminal policy predates Fix C. With the advancing base, a finding
-  that times out *early* (full duplication, hard) would likely **fit the cap and succeed when
-  retried later**, once earlier fixes have thinned the duplication. This is exactly how the
-  192-min run converged — its dups happened to run late, from a cleaned base, finishing in
-  15–87s.
-- **Proposed fix:** stop marking `tool-timeout` as terminal. Allow a **bounded** number of retries
-  in *later* loops (e.g. 1–2), so a timed-out finding gets another attempt against the advanced
-  (cleaner) base. Keep the bound so a genuinely-too-big finding can't loop on timeouts forever.
-
-### 2 — `finalIntegration` is inconsistent with finding routing → false `exit 1`  ⚠️
+### 1 — `finalIntegration` is inconsistent with finding routing → false `exit 1`  ⚠️
 - **Code:** `bin.ts` `finalIntegration()` calls raw `scanFindings(acceptedFiles, acceptedTools)`
   and fails if **any** finding remains. It does **not** apply the `route()`/`track` filtering
   (`findings/router.ts`) or the in-scope/report-only routing the orchestrator uses.
@@ -92,7 +84,7 @@ This is why `summary.ts` still does not reach a clean **exit 0**.
   report-only and out-of-scope. If they turn out to be *new* regressions, that's a different
   (real) bug to chase.
 
-### 3 — Dense files are inherently slow (design limitation, not a bug)  ℹ️
+### 2 — Dense files are inherently slow (design limitation, not a bug)  ℹ️
 - A single file's findings must be fixed **sequentially** (the no-two-sessions-touch-one-file
   invariant is what prevents the Fix-C patch conflicts), and each `duplicate-code` finding is a
   1–5 min AI refactor. So a 20-finding file ≈ tens of minutes regardless.
@@ -108,12 +100,9 @@ This is why `summary.ts` still does not reach a clean **exit 0**.
 
 ## Recommended next steps (in order)
 
-1. **Fix issue 1** (bounded retry of timed-out findings) — this is what lets dense dup files
-   actually converge, and it's the natural completion of Fix C. Then re-run `summary.ts` to a
-   real terminal state.
-2. **Fix issue 2** (make `finalIntegration` consistent with routing) — needed for a clean
+1. **Fix issue 1** (make `finalIntegration` consistent with routing) — needed for a clean
    `exit 0`. First capture the 2 findings to confirm they're report-only/out-of-scope.
-3. **Issue 3** is a product decision, not a quick fix; revisit only if dense-file latency is a
+2. **Issue 2** is a product decision, not a quick fix; revisit only if dense-file latency is a
    real requirement.
 
 ## How to reproduce / measure

@@ -329,10 +329,10 @@ describe("orchestrate", () => {
     expect(res.findings.every((f) => f.status === "fixed")).toBe(true);
   });
 
-  it("marks a second timeout as tool-timeout without exhausting normal attempts", async () => {
+  it("retries timed-out findings once before marking them unfixable", async () => {
     const first = ai("src/a.ts", "r1", 1);
     const second = ai("src/a.ts", "r2", 2);
-    const audit = vi.fn(scriptedAudit([[first, second], [first, second]]));
+    const audit = vi.fn(scriptedAudit([[first, second], [first, second], [first, second]]));
     const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
       kept: false,
       reason: "session-error",
@@ -342,11 +342,11 @@ describe("orchestrate", () => {
 
     const res = await orchestrate({ audit, fixUnit, config });
 
-    expect(fixUnit).toHaveBeenCalledTimes(3);
+    expect(fixUnit).toHaveBeenCalledTimes(6);
     expect(res.termination).toBe("converged");
     expect(res.findings).toHaveLength(2);
     expect(res.findings.every((f) => f.status === "unfixable")).toBe(true);
-    expect(res.findings.every((f) => f.attempts === 0)).toBe(true);
+    expect(res.findings.every((f) => f.attempts === 2)).toBe(true);
     expect(res.findings.every((f) => f.finalFailureClass === "tool-timeout")).toBe(true);
   });
 
