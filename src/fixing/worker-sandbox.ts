@@ -311,12 +311,6 @@ class GitWorkerSandbox implements WorkerSandbox {
 export class WorkerSandboxPool {
   private readonly queue: PQueue;
   private readonly applyQueue = new PQueue({ concurrency: 1 });
-  // Serializes the whole write-then-integrated-gate step: capture pre-fix snapshot → apply patch
-  // → integrated typecheck (+ in-place repair) → advance/revert base. Running it at concurrency 1
-  // means each accepted fix is verified against a STABLE base + every prior-accepted fix, never a
-  // tree another sandbox is concurrently mutating. Apply alone is already serialized (applyQueue);
-  // this widens the critical section to include the gate so the verified state can't shift under it.
-  private readonly integrationQueue = new PQueue({ concurrency: 1 });
   // Serializes `git worktree add`/`remove` on the main repo. Concurrent worktree
   // creation races on git's shared .git/worktrees admin directory — one invocation
   // can read another's half-written metadata and die with
@@ -532,58 +526,6 @@ export class WorkerSandboxPool {
       const abs = join(main, file);
       if (content === null) rmSync(abs, { force: true });
       else writeFileSync(abs, content);
-      restored.push(file);
-    }
-    return restored.sort((a, b) => a.localeCompare(b));
-  }
-
-  /** Run `fn` inside the serialized integration critical section (see {@link integrationQueue}). */
-  runIntegration<T>(fn: () => Promise<T>): Promise<T> {
-    return this.integrationQueue.add(fn) as Promise<T>;
-  }
-
-  /** The commit future sandboxes fork from — base + every fix accepted so far this run. */
-  get base(): string {
-    return this.currentBase;
-  }
-
-  /**
-   * Re-snapshot main's current working tree as the new sandbox base. Called by the integrated
-   * gate after it has finished mutating main for one accepted fix (an in-place integration repair,
-   * or a revert that dropped the fix), so the next sandbox forks from main's true current state.
-   * advanceBase is best-effort and never throws.
-   */
-  async advanceBaseNow(): Promise<void> {
-    await this.applyQueue.add(() => this.advanceBase());
-  }
-
-  /**
-   * Revert every main-tree file that changed since `baseSha` back to that commit's content, EXCEPT
-   * the paths in `keep` (the integrated gate restores a dropped fix's own files from a precise
-   * pre-fix snapshot; this reverts any OTHER file the in-place integration-repair session touched —
-   * a third file it edited trying to reconcile the combined break — back to the last known-good
-   * base). Files absent from `baseSha` are deleted. Byte-exact (`git cat-file blob`, no newline
-   * munging). Returns the repo-relative files restored, sorted. Best-effort per file.
-   */
-  async restoreToBaseExcept(baseSha: string, keep: Iterable<string>): Promise<string[]> {
-    const main = this.deps.mainRoot;
-    const git = createGit(main);
-    const keepSet = new Set([...keep].map(normalizeRel));
-    const tracked = lines(await git.raw(["diff", "--name-only", baseSha]));
-    const untracked = lines(await git.raw(["ls-files", "--others", "--exclude-standard"]));
-    const changed = unique([...tracked, ...untracked]).filter(
-      (file) => !keepSet.has(file) && !isSandboxInfrastructure(file),
-    );
-    const restored: string[] = [];
-    for (const file of changed) {
-      const abs = join(main, file);
-      const show = await this.exec("git", ["cat-file", "blob", `${baseSha}:${file}`], {
-        cwd: main,
-        reject: false,
-        stripFinalNewline: false,
-      });
-      if ((show.exitCode ?? 1) === 0) writeFileSync(abs, show.stdout);
-      else rmSync(abs, { force: true }); // not in the base tree → the repair created it; remove it
       restored.push(file);
     }
     return restored.sort((a, b) => a.localeCompare(b));
