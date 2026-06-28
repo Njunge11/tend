@@ -370,6 +370,48 @@ describe("WorkerSandboxPool", () => {
     expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1-user\nL2\nL3\nL4\nL5\n");
   });
 
+  it("restoreToBaseExcept reverts a repair's third-file edits to the known-good base, keeping the fix's own files", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+
+    // A fix lands on a.ts; the base advances to include it. This is the known-good combined state
+    // the integrated gate would revert to if a later fix's integration repair couldn't be salvaged.
+    const patch = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
+      const result = await sandbox.collectPatch(unit(["src/a.ts"]));
+      if (!result.ok) throw new Error(result.detail);
+      return result.patch;
+    });
+    expect((await pool.applyPatchToMain(patch, ["src/a.ts"])).ok).toBe(true);
+    const knownGood = pool.base;
+
+    // Simulate a dropped fix's aftermath: its own file (b.ts) was edited, and its integration-repair
+    // session also touched a THIRD file (a.ts). Reverting must restore the third file to the base but
+    // leave b.ts (the caller restores that precisely from its own pre-fix snapshot).
+    writeFileSync(join(repo.dir, "src/b.ts"), "export const b = 99;\n");
+    writeFileSync(join(repo.dir, "src/a.ts"), "export const a = 2;\nexport const broken = true;\n");
+
+    const restored = await pool.restoreToBaseExcept(knownGood, ["src/b.ts"]);
+
+    expect(restored).toEqual(["src/a.ts"]); // only the non-kept changed file
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("export const a = 2;\n"); // back to base
+    expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 99;\n"); // kept, caller's job
+  });
+
+  it("restoreToBaseExcept deletes a file the repair created that the base never had", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+    const knownGood = pool.base;
+
+    // A repair created a brand-new file not present in the base tree.
+    writeFileSync(join(repo.dir, "src/created.ts"), "export const c = 1;\n");
+
+    const restored = await pool.restoreToBaseExcept(knownGood, []);
+
+    expect(restored).toEqual(["src/created.ts"]);
+    expect(existsSync(join(repo.dir, "src/created.ts"))).toBe(false);
+  });
+
   it("applies a snapshot-relative patch onto a DIRTY working tree (index ≠ worktree) without 'does not match index'", async () => {
     const { repo } = await setupRepo();
     // A multi-line file so the user's edit and the fix sit in non-overlapping regions.
