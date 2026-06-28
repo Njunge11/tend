@@ -4,7 +4,7 @@ import ts from "typescript";
 import type { RevertReason } from "../gate/check.js";
 import type { FixOutcome } from "../orchestrator.js";
 import { applyEslintFixesForFindings } from "../scanners/eslint-sonarjs.js";
-import { zeroUsage } from "../session/types.js";
+import { zeroUsage, type FailureClass } from "../session/types.js";
 import type { WorkUnit } from "./dispatch.js";
 import type { RepairStrategy } from "./repair-strategy.js";
 import {
@@ -24,7 +24,23 @@ export interface DeterministicFixer {
 
 export type DeterministicFixUnitDeps = UnitGateDeps;
 
-type ApplyResult = { ok: true } | { ok: false; reason: RevertReason; detail: string };
+type ApplyResult =
+  | { ok: true }
+  | { ok: false; reason: RevertReason; detail: string; failureClass?: FailureClass };
+
+/**
+ * A deterministic fixer hit a code shape its AST surgery doesn't support. The input is fixed, so
+ * a retry reproduces the identical failure — flag it terminal/no-burn instead of letting it masquerade
+ * as a (retryable, mislabeled) "session-error".
+ */
+function unsupported(detail: string): ApplyResult {
+  return {
+    ok: false,
+    reason: "deterministic-unsupported",
+    detail,
+    failureClass: "deterministic-unsupported",
+  };
+}
 
 const ZERO_AI_USAGE = zeroUsage();
 const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb"];
@@ -162,11 +178,34 @@ function declarationName(node: ts.Node): ts.Identifier | undefined {
   return undefined;
 }
 
-function findExportedDeclaration(sourceFile: ts.SourceFile, name: string): { node: ts.Node; name: ts.Identifier } | undefined {
+/**
+ * What an unused exported symbol resolves to. `declaration` is an inline `export const/function/...`
+ * whose `export` is a real modifier. `specifier` is a re-export entry — `export { x }`,
+ * `export type { T }`, or `export { x } from "./m"` — where the `export` keyword belongs to the
+ * ExportDeclaration syntax, not to any modifier, so the declaration scan never sees it.
+ */
+type ExportTarget =
+  | { kind: "declaration"; node: ts.Node; name: ts.Identifier }
+  | {
+      kind: "specifier";
+      statement: ts.ExportDeclaration;
+      clause: ts.NamedExports;
+      specifier: ts.ExportSpecifier;
+    };
+
+function findExportTarget(sourceFile: ts.SourceFile, name: string): ExportTarget | undefined {
   for (const statement of sourceFile.statements) {
-    if (!hasExportModifier(statement)) continue;
-    const foundName = declarationName(statement);
-    if (foundName?.text === name) return { node: statement, name: foundName };
+    if (hasExportModifier(statement)) {
+      const foundName = declarationName(statement);
+      if (foundName?.text === name) return { kind: "declaration", node: statement, name: foundName };
+      continue;
+    }
+    if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+      // `element.name` is the EXPORTED identifier — for `export { local as exported }` that is
+      // `exported`, which is exactly what knip reports as unused.
+      const specifier = statement.exportClause.elements.find((element) => element.name.text === name);
+      if (specifier) return { kind: "specifier", statement, clause: statement.exportClause, specifier };
+    }
   }
   return undefined;
 }
@@ -203,40 +242,67 @@ function removeExportChange(sourceFile: ts.SourceFile, node: ts.Node): ts.TextCh
   return { span: { start, length }, newText: "" };
 }
 
+/**
+ * Drop one or more specifiers from a re-export. If every name is being removed the whole
+ * `export { ... }` statement goes; otherwise the named-exports clause is rebuilt from the survivors
+ * in a single replacement, which sidesteps the overlapping-comma surgery that per-specifier deletes
+ * would need (and which `applyTextChanges` cannot apply once spans overlap). The underlying binding
+ * is left untouched — a re-export only forwards it.
+ */
+function removeSpecifiersChange(
+  sourceFile: ts.SourceFile,
+  statement: ts.ExportDeclaration,
+  clause: ts.NamedExports,
+  remove: ReadonlySet<ts.ExportSpecifier>,
+): ts.TextChange {
+  const kept = clause.elements.filter((element) => !remove.has(element));
+  if (kept.length === 0) {
+    return { span: deletionSpan(sourceFile, statement), newText: "" };
+  }
+  const start = clause.getStart(sourceFile);
+  return {
+    span: { start, length: clause.getEnd() - start },
+    newText: `{ ${kept.map((element) => element.getText(sourceFile)).join(", ")} }`,
+  };
+}
+
 function unusedExportCleanupChanges(source: string, fileName: string, findings: { message: string }[]): ApplyResult | ts.TextChange[] {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const changes: ts.TextChange[] = [];
+  // Group re-export removals per statement so several unused names in one `export { a, b }` rebuild
+  // the clause exactly once instead of fighting over the same commas.
+  const specifierRemovals = new Map<ts.ExportDeclaration, { clause: ts.NamedExports; remove: Set<ts.ExportSpecifier> }>();
 
   for (const finding of findings) {
     const name = symbolNameFromFindingMessage(finding.message);
     if (!name) {
-      return {
-        ok: false,
-        reason: "session-error",
-        detail: `Could not parse unused export name from finding: ${finding.message}`,
-      };
+      return unsupported(`Could not parse unused export name from finding: ${finding.message}`);
     }
-    const declaration = findExportedDeclaration(sourceFile, name);
-    if (!declaration) {
-      return {
-        ok: false,
-        reason: "session-error",
-        detail: `Could not find exported declaration for unused symbol: ${name}`,
-      };
+    const target = findExportTarget(sourceFile, name);
+    if (!target) {
+      return unsupported(`Could not find exported declaration for unused symbol: ${name}`);
     }
-    if (hasIdentifierReference(sourceFile, name, declaration.name)) {
-      const change = removeExportChange(sourceFile, declaration.node);
+
+    if (target.kind === "specifier") {
+      const group = specifierRemovals.get(target.statement) ?? { clause: target.clause, remove: new Set<ts.ExportSpecifier>() };
+      group.remove.add(target.specifier);
+      specifierRemovals.set(target.statement, group);
+      continue;
+    }
+
+    if (hasIdentifierReference(sourceFile, name, target.name)) {
+      const change = removeExportChange(sourceFile, target.node);
       if (!change) {
-        return {
-          ok: false,
-          reason: "session-error",
-          detail: `Could not remove export modifier for unused symbol: ${name}`,
-        };
+        return unsupported(`Could not remove export modifier for unused symbol: ${name}`);
       }
       changes.push(change);
     } else {
-      changes.push({ span: deletionSpan(sourceFile, declaration.node), newText: "" });
+      changes.push({ span: deletionSpan(sourceFile, target.node), newText: "" });
     }
+  }
+
+  for (const [statement, { clause, remove }] of specifierRemovals) {
+    changes.push(removeSpecifiersChange(sourceFile, statement, clause, remove));
   }
 
   return changes;
@@ -367,7 +433,13 @@ export function makeDeterministicFixer(deps: DeterministicFixUnitDeps): Determin
         const applied = await applyStrategy(strategy, deps.cwd, unit);
         if (!applied.ok) {
           restoreSnapshot(deps.cwd, before);
-          return { kept: false, reason: applied.reason, detail: applied.detail, usage: ZERO_AI_USAGE };
+          return {
+            kept: false,
+            reason: applied.reason,
+            detail: applied.detail,
+            failureClass: applied.failureClass,
+            usage: ZERO_AI_USAGE,
+          };
         }
       }
 

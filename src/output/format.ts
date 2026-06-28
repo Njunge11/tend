@@ -76,6 +76,8 @@ export function reasonLabel(reason: string | undefined): string {
       return "final integration failed";
     case "needs-lockfile-update":
       return "needs lockfile update";
+    case "deterministic-unsupported":
+      return "unsupported by the deterministic fixer";
     default:
       return "couldn't fix";
   }

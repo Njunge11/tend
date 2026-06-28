@@ -44,7 +44,13 @@ export type FailureClass =
   | "typecheck"
   | "broke-test"
   | "suppression"
-  | "needs-lockfile-update";
+  | "needs-lockfile-update"
+  /**
+   * A deterministic fixer could not handle this finding's code shape (e.g. an export form its
+   * AST surgery doesn't support). The input is fixed, so re-dispatching reproduces the exact
+   * same failure — terminal and no-burn, never retried.
+   */
+  | "deterministic-unsupported";
 
 /**
  * Estimated AI cost/usage for a unit of work. `total_cost_usd` from Claude's
