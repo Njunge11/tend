@@ -231,6 +231,33 @@ async function finalRescanFailure(
   return `final integration scanner rescan found ${findings.length} finding${findings.length === 1 ? "" : "s"}`;
 }
 
+/**
+ * The final-integration gate failed and the run's AI edits were rolled back to the known-good
+ * baseline. Re-mark every finding whose fix landed on a reverted file: it is no longer fixed on
+ * disk, so report it as `final-integration-failed` (a couldn't-fix outcome) instead of leaving it
+ * counted as fixed. Only `ai-fix` findings on a restored file are demoted — deterministic edits are
+ * never rolled back. Returns the number demoted. Exported for testing.
+ */
+export function demoteFinalIntegrationFindings(
+  findings: Finding[],
+  restoredFiles: readonly string[],
+  detail: string,
+): number {
+  const restored = new Set(restoredFiles);
+  let demoted = 0;
+  for (const f of findings) {
+    if (f.status !== "fixed" || f.track !== "ai-fix") continue;
+    const files = [f.file, ...(f.flowPath ?? []).map((step) => step.file)];
+    if (!files.some((file) => restored.has(file))) continue;
+    f.status = "unfixable";
+    f.revertReason = "final-integration-failed";
+    f.finalFailureClass = "final-integration-failed";
+    f.revertDetail = detail;
+    demoted += 1;
+  }
+  return demoted;
+}
+
 async function makeProductionFixUnit(
   config: { model: string; effort?: Effort; thinkingBudget?: number },
   baselineTargets: string[],
@@ -799,7 +826,24 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       bus,
     });
     finalIntegrationResult = await finalIntegration();
-    if (!finalIntegrationResult.ok) result.exitStatus = 1;
+    if (!finalIntegrationResult.ok) {
+      // Individually-clean fixes combined into a tree that fails the final-integration gate. Leaving
+      // a non-compiling tree breaks tend's core promise, so roll the run's AI edits back to the
+      // known-good baseline and re-mark the affected findings as final-integration-failed (no longer
+      // fixed on disk). The per-unit gate already gave each fix an error-grounded repair; the cross-
+      // unit interaction is only visible here, where the safe action is revert-to-known-good.
+      const detail = (finalIntegrationResult.detail || "final integration failed").split("\n")[0] ?? "final integration failed";
+      const restored = sandboxPool.rollbackMainChanges();
+      const demoted = demoteFinalIntegrationFindings(result.findings, restored, detail);
+      bus.emit({
+        type: "debug",
+        loop: result.loops,
+        action: "final-integration.rollback",
+        detail: `final integration failed → reverted ${restored.length} file(s) to known-good, ${demoted} fix(es) un-kept`,
+        data: { files: restored, demoted, reason: finalIntegrationResult.detail },
+      });
+      result.exitStatus = 1;
+    }
   } finally {
     stopSignals();
     disposeEslintWorker(); // close the worker's IPC channel so the process can exit

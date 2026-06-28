@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 
@@ -326,6 +326,12 @@ export class WorkerSandboxPool {
   // work rejects promptly instead of starting a fresh sandbox after Ctrl-C.
   private readonly queuedRejecters = new Set<(error: Error) => void>();
   private readonly exec: Exec;
+  // Pre-fix content of every main-tree file an accepted AI patch has landed on, captured the FIRST
+  // time a patch touches it (so it's the content before ANY of this run's AI edits, but after any
+  // deterministic edit). `null` = the file did not exist pre-patch (the patch created it). Lets the
+  // final-integration gate revert the run's AI edits to this known-good baseline when individually
+  // clean fixes combine into a non-compiling tree — see rollbackMainChanges.
+  private readonly pristineMain = new Map<string, string | null>();
   // The base every new sandbox forks from. Starts at the run snapshot and ADVANCES after each
   // accepted patch (see advanceBase), so a later session forks from main's already-fixed state
   // instead of the original — the diff-from-frozen-original is what made sequential fixes to the
@@ -462,7 +468,16 @@ export class WorkerSandboxPool {
             detail: applied.stderr || applied.stdout || "git apply --3way --cached conflicted",
           };
         }
-        // Clean merge: materialize the result onto the working tree. Files the patch deleted are
+        // Clean merge, about to mutate the working tree. Capture each target's PRE-patch content
+        // first (the apply only wrote the temp index, so disk still holds the pre-patch bytes), the
+        // first time a patch lands on it, so rollbackMainChanges can restore the run's known-good
+        // baseline if the combined tree later fails the final-integration gate.
+        for (const file of targets) {
+          if (this.pristineMain.has(file)) continue;
+          const abs = join(main, file);
+          this.pristineMain.set(file, existsSync(abs) ? readFileSync(abs, "utf8") : null);
+        }
+        // Materialize the result onto the working tree. Files the patch deleted are
         // gone from the temp index; remove them from disk. The rest are written from the index.
         const survivorsRaw = await this.exec("git", ["ls-files", "--", ...targets], {
           cwd: main,
@@ -494,6 +509,26 @@ export class WorkerSandboxPool {
         rmSync(`${tmpIndex}.lock`, { force: true });
       }
     }) as Promise<ApplyPatchResult>;
+  }
+
+  /**
+   * Revert every main-tree file an accepted AI patch touched back to its pre-fix content, undoing
+   * the run's AI edits. The final-integration gate calls this when individually-clean fixes combined
+   * into a tree that no longer typechecks (or breaks tests / reintroduces findings): rather than
+   * leave a non-compiling tree, tend rolls back to the run's known-good baseline. Files a patch
+   * CREATED (no pristine content) are deleted. Deterministic edits never flow through
+   * applyPatchToMain, so they are left in place. Returns the repo-relative files restored, sorted.
+   */
+  rollbackMainChanges(): string[] {
+    const main = this.deps.mainRoot;
+    const restored: string[] = [];
+    for (const [file, content] of this.pristineMain) {
+      const abs = join(main, file);
+      if (content === null) rmSync(abs, { force: true });
+      else writeFileSync(abs, content);
+      restored.push(file);
+    }
+    return restored.sort((a, b) => a.localeCompare(b));
   }
 
   /**

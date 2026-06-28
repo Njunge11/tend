@@ -287,6 +287,89 @@ describe("WorkerSandboxPool", () => {
     expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 1;\n");
   });
 
+  it("rollbackMainChanges restores edited files and deletes created files to the pre-fix baseline", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+
+    // A fix that edits an existing file (a.ts) AND creates a new one (c.ts).
+    const patch = await pool.withSandbox(unit(["src/a.ts", "src/c.ts"]), async (sandbox) => {
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
+      writeFileSync(join(sandbox.cwd, "src/c.ts"), "export const c = 3;\n");
+      const result = await sandbox.collectPatch(unit(["src/a.ts", "src/c.ts"]));
+      if (!result.ok) throw new Error(result.detail);
+      return result.patch;
+    });
+    const applied = await pool.applyPatchToMain(patch, ["src/a.ts", "src/c.ts"]);
+    expect(applied.ok).toBe(true);
+    // The fix landed: a.ts rewritten, c.ts created.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("export const a = 2;\n");
+    expect(existsSync(join(repo.dir, "src/c.ts"))).toBe(true);
+
+    const restored = pool.rollbackMainChanges();
+
+    expect(restored).toEqual(["src/a.ts", "src/c.ts"]);
+    // Edited file reverted to its pre-fix content; created file removed entirely.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("export const a = 1;\n");
+    expect(existsSync(join(repo.dir, "src/c.ts"))).toBe(false);
+    // A file the run never patched is left untouched (deterministic edits never flow through here).
+    expect(readFileSync(join(repo.dir, "src/b.ts"), "utf8")).toBe("export const b = 1;\n");
+  });
+
+  it("rollbackMainChanges reverts to the content BEFORE the first patch, undoing both of two sequential edits", async () => {
+    const { repo, snapshotSha } = await setupRepo();
+    const pool = makePool(snapshotSha, 1);
+
+    const patch1 = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\n");
+      const result = await sandbox.collectPatch(unit(["src/a.ts"]));
+      if (!result.ok) throw new Error(result.detail);
+      return result.patch;
+    });
+    expect((await pool.applyPatchToMain(patch1, ["src/a.ts"])).ok).toBe(true);
+
+    // A SECOND patch to the same file (a later loop's re-fix), built from the advanced base.
+    const patch2 = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "export const a = 2;\nexport const extra = 4;\n");
+      const result = await sandbox.collectPatch(unit(["src/a.ts"]));
+      if (!result.ok) throw new Error(result.detail);
+      return result.patch;
+    });
+    expect((await pool.applyPatchToMain(patch2, ["src/a.ts"])).ok).toBe(true);
+
+    pool.rollbackMainChanges();
+
+    // Pristine is captured once, at the first patch → rollback undoes BOTH edits, not just the last.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("export const a = 1;\n");
+  });
+
+  it("rollbackMainChanges preserves an uncommitted pre-run edit as the baseline (captures working-tree, not HEAD)", async () => {
+    const { repo } = await setupRepo();
+    // A multi-line file so the user's edit and the fix sit in non-overlapping regions.
+    repo.write("src/a.ts", "L1\nL2\nL3\nL4\nL5\n");
+    await repo.commit("widen a.ts");
+    const snapshotSha = (await repo.git.revparse(["HEAD"])).trim();
+    const pool = makePool(snapshotSha, 1);
+
+    // Fix rewrites the LAST line, captured against the snapshot.
+    const patch = await pool.withSandbox(unit(["src/a.ts"]), async (sandbox) => {
+      writeFileSync(join(sandbox.cwd, "src/a.ts"), "L1\nL2\nL3\nL4\nL5-fixed\n");
+      const result = await sandbox.collectPatch(unit(["src/a.ts"]));
+      if (!result.ok) throw new Error(result.detail);
+      return result.patch;
+    });
+
+    // The user has an uncommitted edit in a FAR-AWAY region (line 1) before the fix lands.
+    writeFileSync(join(repo.dir, "src/a.ts"), "L1-user\nL2\nL3\nL4\nL5\n");
+    expect((await pool.applyPatchToMain(patch, ["src/a.ts"])).ok).toBe(true);
+    // Both the user's edit and the fix are now present.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1-user\nL2\nL3\nL4\nL5-fixed\n");
+
+    pool.rollbackMainChanges();
+
+    // Baseline = the working tree as tend found it (with the user's edit), NOT the committed HEAD.
+    expect(readFileSync(join(repo.dir, "src/a.ts"), "utf8")).toBe("L1-user\nL2\nL3\nL4\nL5\n");
+  });
+
   it("applies a snapshot-relative patch onto a DIRTY working tree (index ≠ worktree) without 'does not match index'", async () => {
     const { repo } = await setupRepo();
     // A multi-line file so the user's edit and the fix sit in non-overlapping regions.
