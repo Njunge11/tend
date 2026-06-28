@@ -15,9 +15,10 @@ import { detectPackageManager } from "./detect/package-manager.js";
 import { detectTestRunner } from "./detect/test-runner.js";
 import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
-import { makeFixUnit } from "./fixing/fix-unit.js";
+import { makeFixUnit, makeIntegrationGate } from "./fixing/fix-unit.js";
+import { snapshotUnitFiles } from "./fixing/unit-gate.js";
 import { thinkingEnv } from "./fixing/thinking-budget.js";
-import { modelForUnit } from "./fixing/model-selection.js";
+import { CAPABLE_MODEL, modelForUnit } from "./fixing/model-selection.js";
 import { preflightModels } from "./fixing/model-preflight.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { effortForUnit } from "./fixing/effort.js";
@@ -73,6 +74,24 @@ const TEND_CACHE_DIR = join(TEND_DIR, "cache");
 // fix-unit session-timeout wrapper (passed below), so the enforced limit always matches the intent.
 const CLAUDE_TIMEOUT_MS = Number(process.env.TEND_SESSION_TIMEOUT_MS) || 10 * 60_000;
 const MODEL_PREFLIGHT_TIMEOUT_MS = 60_000;
+
+/**
+ * The role/system prompt shared by every fix session (`--append-system-prompt`). It owns the
+ * GLOBAL rules so the per-strategy user prompts stay lean and only carry task-specific guidance —
+ * Anthropic prompt guidance §10 (role) + §5/§7 (state global constraints once). Keep it short:
+ * the model generalizes from the role, and the per-prompt success conditions still do the steering.
+ */
+const FIX_SYSTEM_PROMPT = [
+  "You are a senior engineer making the smallest behavior-preserving change that clears a",
+  "static-analysis finding. Fix the root cause; never mask a finding (no eslint-disable,",
+  "@ts-ignore, @ts-nocheck, casts to `any`, `any` annotations, or weakened/skipped tests).",
+  "Only edit the files you are given; if a correct fix needs a file you weren't given, leave",
+  "the files unchanged. Make no unrelated refactors or formatting churn. The editable files'",
+  "current contents are provided, so quote the exact lines you will change, then apply the fix",
+  "with Write or Edit. Your change is accepted only if it clears the targeted findings on the",
+  "verification targets, adds no new findings or suppressions, and leaves typecheck and tests",
+  "green; a cosmetic or incomplete fix is reverted.",
+].join(" ");
 const BUILD_TIMEOUT_MS = 5 * 60_000;
 const TSC_TIMEOUT_MS = 5 * 60_000;
 const TEST_TIMEOUT_MS = 5 * 60_000;
@@ -348,7 +367,9 @@ async function makeProductionFixUnit(
     const session = new ClaudeSession({
       spawn: async (req) => {
         const unitEffort = effortForUnit(req.findings, config.effort);
-        const sessionModel = modelForUnit(req.findings, config);
+        // An integration-repair session forces its model (the capable/Opus tier) via req.model;
+        // everything else routes per-unit by findings.
+        const sessionModel = req.model ?? modelForUnit(req.findings, config);
         // Lazily verify a capable-tier model the first time a unit actually needs it. A bad
         // capable model fails just these units (a non-retryable, terminal "model rejected"
         // outcome — see parseStreamJson) instead of bricking the whole run or being pinged every
@@ -370,6 +391,8 @@ async function makeProductionFixUnit(
             "--no-session-persistence",
             "-p",
             req.prompt,
+            "--append-system-prompt",
+            FIX_SYSTEM_PROMPT,
             "--model",
             sessionModel,
             "--effort",
@@ -495,10 +518,29 @@ async function makeProductionFixUnit(
       onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
     });
 
+  // The integrated acceptance gate: after a fix lands on the REAL combined tree, re-typecheck the
+  // whole integrated state (which the isolated per-unit gate can't see) and, on a new cross-fix
+  // break, repair it in place at the capable (Opus) tier so every fix stays landed. Runs against the
+  // main repo (no sandbox), so its session edits the real tree.
+  const integrationGate = makeIntegrationGate({
+    ...mainGateDeps,
+    maxRepairs: 3,
+    sessionTimeoutMs: CLAUDE_TIMEOUT_MS,
+    cancelSignal,
+    // tsc runs from the owning package root; the repair session edits from the repo root. Pass
+    // ownerRoot so the gate maps diagnostics to repo-relative paths (identity for a root package).
+    ownerRoot,
+    // A combined break is a hard cross-file case that fires rarely, so the Opus cost is negligible
+    // and the success rate matters more than the per-call price.
+    repairModel: CAPABLE_MODEL,
+    maxIntegrationRepairs: 1,
+  });
+
   const fixUnit = async (unit: WorkUnit, loop: number): Promise<FixOutcome> => {
     if (!sandboxPool) return buildFixUnit()(unit, loop);
+    const pool = sandboxPool;
     try {
-      return await sandboxPool.withSandbox(unit, async (sandbox) => {
+      return await pool.withSandbox(unit, async (sandbox) => {
         const outcome = await buildFixUnit(sandbox)(unit, loop);
         if (!outcome.kept) return outcome;
 
@@ -513,20 +555,58 @@ async function makeProductionFixUnit(
             usage: outcome.usage,
           };
         }
-        const applied = await sandboxPool.applyPatchToMain(patch.patch, patch.changedFiles);
-        if (!applied.ok) {
-          bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
-          return {
-            kept: false,
-            reason: "patch-conflict",
-            detail: applied.detail,
-            failureClass: "patch-conflict",
-            usage: outcome.usage,
-          };
-        }
-        for (const file of patch.changedFiles) acceptedFiles.add(file);
-        for (const finding of unit.findings) acceptedTools.add(finding.tool);
-        return outcome;
+        // Serialize write + integrated gate (concurrency 1) so each fix is verified against a STABLE
+        // base + every prior-accepted fix — never a tree another sandbox is mutating concurrently.
+        return pool.runIntegration(async (): Promise<FixOutcome> => {
+          const baseBeforeApply = pool.base;
+          // Pre-fix content of this fix's files, captured before applyPatchToMain overwrites them —
+          // the precise revert target if the combined tree can't be reconciled.
+          const beforeFix = snapshotUnitFiles(cwd, patch.changedFiles);
+
+          const applied = await pool.applyPatchToMain(patch.patch, patch.changedFiles);
+          if (!applied.ok) {
+            bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
+            return {
+              kept: false,
+              reason: "patch-conflict",
+              detail: applied.detail,
+              failureClass: "patch-conflict",
+              usage: outcome.usage,
+            };
+          }
+
+          const integ = await integrationGate(
+            unit,
+            beforeFix,
+            outcome.usage ?? zeroUsage(),
+            (stage, detail) => bus?.emit({ type: "file-stage", loop, file: unit.file, stage, detail }),
+          );
+
+          if (!integ.kept) {
+            // The gate already restored this fix's own files; revert any OTHER file its in-place
+            // repair touched back to the known-good base, then re-snapshot the base so the next
+            // sandbox forks from the clean tree.
+            await pool.restoreToBaseExcept(baseBeforeApply, patch.changedFiles);
+            await pool.advanceBaseNow();
+            bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
+            return {
+              kept: false,
+              reason: integ.reason ?? "final-integration-failed",
+              detail: integ.detail,
+              failureClass: "final-integration-failed",
+              usage: integ.usage,
+              repairAttempted: true,
+            };
+          }
+
+          // Kept. An in-place integration repair (if any ran) edited main, so re-snapshot the base
+          // to include it; future sandboxes then fork from the reconciled tree.
+          await pool.advanceBaseNow();
+          for (const file of patch.changedFiles) acceptedFiles.add(file);
+          for (const file of integ.repairedFiles) acceptedFiles.add(file);
+          for (const finding of unit.findings) acceptedTools.add(finding.tool);
+          return { ...outcome, usage: integ.usage };
+        });
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);

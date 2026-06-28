@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Finding, Tool } from "../findings/finding.js";
+import { parseTscErrors } from "../gate/checks/typecheck.js";
+import type { RevertReason } from "../gate/check.js";
 import type { FixOutcome } from "../orchestrator.js";
 import {
   addUsage,
@@ -63,9 +66,19 @@ const MULTI_FILE_DUPLICATE_PROMPT_TEMPLATE = readPromptTemplate("multi-file-dupl
 const GENERATED_SOURCE_PROMPT_TEMPLATE = readPromptTemplate("generated-source-repair.md");
 const TEST_FILE_REPAIR_PROMPT_TEMPLATE = readPromptTemplate("test-file-repair.md");
 const DEAD_CODE_CLEANUP_PROMPT_TEMPLATE = readPromptTemplate("dead-code-cleanup.md");
+const INTEGRATION_REPAIR_PROMPT_TEMPLATE = readPromptTemplate("integration-repair.md");
 
 function replaceAllLiteral(input: string, search: string, replacement: string): string {
   return input.split(search).join(replacement);
+}
+
+/** Fill every `{{key}}` placeholder in a template from a map of key → rendered value. */
+function fillTemplate(template: string, replacements: Record<string, string>): string {
+  let out = template;
+  for (const [key, value] of Object.entries(replacements)) {
+    out = replaceAllLiteral(out, `{{${key}}}`, value);
+  }
+  return out;
 }
 
 type FixPromptStrategy = RepairStrategy | "regression-repair";
@@ -128,6 +141,42 @@ function renderFileContents(contents: Map<string, string>): string {
   if (contents.size === 0) return "(file content not supplied — read the file before editing)";
   return [...contents]
     .map(([file, source]) => `### ${file}\n\n\`\`\`\n${source}\n\`\`\``)
+    .join("\n\n");
+}
+
+/** Editable files' current on-disk content, dropping any that don't exist (null in the snapshot). */
+function contentMapFor(snapshot: Map<string, string | null>, files: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const file of files) {
+    const source = snapshot.get(file);
+    if (typeof source === "string") out.set(file, source);
+  }
+  return out;
+}
+
+/**
+ * One failed repair attempt: the diff it produced and why the gate rejected it. Accumulated so a
+ * later attempt sees every dead end it has already walked, not just the most recent — Anthropic
+ * prompt guidance §1/§12 (ground the model in the actual prior failures). `newFindings` is empty
+ * for non-regression rejections (typecheck/broke-test).
+ */
+type RepairAttempt = { diff: string; gateOutput: string; newFindings: Finding[] };
+
+/** Render the full failure history as delimited blocks so a retry can avoid re-walking dead ends. */
+function renderAttemptHistory(attempts: RepairAttempt[]): string {
+  if (attempts.length === 0) return "(no prior attempts — this is the first repair)";
+  return attempts
+    .map((attempt, i) => {
+      const parts = [
+        `### Attempt ${i + 1} (rejected)`,
+        `<rejected_diff>\n\`\`\`diff\n${firstRelevantLines(attempt.diff, 80)}\n\`\`\`\n</rejected_diff>`,
+      ];
+      if (attempt.newFindings.length > 0) {
+        parts.push(`New findings it introduced:\n<new_findings>\n${renderFindingsJson(attempt.newFindings)}\n</new_findings>`);
+      }
+      parts.push(`Gate output:\n<gate_output>\n\`\`\`text\n${attempt.gateOutput}\n\`\`\`\n</gate_output>`);
+      return parts.join("\n\n");
+    })
     .join("\n\n");
 }
 
@@ -196,10 +245,10 @@ function renderFindingsJson(findings: Finding[]): string {
 
 function renderRegressionRepairPrompt(input: {
   unit: WorkUnit;
-  rejectedDiff: string;
-  newFindings: Finding[];
-  gateReason: string;
-  gateOutput: string;
+  /** Current on-disk content of the editable files, so the repair grounds in the real text (§12). */
+  fileContents: Map<string, string>;
+  /** Full failure history, oldest first — every prior diff + its exact gate error, not just the last. */
+  attempts: RepairAttempt[];
 }): string {
   const strategyName = "regression-repair";
   const prompt = renderCommonTemplate({
@@ -208,20 +257,9 @@ function renderRegressionRepairPrompt(input: {
     findings: renderFindingsJson(input.unit.findings),
     editableFiles: input.unit.files,
     verificationTargets: input.unit.verificationTargets ?? input.unit.files,
+    fileContents: input.fileContents,
   });
-  return replaceAllLiteral(
-    replaceAllLiteral(
-      replaceAllLiteral(
-        prompt,
-        "{{rejectedDiff}}",
-        firstRelevantLines(input.rejectedDiff, 80),
-      ),
-      "{{newFindings}}",
-      renderFindingsJson(input.newFindings),
-    ),
-    "{{gateDetails}}",
-    [`Reason: ${input.gateReason}`, firstRelevantLines(input.gateOutput)].join("\n"),
-  ).trim();
+  return replaceAllLiteral(prompt, "{{attemptHistory}}", renderAttemptHistory(input.attempts)).trim();
 }
 
 function renderNoEditRetryPrompt(unit: WorkUnit, fileContents?: Map<string, string>): string {
@@ -485,20 +523,27 @@ export function makeFixUnit(deps: FixUnitDeps) {
       return afterFindings.filter((f) => !preexistingIds.has(f.id));
     }
 
+    // Every failed attempt (initial edit + each repair) accumulates here so the next repair session
+    // sees the whole history of dead ends, not just the most recent one (Fix 3 / §12).
+    const repairAttempts: RepairAttempt[] = [];
+
     async function runRegressionRepair(outcome: FixOutcome): Promise<boolean> {
       if (outcome.reason !== "regression" && outcome.reason !== "typecheck") return false;
       repairAttempted = true;
       const after = snapshotUnitNow(deps.cwd, snapshotFiles);
+      repairAttempts.push({
+        diff: buildDiff(before, after),
+        gateOutput: [`Reason: ${outcome.reason}`, firstRelevantLines(outcome.detail ?? "")].join("\n"),
+        newFindings: outcome.reason === "regression" ? await scanNewFindings() : [],
+      });
       progress("regression-repair");
       const repair = await runSessionWithTimeout(deps, {
         file: unit.file,
         findings: unit.findings,
         prompt: renderRegressionRepairPrompt({
           unit,
-          rejectedDiff: buildDiff(before, after),
-          newFindings: outcome.reason === "regression" ? await scanNewFindings() : [],
-          gateReason: outcome.reason,
-          gateOutput: outcome.detail ?? "",
+          fileContents: contentMapFor(after, unit.files),
+          attempts: repairAttempts,
         }),
         onActivity: activity("regression-repair"),
       });
@@ -515,15 +560,18 @@ export function makeFixUnit(deps: FixUnitDeps) {
     async function repairBrokenTests(_attempt: number, regressed: Array<{ name: string }>): Promise<void> {
       repairAttempted = true;
       const after = snapshotUnitNow(deps.cwd, snapshotFiles);
+      repairAttempts.push({
+        diff: buildDiff(before, after),
+        gateOutput: `Fix left previously-green test(s) red:\n${regressed.map((test) => test.name).join("\n")}`,
+        newFindings: [],
+      });
       const repair = await runSessionWithTimeout(deps, {
         file: unit.file,
         findings: unit.findings,
         prompt: renderRegressionRepairPrompt({
           unit,
-          rejectedDiff: buildDiff(before, after),
-          newFindings: [],
-          gateReason: "broke-test",
-          gateOutput: `Fix left previously-green test(s) red:\n${regressed.map((test) => test.name).join("\n")}`,
+          fileContents: contentMapFor(after, unit.files),
+          attempts: repairAttempts,
         }),
         onActivity: activity("test-repair"),
       });
@@ -564,5 +612,204 @@ export function makeFixUnit(deps: FixUnitDeps) {
     }
 
     return { ...outcome, usage };
+  };
+}
+
+// A tsc diagnostic line names its file first: "path(line,col): error TSxxxx: …". Pretty output is
+// off when the gate spawns tsc, so this plain single-line form is what we parse for editable files.
+const TSC_ERROR_FILE = /^(.+?)\((\d+),(\d+)\): error TS\d+:/;
+
+function normalizeRelPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.?\//, "");
+}
+
+/**
+ * tsc runs from the owning package root, so its diagnostic paths are relative to THAT — but the
+ * repair session edits from the repo root. Rewrite each diagnostic's file path to repo-relative so
+ * the model (and the editable-file list) name files the same way regardless of monorepo layout.
+ * `ownerRoot === repoRoot` (single-package) makes this an identity map. Returns the rewritten dump
+ * and the deduped repo-relative files it named.
+ */
+function remapTscDiagnostics(
+  output: string,
+  repoRoot: string,
+  ownerRoot: string,
+): { output: string; files: string[] } {
+  const files = new Set<string>();
+  const rewritten = output.split("\n").map((line) => {
+    const m = TSC_ERROR_FILE.exec(line.trim());
+    if (!m?.[1]) return line;
+    const repoRel = normalizeRelPath(relative(repoRoot, resolve(ownerRoot, normalizeRelPath(m[1]))));
+    files.add(repoRel);
+    return line.replace(m[1], repoRel); // literal first-occurrence swap of the diagnostic's path
+  });
+  return { output: rewritten.join("\n"), files: [...files] };
+}
+
+/** Multiset difference: tsc error signatures in `after` not covered, by count, by `baseline`. */
+function newTscErrors(after: readonly string[], baseline: readonly string[]): string[] {
+  const remaining = new Map<string, number>();
+  for (const s of baseline) remaining.set(s, (remaining.get(s) ?? 0) + 1);
+  const fresh: string[] = [];
+  for (const s of after) {
+    const n = remaining.get(s) ?? 0;
+    if (n > 0) remaining.set(s, n - 1);
+    else fresh.push(s);
+  }
+  return fresh;
+}
+
+/**
+ * One `tsc --noEmit` pass over the integrated tree, judged against the run's pristine baseline so a
+ * pre-existing error never counts. `ok` means no NEW error; `output` is the raw tsc dump (for the
+ * repair prompt + file extraction). Mirrors the per-unit typecheck gate's semantics exactly, but
+ * keeps the raw output instead of collapsing to signatures.
+ */
+async function integratedTypecheck(deps: UnitGateDeps): Promise<{ ok: boolean; output: string }> {
+  const { exitCode, output } = await deps.runTsc();
+  if (exitCode === 0) return { ok: true, output };
+  // No baseline captured → fail closed on any error (matches the per-unit gate).
+  if (deps.typecheckBaseline === undefined) return { ok: false, output: output.trim() || "tsc --noEmit failed" };
+  const after = parseTscErrors(output);
+  // tsc failed but emitted nothing parseable — a crash/timeout/unexpected format. Fail closed.
+  if (after.length === 0) return { ok: false, output: output.trim() || "tsc --noEmit failed" };
+  const fresh = newTscErrors(after, deps.typecheckBaseline);
+  return { ok: fresh.length === 0, output };
+}
+
+/** Render prior failed integration-repair tsc outputs so a retry sees what it already couldn't fix. */
+function renderIntegrationHistory(priorOutputs: string[]): string {
+  if (priorOutputs.length === 0) return "(no prior attempts — this is the first repair)";
+  return priorOutputs
+    .map(
+      (out, i) =>
+        `### Attempt ${i + 1} (still failed)\n<gate_output>\n\`\`\`text\n${firstRelevantLines(out, 80)}\n\`\`\`\n</gate_output>`,
+    )
+    .join("\n\n");
+}
+
+function renderIntegrationRepairPrompt(input: {
+  unit: WorkUnit;
+  editableFiles: string[];
+  /** Current on-disk content of every editable file, so the repair grounds in the real text (§12). */
+  fileContents: Map<string, string>;
+  gateOutput: string;
+  /** tsc output from earlier failed repair attempts this run (empty on the first attempt). */
+  priorOutputs: string[];
+}): string {
+  return fillTemplate(INTEGRATION_REPAIR_PROMPT_TEMPLATE, {
+    findings: renderFindingsJson(input.unit.findings),
+    editableFiles: renderFileList(input.editableFiles),
+    fileContents: renderFileContents(input.fileContents),
+    gateDetails: firstRelevantLines(input.gateOutput, 80),
+    attemptHistory: renderIntegrationHistory(input.priorOutputs),
+  }).trim();
+}
+
+export type IntegrationGateDeps = FixUnitDeps & {
+  /** Model to force for integration-repair sessions (the capable/Opus tier). Omitted → per-unit routing. */
+  repairModel?: string;
+  /** Max in-place integration-repair attempts before dropping the fix. Defaults to 1. */
+  maxIntegrationRepairs?: number;
+  /**
+   * The owning package root tsc runs in. tsc emits paths relative to it, but the repair session
+   * edits from the repo root (`deps.cwd`), so the gate maps diagnostics to repo-relative. Defaults
+   * to `deps.cwd` (single-package / whole-repo runs, where the two roots coincide).
+   */
+  ownerRoot?: string;
+};
+
+export type IntegrationGateResult = {
+  kept: boolean;
+  reason?: RevertReason;
+  detail?: string;
+  usage: AiUsage;
+  /** Files OTHER than the fix's own that the integration-repair session edited — the caller must
+   *  revert these to the known-good base when the fix is dropped (the gate only restores its own). */
+  repairedFiles: string[];
+};
+
+/**
+ * The integrated acceptance gate. An accepted fix is verified in its ISOLATED sandbox (fast,
+ * parallel), then this runs against the REAL combined tree — base + every fix accepted so far this
+ * run — which the per-unit gate structurally can't see. Two individually-clean fixes can combine
+ * into a tree that no longer type-checks (e.g. two narrowings make a third file's `a === b` have no
+ * overlap → TS2367). On such a NEW error this routes the tsc output into an in-place repair session
+ * (capable tier) so the model reconciles the integration while keeping ALL fixes landed, then
+ * re-gates — bounded by `maxIntegrationRepairs`. Only if repair genuinely can't does it drop THIS
+ * one fix (restoring its files to `beforeFix`; the caller reverts any other file the repair touched),
+ * never sinking the rest of the batch. Run inside the pool's serialized integration section so the
+ * tree it verifies can't shift under it.
+ */
+export function makeIntegrationGate(deps: IntegrationGateDeps) {
+  const maxRepairs = deps.maxIntegrationRepairs ?? 1;
+  return async (
+    unit: WorkUnit,
+    /** The fix's own files, snapshotted BEFORE its patch landed — the precise pre-fix revert target. */
+    beforeFix: Map<string, string | null>,
+    startUsage: AiUsage,
+    progress?: (stage: FixStage, detail?: string) => void,
+  ): Promise<IntegrationGateResult> => {
+    let usage = startUsage;
+    // No TS project → the integrated typecheck has nothing to catch; accept as-is.
+    if (!deps.typescript) return { kept: true, usage, repairedFiles: [] };
+
+    const ownerRoot = deps.ownerRoot ?? deps.cwd;
+    const repairedFiles = new Set<string>();
+    progress?.("typecheck");
+    let result = await integratedTypecheck(deps);
+    let attempt = 0;
+    // tsc output from earlier failed repair attempts, so a retry sees what it already couldn't fix.
+    const priorOutputs: string[] = [];
+    while (!result.ok && attempt < maxRepairs) {
+      attempt++;
+      // tsc paths are owner-relative; map them (and the dump the model reads) to repo-relative so
+      // the editable-file list is correct whether or not this is a monorepo package.
+      const { output: repoOutput, files: errorFiles } = remapTscDiagnostics(result.output, deps.cwd, ownerRoot);
+      for (const file of errorFiles) if (!unit.files.includes(file)) repairedFiles.add(file);
+      const editableFiles = [...new Set([...unit.files, ...errorFiles])];
+      progress?.("regression-repair", `integration ${attempt}/${maxRepairs}`);
+      const repair = await runSessionWithTimeout(deps, {
+        file: unit.file,
+        findings: unit.findings,
+        model: deps.repairModel,
+        prompt: renderIntegrationRepairPrompt({
+          unit,
+          editableFiles,
+          // The repair edits the post-integration tree, so feed it that current content (§12).
+          fileContents: contentMapFor(snapshotUnitFiles(deps.cwd, editableFiles), editableFiles),
+          gateOutput: repoOutput,
+          priorOutputs,
+        }),
+        onActivity: (detail) => progress?.("regression-repair", detail),
+      });
+      if (repair.usage) usage = addUsage(usage, repair.usage);
+      if (!repair.ok) {
+        restoreSnapshot(deps.cwd, beforeFix);
+        return {
+          kept: false,
+          reason: "final-integration-failed",
+          detail: `integration repair session failed: ${repair.error}`,
+          usage,
+          repairedFiles: [...repairedFiles],
+        };
+      }
+      priorOutputs.push(repoOutput); // so the next attempt (if any) sees this dead end
+      progress?.("typecheck");
+      result = await integratedTypecheck(deps);
+    }
+
+    if (result.ok) return { kept: true, usage, repairedFiles: [...repairedFiles] };
+
+    // Repair couldn't reconcile the combined break within the retry budget. Drop just this fix:
+    // restore its own files precisely to pre-fix content (the caller reverts repairedFiles too).
+    restoreSnapshot(deps.cwd, beforeFix);
+    return {
+      kept: false,
+      reason: "final-integration-failed",
+      detail: result.output,
+      usage,
+      repairedFiles: [...repairedFiles],
+    };
   };
 }
