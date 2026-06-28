@@ -315,7 +315,7 @@ function plainFailureLines(report: Report): string[] {
   ];
   if (report.finalIntegration && !report.finalIntegration.ok) {
     lines.push(
-      `final-integration status=failed files=${report.finalIntegration.files.length} detail=${JSON.stringify(firstLine(report.finalIntegration.detail ?? ""))}`,
+      `final-integration status=failed action=reverted-to-known-good files=${report.finalIntegration.files.length} detail=${JSON.stringify(firstLine(report.finalIntegration.detail ?? ""))}`,
     );
   }
   return lines;
@@ -453,7 +453,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     ["scope", scopeLabel(report)],
     ["fix passes", fixPassesText(report)],
     ...(report.finalIntegration && !report.finalIntegration.ok
-      ? ([["final integration", theme.error(firstLine(report.finalIntegration.detail ?? "failed"))]] as string[][])
+      ? ([["final integration", theme.error(`${firstLine(report.finalIntegration.detail ?? "failed")} · reverted to last good state`)]] as string[][])
       : []),
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
