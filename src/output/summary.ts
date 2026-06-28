@@ -243,12 +243,24 @@ function renderPlainSummary(
   return lines.join("\n");
 }
 
+/**
+ * Fixed as a share of what tend actually attempted (fixed + couldn't-fix). "n/a" when nothing was
+ * attempted, so an empty run never reads as 0% or 100%. Derived from the same buckets as the counts
+ * below, so the rate and the numbers can never disagree.
+ */
+function successRateLabel(b: Buckets): string {
+  const fixed = b.fixed.length;
+  const attempted = fixed + couldntFixFindings(b).length;
+  return attempted === 0 ? "n/a" : `${Math.round((fixed / attempted) * 100)}%`;
+}
+
 /** The single `summary ...` headline line of the plain (machine) output. */
 function plainSummaryLine(report: Report, b: Buckets): string {
   return [
     "summary",
     `fixed=${b.fixed.length}`,
     `couldntFix=${couldntFixFindings(b).length}`,
+    `successRate=${successRateLabel(b)}`,
     `skippedTests=${b.skippedTests.length}`,
     `reportOnly=${b.reportOnly.length}`,
     `secrets=${b.secrets.length}`,
@@ -457,6 +469,8 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
       : []),
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
+    // Only meaningful once something was attempted; hidden on a nothing-to-fix run.
+    ...(b.fixed.length + couldntFix.length > 0 ? [["success rate", successRateLabel(b)]] : []),
     ...revertedRow("timed out/session error", b.timedOutSessionError.length),
     ...revertedRow("regressed", b.regressed.length),
     ...revertedRow("typecheck failed", b.typecheckFailed.length),
