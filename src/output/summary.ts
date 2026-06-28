@@ -670,6 +670,8 @@ function findingReason(f: Finding): string {
   if (f.finalFailureClass === "patch-conflict") return "patch conflict";
   if (f.finalFailureClass === "unowned-patch") return "unowned patch";
   if (f.finalFailureClass === "final-integration-failed") return "final integration failed";
+  if (f.finalFailureClass === "deterministic-unsupported")
+    return "unsupported by deterministic fixer";
   switch (f.revertReason) {
     case "session-error":
       return "timeout/session error";
@@ -701,6 +703,7 @@ type CouldntFixReason =
   | "typecheck failed"
   | "test failed"
   | "no edit made"
+  | "deterministic limitation"
   | "retries exhausted"
   | "unsupported / report-only";
 
@@ -718,12 +721,14 @@ const COULDNT_FIX_REASON_ORDER: CouldntFixReason[] = [
   "typecheck failed",
   "test failed",
   "no edit made",
+  "deterministic limitation",
   "retries exhausted",
   "unsupported / report-only",
 ];
 
 function couldntFixReason(f: Finding): CouldntFixReason {
   if (f.track === "report-only") return "unsupported / report-only";
+  if (f.finalFailureClass === "deterministic-unsupported") return "deterministic limitation";
   if (f.finalFailureClass === "sandbox-setup-failed") return "sandbox setup failed";
   if (f.finalFailureClass === "patch-conflict") return "patch conflict";
   if (f.finalFailureClass === "unowned-patch") return "unowned patch";

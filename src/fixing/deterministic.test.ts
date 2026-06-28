@@ -244,4 +244,117 @@ describe("deterministic fixers", () => {
     expect(outcome.detail).toBe("Deterministic fixer completed without changing owned files");
     expect(outcome.usage?.sessions).toBe(0);
   });
+
+  it("removes a re-export specifier (`export { x }`) and leaves the local binding", async () => {
+    env.write("src/barrel.ts", "import { modelFor } from './m';\nexport { modelFor };\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/barrel.ts",
+      message: "Unused export: modelFor",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/barrel.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/barrel.ts")).toBe("import { modelFor } from './m';");
+  });
+
+  it("removes a type-only re-export specifier (`export type { T }`)", async () => {
+    env.write("src/ports.ts", "import type { Action } from './actions';\nexport type { Action };\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-type",
+      category: "dead-code",
+      file: "src/ports.ts",
+      message: "Unused exported type: Action",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/ports.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/ports.ts")).toBe("import type { Action } from './actions';");
+  });
+
+  it("drops only the unused name from a multi-specifier re-export", async () => {
+    env.write("src/barrel.ts", "export { a, b, c };\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/barrel.ts",
+      message: "Unused export: b",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/barrel.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/barrel.ts")).toBe("export { a, c };\n");
+  });
+
+  it("rebuilds the clause once when several names in one re-export are unused", async () => {
+    env.write("src/barrel.ts", "export { a, b, c };\n");
+    const findings = [
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/barrel.ts", message: "Unused export: a" }),
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/barrel.ts", message: "Unused export: c" }),
+    ];
+
+    const outcome = await makeDeterministicFixUnit(deps())({
+      file: "src/barrel.ts",
+      files: ["src/barrel.ts"],
+      findings,
+      strategy: "deterministic-ts-unused-export-cleanup",
+      strategies: ["deterministic-ts-unused-export-cleanup"],
+      verificationTargets: ["src/barrel.ts"],
+    });
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/barrel.ts")).toBe("export { b };\n");
+  });
+
+  it("deletes the whole re-export statement when every name is unused", async () => {
+    env.write("src/barrel.ts", "const a = 1;\nexport { a };\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/barrel.ts",
+      message: "Unused export: a",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/barrel.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/barrel.ts")).toBe("const a = 1;");
+  });
+
+  it("fails an unsupported export shape terminally, not as a retryable session error", async () => {
+    env.write("src/barrel.ts", "export * from './m';\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/barrel.ts",
+      message: "Unused export: anything",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/barrel.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("deterministic-unsupported");
+    expect(outcome.failureClass).toBe("deterministic-unsupported");
+    expect(outcome.usage?.sessions).toBe(0);
+    expect(env.read("src/barrel.ts")).toBe("export * from './m';\n");
+  });
 });

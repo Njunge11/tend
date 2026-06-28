@@ -22,6 +22,7 @@ const FAILURE_CLASSES = [
   "broke-test",
   "suppression",
   "needs-lockfile-update",
+  "deterministic-unsupported",
 ] as const satisfies readonly FailureClass[];
 
 const RangeSchema = z.object({
@@ -73,6 +74,7 @@ export const FindingSchema = z.object({
       "patch-conflict",
       "unowned-patch",
       "final-integration-failed",
+      "deterministic-unsupported",
     ])
     .optional(),
   revertDetail: z.string().optional(),

@@ -195,8 +195,14 @@ function classFromOutcome(outcome: FixOutcome): FailureClass | undefined {
 function isTerminalNoBurnFailure(outcome: FixOutcome): boolean {
   // "no-op": the session made no edit and a retry won't help. "model-rejected": the model
   // refused the request in a way retrying can't fix (prompt too long, max-tokens, missing
-  // model). Both are terminal — mark unfixable without spending the rest of the retry budget.
-  return outcome.failureClass === "no-op" || outcome.failureClass === "model-rejected";
+  // model). "deterministic-unsupported": a deterministic fixer can't handle this code shape, so
+  // re-running feeds it the byte-identical input for the same failure. All terminal — mark
+  // unfixable without spending the rest of the retry budget.
+  return (
+    outcome.failureClass === "no-op" ||
+    outcome.failureClass === "model-rejected" ||
+    outcome.failureClass === "deterministic-unsupported"
+  );
 }
 
 /**
