@@ -198,7 +198,7 @@ describe("renderSummary", () => {
 
     const out = renderSummary(report, { plain: true });
 
-    expect(out).toContain("summary fixed=0 couldntFix=1 skippedTests=0 reportOnly=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=1 successRate=0% skippedTests=0 reportOnly=0 secrets=0");
     // `unresolvedEligible=` is the single machine key for the left-over eligible bucket.
     expect(out).not.toMatch(/^summary .*\bleft=/m);
     expect(out).toContain("scanner tool=knip status=ran");
@@ -511,7 +511,7 @@ describe("renderSummary", () => {
     const out = renderSummary(report, { plain: true });
     expect(out).not.toContain("repo-wide");
     expect(out).not.toContain("tend --all");
-    expect(out).toContain("summary fixed=0 couldntFix=0 skippedTests=0 reportOnly=0 secrets=0");
+    expect(out).toContain("summary fixed=0 couldntFix=0 successRate=n/a skippedTests=0 reportOnly=0 secrets=0");
   });
 
   it("renders pending report-only duplicates as report-only, not skipped tests", () => {
@@ -762,7 +762,7 @@ describe("renderSummary", () => {
 
     const plain = renderSummary(report, { plain: true });
     expect(plain).toContain(
-      "summary fixed=0 couldntFix=2 skippedTests=0 reportOnly=1 secrets=0 generated=1 fixtures=1 outOfScope=0 unresolvedEligible=1 timedOutSessionError=1 regressed=1",
+      "summary fixed=0 couldntFix=2 successRate=0% skippedTests=0 reportOnly=1 secrets=0 generated=1 fixtures=1 outOfScope=0 unresolvedEligible=1 timedOutSessionError=1 regressed=1",
     );
     expect(plain).toContain(
       "failureSummary blockingSecrets=0 unresolvedEligible=1 toolFailures=0 failedDeterministic=0 sessionErrors=1 regressions=1 typecheckFailures=0 testFailures=0",
