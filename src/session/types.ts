@@ -9,12 +9,6 @@ export type SessionRequest = {
   /** The fully-rendered prompt for the AI. */
   prompt: string;
   /**
-   * Force this exact model for the session, overriding the per-unit routing
-   * ({@link modelForUnit}). Used to escalate an integration-repair session to the capable
-   * (Opus) tier regardless of the unit's findings. Omitted → ordinary per-unit routing.
-   */
-  model?: string;
-  /**
    * Live progress hook: called with a short label (e.g. "Edit src/a.ts") as activity
    * streams from the running session. Decoration only — outcomes are still judged
    * from the disk after the session ends.

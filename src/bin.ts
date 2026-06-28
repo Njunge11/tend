@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { execa } from "execa";
 import { buildProgram, type CliHandlers } from "./cli.js";
 import { buildAudit, scanFiles, scannerAvailability } from "./scanners/all.js";
@@ -15,10 +15,9 @@ import { detectPackageManager } from "./detect/package-manager.js";
 import { detectTestRunner } from "./detect/test-runner.js";
 import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
-import { makeFixUnit, makeIntegrationGate } from "./fixing/fix-unit.js";
-import { snapshotUnitFiles } from "./fixing/unit-gate.js";
+import { makeFixUnit } from "./fixing/fix-unit.js";
 import { thinkingEnv } from "./fixing/thinking-budget.js";
-import { CAPABLE_MODEL, modelForUnit } from "./fixing/model-selection.js";
+import { modelForUnit } from "./fixing/model-selection.js";
 import { preflightModels } from "./fixing/model-preflight.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
 import { effortForUnit } from "./fixing/effort.js";
@@ -60,14 +59,44 @@ import type { TestOutcome } from "./gate/checks/tests.js";
 import { reasonLabel } from "./output/format.js";
 import { zeroUsage } from "./session/types.js";
 
-const cwd = process.cwd();
+// These reflect the directory tend operates from. They start at the process cwd but are rebased to
+// the git repository root by `rebaseToRepoRoot()` at the start of every command (see below), because
+// the whole pipeline — repo-root-relative paths, root-checkout AI sandboxes — assumes cwd == repo
+// root. Hence `let`, not `const`.
+let cwd = process.cwd();
 const tracer = createTracer(process.env.TEND_TRACE_DIR);
-const TEND_DIR = join(cwd, ".tend");
-const SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
-const REPORT_PATH = join(TEND_DIR, "report.json");
+let TEND_DIR = join(cwd, ".tend");
+let SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
+let REPORT_PATH = join(TEND_DIR, "report.json");
 // tend-owned, outside any sandbox worktree → the tsc build-info survives worktree
 // reset/clean and is reused across iterations (Fix 5).
-const TEND_CACHE_DIR = join(TEND_DIR, "cache");
+let TEND_CACHE_DIR = join(TEND_DIR, "cache");
+
+/**
+ * Normalize tend to run from the git repository ROOT. The entire pipeline assumes cwd == repo root:
+ * scope/finding paths are repo-root-relative (the git helpers strip the `--show-prefix`), and each
+ * AI fix runs in a git WORKTREE — which git always roots at the repo top. Invoked from a subdirectory
+ * (e.g. a monorepo package: `cd apps/dashboard && tend run lib/...`), `process.cwd()` is the subdir,
+ * so every unit path is missing the `apps/dashboard/` prefix the sandbox checkout actually has. The
+ * AI then edits the real file, but tend watches the prefix-less path, sees no change, and reverts the
+ * fix as a no-op — silently landing zero fixes and burning sessions. Fix: `chdir` to the repo root up
+ * front and rebase the module's `.tend` paths, so the rest of the command is byte-identical to a
+ * root invocation. Returns `{ prefix, startCwd }` (prefix is "" at the root, a no-op) so a caller can
+ * rebase user-supplied path arguments off the original cwd.
+ */
+async function rebaseToRepoRoot(): Promise<{ prefix: string; startCwd: string }> {
+  const startCwd = process.cwd();
+  const repoRoot = (await createGit(startCwd).revparse(["--show-toplevel"])).trim();
+  const prefix = relative(repoRoot, startCwd);
+  if (prefix === "") return { prefix, startCwd };
+  process.chdir(repoRoot);
+  cwd = repoRoot;
+  TEND_DIR = join(cwd, ".tend");
+  SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
+  REPORT_PATH = join(TEND_DIR, "report.json");
+  TEND_CACHE_DIR = join(TEND_DIR, "cache");
+  return { prefix, startCwd };
+}
 
 // Upper bounds so a hung child can't stall the run forever — execa kills it on timeout.
 // One cap for a single AI fix session. Used both to kill the `claude -p` subprocess and as the
@@ -367,9 +396,7 @@ async function makeProductionFixUnit(
     const session = new ClaudeSession({
       spawn: async (req) => {
         const unitEffort = effortForUnit(req.findings, config.effort);
-        // An integration-repair session forces its model (the capable/Opus tier) via req.model;
-        // everything else routes per-unit by findings.
-        const sessionModel = req.model ?? modelForUnit(req.findings, config);
+        const sessionModel = modelForUnit(req.findings, config);
         // Lazily verify a capable-tier model the first time a unit actually needs it. A bad
         // capable model fails just these units (a non-retryable, terminal "model rejected"
         // outcome — see parseStreamJson) instead of bricking the whole run or being pinged every
@@ -518,29 +545,10 @@ async function makeProductionFixUnit(
       onProgress: (event) => bus?.emit({ type: "file-stage", ...event }),
     });
 
-  // The integrated acceptance gate: after a fix lands on the REAL combined tree, re-typecheck the
-  // whole integrated state (which the isolated per-unit gate can't see) and, on a new cross-fix
-  // break, repair it in place at the capable (Opus) tier so every fix stays landed. Runs against the
-  // main repo (no sandbox), so its session edits the real tree.
-  const integrationGate = makeIntegrationGate({
-    ...mainGateDeps,
-    maxRepairs: 3,
-    sessionTimeoutMs: CLAUDE_TIMEOUT_MS,
-    cancelSignal,
-    // tsc runs from the owning package root; the repair session edits from the repo root. Pass
-    // ownerRoot so the gate maps diagnostics to repo-relative paths (identity for a root package).
-    ownerRoot,
-    // A combined break is a hard cross-file case that fires rarely, so the Opus cost is negligible
-    // and the success rate matters more than the per-call price.
-    repairModel: CAPABLE_MODEL,
-    maxIntegrationRepairs: 1,
-  });
-
   const fixUnit = async (unit: WorkUnit, loop: number): Promise<FixOutcome> => {
     if (!sandboxPool) return buildFixUnit()(unit, loop);
-    const pool = sandboxPool;
     try {
-      return await pool.withSandbox(unit, async (sandbox) => {
+      return await sandboxPool.withSandbox(unit, async (sandbox) => {
         const outcome = await buildFixUnit(sandbox)(unit, loop);
         if (!outcome.kept) return outcome;
 
@@ -555,58 +563,20 @@ async function makeProductionFixUnit(
             usage: outcome.usage,
           };
         }
-        // Serialize write + integrated gate (concurrency 1) so each fix is verified against a STABLE
-        // base + every prior-accepted fix — never a tree another sandbox is mutating concurrently.
-        return pool.runIntegration(async (): Promise<FixOutcome> => {
-          const baseBeforeApply = pool.base;
-          // Pre-fix content of this fix's files, captured before applyPatchToMain overwrites them —
-          // the precise revert target if the combined tree can't be reconciled.
-          const beforeFix = snapshotUnitFiles(cwd, patch.changedFiles);
-
-          const applied = await pool.applyPatchToMain(patch.patch, patch.changedFiles);
-          if (!applied.ok) {
-            bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
-            return {
-              kept: false,
-              reason: "patch-conflict",
-              detail: applied.detail,
-              failureClass: "patch-conflict",
-              usage: outcome.usage,
-            };
-          }
-
-          const integ = await integrationGate(
-            unit,
-            beforeFix,
-            outcome.usage ?? zeroUsage(),
-            (stage, detail) => bus?.emit({ type: "file-stage", loop, file: unit.file, stage, detail }),
-          );
-
-          if (!integ.kept) {
-            // The gate already restored this fix's own files; revert any OTHER file its in-place
-            // repair touched back to the known-good base, then re-snapshot the base so the next
-            // sandbox forks from the clean tree.
-            await pool.restoreToBaseExcept(baseBeforeApply, patch.changedFiles);
-            await pool.advanceBaseNow();
-            bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
-            return {
-              kept: false,
-              reason: integ.reason ?? "final-integration-failed",
-              detail: integ.detail,
-              failureClass: "final-integration-failed",
-              usage: integ.usage,
-              repairAttempted: true,
-            };
-          }
-
-          // Kept. An in-place integration repair (if any ran) edited main, so re-snapshot the base
-          // to include it; future sandboxes then fork from the reconciled tree.
-          await pool.advanceBaseNow();
-          for (const file of patch.changedFiles) acceptedFiles.add(file);
-          for (const file of integ.repairedFiles) acceptedFiles.add(file);
-          for (const finding of unit.findings) acceptedTools.add(finding.tool);
-          return { ...outcome, usage: integ.usage };
-        });
+        const applied = await sandboxPool.applyPatchToMain(patch.patch, patch.changedFiles);
+        if (!applied.ok) {
+          bus?.emit({ type: "file-stage", loop, file: unit.file, stage: "patch-conflict" });
+          return {
+            kept: false,
+            reason: "patch-conflict",
+            detail: applied.detail,
+            failureClass: "patch-conflict",
+            usage: outcome.usage,
+          };
+        }
+        for (const file of patch.changedFiles) acceptedFiles.add(file);
+        for (const finding of unit.findings) acceptedTools.add(finding.tool);
+        return outcome;
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -733,8 +703,14 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   bus.on((e) => reporter.onEvent(e));
   if (tracer) bus.on((e) => tracer.event(e));
 
+  await assertGitRepo(createGit(process.cwd()));
+  // Run from the repo root even when invoked inside a subdirectory (monorepo package), and rebase
+  // the user's path arguments off the original cwd so they still point where they meant.
+  const { prefix, startCwd } = await rebaseToRepoRoot();
+  if (prefix && opts.paths?.length) {
+    opts.paths = opts.paths.map((p) => relative(cwd, resolve(startCwd, p)));
+  }
   const git = createGit(cwd);
-  await assertGitRepo(git);
 
   if (
     opts.effort &&
@@ -966,8 +942,9 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
 }
 
 async function runRetry(id: string): Promise<void> {
+  await assertGitRepo(createGit(process.cwd()));
+  await rebaseToRepoRoot();
   const git = createGit(cwd);
-  await assertGitRepo(git);
 
   const report = loadReport();
   const target = resolveRetryTarget(id, report.findings);
@@ -1044,16 +1021,19 @@ async function runRetry(id: string): Promise<void> {
 const program = buildProgram({
   run: (opts) => runRun(opts),
   diff: async () => {
+    await rebaseToRepoRoot();
     const snapshot = Snapshot.fromJSON(loadJson(SNAPSHOT_PATH));
     const changed = await snapshot.changedSince(createGit(cwd));
     out(changed.length ? changed.join("\n") : "No tool edits.");
   },
   undo: async () => {
+    await rebaseToRepoRoot();
     const snapshot = Snapshot.fromJSON(loadJson(SNAPSHOT_PATH));
     await snapshot.restore(createGit(cwd));
     out("✔ Restored pre-run snapshot.");
   },
-  show: (id) => {
+  show: async (id) => {
+    await rebaseToRepoRoot();
     const report = loadReport();
     out(showCommand(id, report.findings));
   },
