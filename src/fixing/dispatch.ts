@@ -154,6 +154,30 @@ function mergeUnits(a: WorkUnit, b: WorkUnit): WorkUnit {
   return a;
 }
 
+/** A unit whose only job is deleting unused files (no other strategy mixed in). */
+function isPureUnusedFileDelete(unit: WorkUnit): boolean {
+  const strategies = unit.strategies ?? (unit.strategy ? [unit.strategy] : []);
+  return strategies.length === 1 && strategies[0] === "deterministic-unused-file-delete";
+}
+
+/**
+ * Collapse every unused-file deletion into ONE unit so the whole dead set is removed together
+ * and typechecked once. Knip-flagged dead files frequently reference each other (a tRPC
+ * client/server/query-client cluster, a db barrel + its index); deleting them in separate
+ * concurrent units made each unit's typecheck transiently see a sibling that another unit had
+ * just removed — a false "file not found" that reverted a perfectly good deletion at random.
+ * Deleting them atomically is also safer: if removing the set genuinely breaks typecheck, the
+ * whole batch reverts rather than leaving the tree half-deleted.
+ */
+function coalesceUnusedFileDeletes(units: WorkUnit[]): WorkUnit[] {
+  const deletes = units.filter(isPureUnusedFileDelete);
+  if (deletes.length <= 1) return units;
+  const [first, ...rest] = deletes as [WorkUnit, ...WorkUnit[]];
+  for (const unit of rest) mergeUnits(first, unit);
+  const dropped = new Set(rest);
+  return units.filter((unit) => !dropped.has(unit));
+}
+
 /**
  * Group planned repairs into disjoint work units. Unlike `planWork`, this honors
  * planner-selected editable files, so cross-file duplicate plans reserve both clone sites.
@@ -177,7 +201,7 @@ export function planWorkFromRepairs(plans: RepairPlan[]): WorkUnit[] {
     units.push(next);
   }
 
-  return units;
+  return coalesceUnusedFileDeletes(units);
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { Finding, Tool } from "../findings/finding.js";
 import type { AuditResult } from "../orchestrator.js";
 import type { EventBus } from "../output/events.js";
+import type { ScannerTrace, Tracer } from "../debug/trace.js";
 import { filterToChanged } from "./scope.js";
 import { runEslintSonarjs } from "./eslint-sonarjs.js";
 import { gitleaksScanner } from "./gitleaks.js";
@@ -48,6 +49,10 @@ type AuditDeps = {
   timeoutMs?: number;
   bus?: EventBus;
   tools?: Tool[];
+  /** Opt-in raw-scanner-output tracer (TEND_TRACE_DIR). Off → zero cost, no behavior change. */
+  tracer?: Tracer | null;
+  /** Label for the trace: which phase this scan belongs to (audit vs gate rescan). */
+  tracePhase?: string;
 };
 
 type ScanFilesDeps = {
@@ -57,9 +62,24 @@ type ScanFilesDeps = {
   timeoutMs?: number;
   bus?: EventBus;
   tools?: Tool[];
+  /** Opt-in raw-scanner-output tracer (TEND_TRACE_DIR). Off → zero cost, no behavior change. */
+  tracer?: Tracer | null;
+  /** Label for the trace: which phase this scan belongs to (audit vs gate rescan). */
+  tracePhase?: string;
 };
 
 let scanCounter = 0;
+
+/** Slim a finding down to the fields worth tracing per scanner invocation. */
+function traceFindings(findings: Finding[]): ScannerTrace["findings"] {
+  return findings.map((f) => ({
+    rule: f.rule,
+    file: f.file,
+    line: f.range?.startLine,
+    severity: f.severity,
+    message: f.message,
+  }));
+}
 
 async function runScanners(
   deps: ScanFilesDeps,
@@ -72,11 +92,27 @@ async function runScanners(
   const ctx = { cwd: deps.cwd, files, loop, scanId: `${process.pid}-${loop}-${scanCounter++}` };
   const requested = deps.tools ? new Set<Tool>(deps.tools) : undefined;
   const shouldRun = (tool: Tool): boolean => requested === undefined || requested.has(tool);
+  const phase = deps.tracePhase ?? "audit";
   const runWithEvents = async (scanner: Scanner): Promise<ScanResult> => {
     deps.bus?.emit({ type: "scanner-start", loop, tool: scanner.tool });
+    // When tracing, wrap spawn to capture the resolved command + raw subprocess output. The
+    // wrapper only records — it returns deps.spawn's result unchanged, so behavior is identical.
+    let rawCommand: string | undefined;
+    let rawResult: { stdout: string; stderr: string; exitCode: number } | undefined;
+    let rawDurationMs: number | undefined;
+    const spawn: Spawn = deps.tracer
+      ? async (binary, args, opts) => {
+          rawCommand = [binary, ...args].join(" ");
+          const startedAt = Date.now();
+          const r = await deps.spawn(binary, args, opts);
+          rawDurationMs = Date.now() - startedAt;
+          rawResult = r;
+          return r;
+        }
+      : deps.spawn;
     const result = await runScanner(scanner, ctx, {
       which: deps.which,
-      spawn: deps.spawn,
+      spawn,
       timeout: deps.timeoutMs,
     });
     const status = scannerStatus(result);
@@ -87,6 +123,20 @@ async function runScanners(
       status: status.status,
       findings: result.findings.length,
       reason: status.reason,
+    });
+    deps.tracer?.scanner({
+      tool: scanner.tool,
+      loop,
+      phase,
+      status: status.status,
+      reason: status.reason,
+      findings: traceFindings(result.findings),
+      command: rawCommand,
+      exitCode: rawResult?.exitCode,
+      stdout: rawResult?.stdout,
+      stderr: rawResult?.stderr,
+      durationMs: rawDurationMs,
+      diagnostics: result.diagnostics,
     });
     return result;
   };
@@ -105,6 +155,16 @@ async function runScanners(
           status: status.status,
           findings: result.findings.length,
           reason: status.reason,
+        });
+        // No subprocess to capture (Node-API worker); the pinned-TS diagnostics ride on result.
+        deps.tracer?.scanner({
+          tool: "sonarjs",
+          loop,
+          phase,
+          status: status.status,
+          reason: status.reason,
+          findings: traceFindings(result.findings),
+          diagnostics: result.diagnostics,
         });
         return result;
       })()

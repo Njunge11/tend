@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,6 +18,9 @@ function createTempEnv(prefix: string) {
     },
     read(rel: string): string {
       return readFileSync(join(dir, rel), "utf8");
+    },
+    exists(rel: string): boolean {
+      return existsSync(join(dir, rel));
     },
     cleanup() {
       rmSync(dir, { recursive: true, force: true });
@@ -120,6 +123,85 @@ describe("deterministic fixers", () => {
     expect(outcome.kept).toBe(true);
     expect(JSON.parse(env.read("package.json")).dependencies).toStrictEqual({ react: "^19.0.0" });
     expect(outcome.usage?.sessions).toBe(0);
+  });
+
+  it("deletes knip unused-file findings without starting an AI session", async () => {
+    env.write("src/unused.ts", "export const unused = 1;\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-file",
+      category: "dead-code",
+      file: "src/unused.ts",
+      message: "Unused file: src/unused.ts",
+    });
+    const scanFindings = vi.fn(async () => []);
+
+    const outcome = await makeDeterministicFixUnit(deps({ scanFindings }))(
+      unit("src/unused.ts", finding, "deterministic-unused-file-delete"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(outcome.usage?.sessions).toBe(0);
+    expect(env.exists("src/unused.ts")).toBe(false);
+    expect(scanFindings).toHaveBeenCalledWith(["src/unused.ts"], ["knip"]);
+  });
+
+  it("restores a deleted unused file when the gate fails", async () => {
+    const original = "export const unused = 1;\n";
+    env.write("src/unused.ts", original);
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-file",
+      category: "dead-code",
+      file: "src/unused.ts",
+      message: "Unused file: src/unused.ts",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps({ typescript: true, runTsc: async () => ({ exitCode: 1, output: "boom" }) }))(
+      unit("src/unused.ts", finding, "deterministic-unused-file-delete"),
+    );
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("typecheck");
+    expect(env.exists("src/unused.ts")).toBe(true);
+    expect(env.read("src/unused.ts")).toBe(original);
+  });
+
+  it("deletes an unreferenced knip unused exported type without AI usage", async () => {
+    env.write("src/root.ts", "export const appRouter = {};\n\nexport type AppRouter = typeof appRouter;\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-type",
+      category: "dead-code",
+      file: "src/root.ts",
+      message: "Unused exported type: AppRouter",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/root.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(outcome.usage?.sessions).toBe(0);
+    expect(env.read("src/root.ts")).toBe("export const appRouter = {};");
+  });
+
+  it("removes only the export modifier when an unused export is referenced in-file", async () => {
+    env.write("src/helpers.ts", "export function helper() {\n  return 1;\n}\n\nexport const value = helper();\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/helpers.ts",
+      message: "Unused export: helper",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/helpers.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/helpers.ts")).toBe("function helper() {\n  return 1;\n}\n\nexport const value = helper();\n");
   });
 
   it("marks package cleanup as needing a lockfile update and reverts package.json", async () => {

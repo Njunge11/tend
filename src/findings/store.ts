@@ -38,10 +38,10 @@ export class FindingStore {
    *   - present both loops     → stays as-is, carries attempts/history, bumps lastSeenLoop
    *   - new fingerprint         → added `pending`, firstSeenLoop = loop
    */
-  reconcile(fresh: Finding[], loop: number): void {
+  reconcile(fresh: Finding[], loop: number, auditedTools?: ReadonlySet<Finding["tool"]>): void {
     const freshIds = new Set(fresh.map((f) => f.id));
     const unclaimed = this.collectUnclaimed(fresh);
-    this.resolveMissing(freshIds, unclaimed);
+    this.resolveMissing(freshIds, unclaimed, auditedTools);
     this.applyFresh(fresh, loop);
   }
 
@@ -72,8 +72,18 @@ export class FindingStore {
    * The report-only-leak bug is closed upstream by `dispatchableUnits` filtering plans before
    * unit-building, so tend no longer edits out-of-scope files and this no longer mis-fires.
    */
-  private resolveMissing(freshIds: Set<string>, unclaimed: Map<string, Finding[]>): void {
-    const missing = [...this.findings.values()].filter((known) => !freshIds.has(known.id));
+  private resolveMissing(
+    freshIds: Set<string>,
+    unclaimed: Map<string, Finding[]>,
+    auditedTools?: ReadonlySet<Finding["tool"]>,
+  ): void {
+    // When a loop re-audits only a subset of scanners (e.g. it skips knip's whole-repo scan
+    // because all knip findings are out of fix scope), a finding from a NON-audited tool being
+    // absent doesn't mean it was resolved — that tool simply didn't run. Only reconcile findings
+    // whose tool actually ran this loop; leave the rest untouched (their last known state stands).
+    const missing = [...this.findings.values()].filter(
+      (known) => !freshIds.has(known.id) && (auditedTools === undefined || auditedTools.has(known.tool)),
+    );
     // Active records claim drift candidates before already-`fixed` ones, so a stale fixed
     // record with the same identity can't steal the candidate of the genuinely drifted
     // pending finding (which would then be wrongly flipped to fixed).

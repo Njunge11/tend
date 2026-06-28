@@ -1,4 +1,4 @@
-import { existsSync,readFileSync,writeFileSync } from "node:fs";
+import { existsSync,readFileSync,rmSync,writeFileSync } from "node:fs";
 import { join,resolve } from "node:path";
 import ts from "typescript";
 import type { RevertReason } from "../gate/check.js";
@@ -107,6 +107,163 @@ function applyPackageJsonCleanup(cwd: string, unit: WorkUnit): ApplyResult {
   return { ok: true };
 }
 
+function applyUnusedFileDelete(cwd: string, unit: WorkUnit): ApplyResult {
+  const files = [...new Set(unit.findings.filter((finding) => finding.rule === "unused-file").map((finding) => finding.file))];
+  if (files.length === 0) {
+    return {
+      ok: false,
+      reason: "session-error",
+      detail: "No unused-file findings were present in the deterministic delete unit",
+    };
+  }
+
+  for (const file of files) {
+    const abs = join(cwd, file);
+    if (!existsSync(abs)) {
+      return {
+        ok: false,
+        reason: "session-error",
+        detail: `Unused file was already missing: ${file}`,
+      };
+    }
+    rmSync(abs, { force: true });
+  }
+  return { ok: true };
+}
+
+function symbolNameFromFindingMessage(message: string): string | undefined {
+  return /:\s*([A-Za-z_$][\w$]*)\b/.exec(message)?.[1];
+}
+
+function hasExportModifier(node: ts.Node): boolean {
+  return ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+}
+
+function exportModifier(node: ts.Node): ts.Modifier | undefined {
+  if (!ts.canHaveModifiers(node)) return undefined;
+  return (ts.getModifiers(node) ?? []).find((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+}
+
+function declarationName(node: ts.Node): ts.Identifier | undefined {
+  if (
+    (ts.isFunctionDeclaration(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isInterfaceDeclaration(node) ||
+      ts.isTypeAliasDeclaration(node) ||
+      ts.isEnumDeclaration(node)) &&
+    node.name
+  ) {
+    return node.name;
+  }
+  if (ts.isVariableStatement(node) && hasExportModifier(node)) {
+    const [declaration] = node.declarationList.declarations;
+    return declaration && ts.isIdentifier(declaration.name) ? declaration.name : undefined;
+  }
+  return undefined;
+}
+
+function findExportedDeclaration(sourceFile: ts.SourceFile, name: string): { node: ts.Node; name: ts.Identifier } | undefined {
+  for (const statement of sourceFile.statements) {
+    if (!hasExportModifier(statement)) continue;
+    const foundName = declarationName(statement);
+    if (foundName?.text === name) return { node: statement, name: foundName };
+  }
+  return undefined;
+}
+
+function hasIdentifierReference(sourceFile: ts.SourceFile, name: string, declaration: ts.Identifier): boolean {
+  let referenced = false;
+  const visit = (node: ts.Node): void => {
+    if (referenced) return;
+    if (node !== declaration && ts.isIdentifier(node) && node.text === name) {
+      referenced = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return referenced;
+}
+
+function deletionSpan(sourceFile: ts.SourceFile, node: ts.Node): ts.TextSpan {
+  const start = node.getFullStart();
+  let length = node.getEnd() - start;
+  const text = sourceFile.getFullText();
+  while (text[start + length] === "\r" || text[start + length] === "\n") length++;
+  return { start, length };
+}
+
+function removeExportChange(sourceFile: ts.SourceFile, node: ts.Node): ts.TextChange | undefined {
+  const modifier = exportModifier(node);
+  if (!modifier) return undefined;
+  const text = sourceFile.getFullText();
+  const start = modifier.getStart(sourceFile);
+  let length = modifier.getEnd() - start;
+  while (text[start + length] === " " || text[start + length] === "\t") length++;
+  return { span: { start, length }, newText: "" };
+}
+
+function unusedExportCleanupChanges(source: string, fileName: string, findings: { message: string }[]): ApplyResult | ts.TextChange[] {
+  const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
+  const changes: ts.TextChange[] = [];
+
+  for (const finding of findings) {
+    const name = symbolNameFromFindingMessage(finding.message);
+    if (!name) {
+      return {
+        ok: false,
+        reason: "session-error",
+        detail: `Could not parse unused export name from finding: ${finding.message}`,
+      };
+    }
+    const declaration = findExportedDeclaration(sourceFile, name);
+    if (!declaration) {
+      return {
+        ok: false,
+        reason: "session-error",
+        detail: `Could not find exported declaration for unused symbol: ${name}`,
+      };
+    }
+    if (hasIdentifierReference(sourceFile, name, declaration.name)) {
+      const change = removeExportChange(sourceFile, declaration.node);
+      if (!change) {
+        return {
+          ok: false,
+          reason: "session-error",
+          detail: `Could not remove export modifier for unused symbol: ${name}`,
+        };
+      }
+      changes.push(change);
+    } else {
+      changes.push({ span: deletionSpan(sourceFile, declaration.node), newText: "" });
+    }
+  }
+
+  return changes;
+}
+
+function applyUnusedExportCleanup(cwd: string, unit: WorkUnit): ApplyResult {
+  const files = [...new Set(unit.findings.map((finding) => finding.file))];
+  for (const file of files) {
+    const abs = join(cwd, file);
+    if (!existsSync(abs)) {
+      return {
+        ok: false,
+        reason: "session-error",
+        detail: `Unused export file was missing: ${file}`,
+      };
+    }
+    const changes = unusedExportCleanupChanges(
+      readFileSync(abs, "utf8"),
+      abs,
+      unit.findings.filter((finding) => finding.file === file),
+    );
+    if (!Array.isArray(changes)) return changes;
+    applyTextChanges(abs, changes);
+  }
+  return { ok: true };
+}
+
 function applyTextChanges(fileName: string, changes: readonly ts.TextChange[]): void {
   let text = readFileSync(fileName, "utf8");
   for (const change of [...changes].sort((a, b) => b.span.start - a.span.start)) {
@@ -176,6 +333,10 @@ async function applyStrategy(strategy: DeterministicRepairStrategy, cwd: string,
   switch (strategy) {
     case "deterministic-package-json-cleanup":
       return applyPackageJsonCleanup(cwd, unit);
+    case "deterministic-unused-file-delete":
+      return applyUnusedFileDelete(cwd, unit);
+    case "deterministic-ts-unused-export-cleanup":
+      return applyUnusedExportCleanup(cwd, unit);
     case "deterministic-ts-organize-imports":
       return organizeImports(cwd, unit.findings.map((finding) => finding.file));
     case "deterministic-eslint-fix":

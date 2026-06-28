@@ -22,11 +22,13 @@ describe("antiRegression", () => {
     if (!r.ok) expect(r.reason).toBe("regression");
   });
 
-  it("rejects when a target finding must be resolved but remains present", () => {
+  it("rejects with 'unresolved-target' (not 'regression') when a target finding remains present", () => {
+    // Distinct reason: nothing new was introduced, the edit just didn't clear its target. This
+    // keeps it out of regression repair and lets the orchestrator cap its retries.
     const r = antiRegression([A], [A], { requireResolved: true });
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.reason).toBe("regression");
+      expect(r.reason).toBe("unresolved-target");
       expect(r.detail).toContain("Fix did not clear target finding");
     }
   });

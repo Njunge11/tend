@@ -17,9 +17,10 @@ import { detectTypeScript } from "./detect/typescript.js";
 import { resolveOwnerRoot, toOwnerRelative } from "./detect/project-root.js";
 import { makeFixUnit } from "./fixing/fix-unit.js";
 import { thinkingEnv } from "./fixing/thinking-budget.js";
-import { distinctRunModels, modelForUnit } from "./fixing/model-selection.js";
+import { modelForUnit } from "./fixing/model-selection.js";
 import { preflightModels } from "./fixing/model-preflight.js";
 import { makeDeterministicFixUnit } from "./fixing/deterministic.js";
+import { effortForUnit } from "./fixing/effort.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
 import { planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
 import type { Finding, Tool } from "./findings/finding.js";
@@ -35,11 +36,14 @@ import { onTerminationSignals } from "./process/signals.js";
 import { ClaudeSession } from "./session/claude.js";
 import { createStreamActivityScanner } from "./session/stream-activity.js";
 import { runIncrementalTsc, tscCacheFile } from "./fixing/typecheck-cache.js";
+import { expandWipFilesByImports } from "./fixing/wip-files.js";
+import { parseTscErrors, typecheck } from "./gate/checks/typecheck.js";
 import { orchestrate, type FixOutcome } from "./orchestrator.js";
 import { ReportBuilder } from "./report/builder.js";
 import { ReportSchema, type Report } from "./report/schema.js";
 import { renderSummary } from "./output/summary.js";
 import { EventBus } from "./output/events.js";
+import { createTracer } from "./debug/trace.js";
 import { detectOutputEnv } from "./output/env.js";
 import { makeTheme } from "./output/theme.js";
 import { createReporter } from "./output/reporter.js";
@@ -55,15 +59,8 @@ import type { TestOutcome } from "./gate/checks/tests.js";
 import { reasonLabel } from "./output/format.js";
 import { zeroUsage } from "./session/types.js";
 
-function effortForFindings(findings: Pick<Finding, "category" | "autofixable">[]): Effort {
-  if (findings.length === 0) return "medium";
-  const allMechanical = findings.every(
-    (f) => f.category === "dead-code" || f.autofixable === true,
-  );
-  return allMechanical ? "low" : "medium";
-}
-
 const cwd = process.cwd();
+const tracer = createTracer(process.env.TEND_TRACE_DIR);
 const TEND_DIR = join(cwd, ".tend");
 const SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
 const REPORT_PATH = join(TEND_DIR, "report.json");
@@ -190,15 +187,18 @@ type FinalIntegrationGate = {
   scanFindings: (files: string[], tools?: Tool[]) => Promise<unknown[]>;
 };
 
-/** Failure detail when the final whole-run typecheck fails; undefined when clean or skipped. */
+/** Failure detail when the final whole-run typecheck fails; undefined when clean or skipped.
+ *  Uses the same pristine baseline as the per-unit gate, so a pre-existing tsc error doesn't
+ *  fail the whole run after every accepted fix already typechecked clean against that baseline. */
 async function finalTypecheckFailure(
   gate: FinalIntegrationGate,
   typescript: boolean,
+  baselineErrors: readonly string[] | undefined,
 ): Promise<string | undefined> {
   if (!typescript) return undefined;
-  const tc = await gate.runTsc();
-  if (tc.exitCode === 0) return undefined;
-  return `final integration typecheck failed: ${tc.output}`;
+  const tc = await typecheck({ hasTsconfig: () => true, runTsc: gate.runTsc, baselineErrors });
+  if (tc.ok) return undefined;
+  return `final integration typecheck failed: ${tc.detail}`;
 }
 
 /** Failure detail when the final related-test run errors or fails; undefined when green or skipped. */
@@ -271,12 +271,71 @@ async function makeProductionFixUnit(
       );
     }
   }
+  // Capture the pristine typecheck baseline: the tsc errors that ALREADY exist before any fix.
+  // The gate rejects a fix only for errors not in this set, so a pre-existing error elsewhere in
+  // the owning package's program (a broken test fixture, a half-finished sibling file) can't
+  // false-revert a clean fix. `undefined` (capture threw) → the gate falls back to strict.
+  let typecheckBaseline: readonly string[] | undefined;
+  if (typescript) {
+    try {
+      const { output } = await runIncrementalTsc({
+        exec: execa,
+        cwd: ownerRoot,
+        cacheFile: tscCacheFile(TEND_CACHE_DIR, cwd, ownerRoot, "baseline"),
+        timeoutMs: TSC_TIMEOUT_MS,
+      });
+      typecheckBaseline = parseTscErrors(output);
+    } catch (error) {
+      err(
+        `⚠ typecheck baseline capture failed; pre-existing tsc errors will fail closed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  // One reachability check per distinct model, memoized for the whole run. The primary
+  // config.model is verified up front by the caller, so seed it as ready; capable-tier models
+  // are checked lazily on first use (item 10).
+  const modelChecks = new Map<string, Promise<{ ok: boolean; detail?: string }>>([
+    [config.model, Promise.resolve({ ok: true })],
+  ]);
+  const ensureModelReady = (model: string): Promise<{ ok: boolean; detail?: string }> => {
+    let check = modelChecks.get(model);
+    if (!check) {
+      check = preflightModels([model], pingModel).then((r) => {
+        const result = r.ok ? { ok: true } : { ok: false, detail: r.failures[0]?.detail ?? "model unavailable" };
+        bus?.emit({
+          type: "debug",
+          action: "model.preflight",
+          detail: `lazily preflighted capable model "${model}": ${result.ok ? "ok" : "UNAVAILABLE"}`,
+          data: { model, ok: result.ok, detail: result.detail },
+        });
+        return result;
+      });
+      modelChecks.set(model, check);
+    }
+    return check;
+  };
+
   const makeGateDeps = (sandbox?: WorkerSandbox) => {
     const repoRoot = sandbox?.cwd ?? cwd;
     const gateOwnerRoot = sandbox ? mapOwnerRoot(cwd, ownerRoot, sandbox.cwd) : ownerRoot;
     const session = new ClaudeSession({
       spawn: async (req) => {
-        const unitEffort = config.effort ?? effortForFindings(req.findings);
+        const unitEffort = effortForUnit(req.findings, config.effort);
+        const sessionModel = modelForUnit(req.findings, config);
+        // Lazily verify a capable-tier model the first time a unit actually needs it. A bad
+        // capable model fails just these units (a non-retryable, terminal "model rejected"
+        // outcome — see parseStreamJson) instead of bricking the whole run or being pinged every
+        // run up front (item 10). config.model was already verified up front by the caller.
+        const ready = await ensureModelReady(sessionModel);
+        if (!ready.ok) {
+          const payload = JSON.stringify({
+            type: "result",
+            is_error: true,
+            result: `Model "${sessionModel}" is not available: ${ready.detail}`,
+          });
+          return { stdout: payload, exitCode: 1 };
+        }
+        const startedAt = Date.now();
         const child = execa(
           "claude",
           [
@@ -285,7 +344,7 @@ async function makeProductionFixUnit(
             "-p",
             req.prompt,
             "--model",
-            modelForUnit(req.findings, config),
+            sessionModel,
             "--effort",
             unitEffort,
             "--output-format",
@@ -323,7 +382,21 @@ async function makeProductionFixUnit(
         let fallbackExit = 0;
         if (r.timedOut) fallbackExit = 143;
         else if (r.failed) fallbackExit = 1;
-        return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? fallbackExit };
+        const stdout = typeof r.stdout === "string" ? r.stdout : "";
+        const exitCode = r.exitCode ?? fallbackExit;
+        tracer?.session({
+          file: req.file,
+          model: sessionModel,
+          effort: unitEffort,
+          prompt: req.prompt,
+          stdout,
+          stderr: typeof r.stderr === "string" ? r.stderr : "",
+          exitCode,
+          timedOut: r.timedOut === true,
+          durationMs: Date.now() - startedAt,
+          findings: req.findings.map((f) => ({ tool: f.tool, rule: f.rule })),
+        });
+        return { stdout, exitCode };
       },
     });
 
@@ -338,7 +411,10 @@ async function makeProductionFixUnit(
         runIncrementalTsc({
           exec: execa,
           cwd: gateOwnerRoot,
-          cacheFile: tscCacheFile(TEND_CACHE_DIR, cwd, ownerRoot),
+          // Discriminate by sandbox worktree so concurrent AI gates each get their own
+          // build-info file instead of corrupting one shared cache (the non-sandbox
+          // deterministic gate, which runs serially, keeps the stable per-owner path).
+          cacheFile: tscCacheFile(TEND_CACHE_DIR, cwd, ownerRoot, sandbox?.cwd),
           timeoutMs: TSC_TIMEOUT_MS,
         }),
       runBuild: buildArgs
@@ -366,12 +442,15 @@ async function makeProductionFixUnit(
               spawn: realSpawn,
               timeoutMs: 120_000,
               tools,
+              tracer,
+              tracePhase: "gate-rescan",
             },
             files,
             0,
           )
         ).findings,
       baseline,
+      typecheckBaseline,
       session,
     };
   };
@@ -446,7 +525,7 @@ async function makeProductionFixUnit(
       // Checks run in order and short-circuit: tests only run after a clean typecheck, the
       // rescan only after green tests — same sequencing as the per-unit gate.
       const detail =
-        (await finalTypecheckFailure(mainGateDeps, typescript)) ??
+        (await finalTypecheckFailure(mainGateDeps, typescript, typecheckBaseline)) ??
         (await finalTestFailure(mainGateDeps, runner, files)) ??
         (await finalRescanFailure(mainGateDeps, [...acceptedTools], files));
       return detail === undefined ? { ok: true, files } : { ok: false, files, detail };
@@ -497,32 +576,35 @@ async function resolveRunScope(
   return { scope };
 }
 
+/** One `claude -p` reachability ping for a model (used by both the up-front and lazy preflights). */
+async function pingModel(model: string): Promise<{ stdout: string; exitCode: number }> {
+  const r = await execa(
+    "claude",
+    [
+      ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
+      "--no-session-persistence",
+      "-p",
+      "Reply with: ok",
+      "--model",
+      model,
+      "--max-turns",
+      "1",
+      "--output-format",
+      "json",
+    ],
+    { reject: false, timeout: MODEL_PREFLIGHT_TIMEOUT_MS },
+  );
+  return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? 1 };
+}
+
 /**
- * Probe every model this run can route to. Reports each unreachable model and returns false
- * so the caller can abort before any work starts; true means all models are reachable.
+ * Probe the run's PRIMARY model up front. Capable-tier models (duplication/complexity escalation)
+ * are NOT pinged here — most runs never route a unit to them, so pinging Opus every run was pure
+ * waste (item 10). They're preflighted lazily on first use instead (see `ensureModelReady`).
+ * Reports an unreachable model and returns false so the caller can abort before any work starts.
  */
-async function verifyModelAccess(
-  config: Parameters<typeof distinctRunModels>[0],
-): Promise<boolean> {
-  const preflight = await preflightModels(distinctRunModels(config), async (model) => {
-    const r = await execa(
-      "claude",
-      [
-        ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
-        "--no-session-persistence",
-        "-p",
-        "Reply with: ok",
-        "--model",
-        model,
-        "--max-turns",
-        "1",
-        "--output-format",
-        "json",
-      ],
-      { reject: false, timeout: MODEL_PREFLIGHT_TIMEOUT_MS },
-    );
-    return { stdout: typeof r.stdout === "string" ? r.stdout : "", exitCode: r.exitCode ?? 1 };
-  });
+async function verifyModelAccess(model: string): Promise<boolean> {
+  const preflight = await preflightModels([model], pingModel);
   if (preflight.ok) return true;
   for (const failure of preflight.failures) err(`✖ model "${failure.model}": ${failure.detail}`);
   return false;
@@ -542,6 +624,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   reporter.start();
   const bus = new EventBus();
   bus.on((e) => reporter.onEvent(e));
+  if (tracer) bus.on((e) => tracer.event(e));
 
   const git = createGit(cwd);
   await assertGitRepo(git);
@@ -577,7 +660,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // exits 0 for an unknown model, so without this a typo'd --model silently burns
   // entire fix passes as no-op session errors (see model-preflight.ts).
   reporter.note("verifying model access…");
-  if (!(await verifyModelAccess(config))) {
+  if (!(await verifyModelAccess(config.model))) {
     process.exitCode = 1;
     return;
   }
@@ -642,6 +725,17 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     sandboxPool,
     abort.signal,
   );
+  // Whole-file deletion is the one fix that can destroy in-progress work, so never auto-delete a
+  // file that's part of uncommitted changes (untracked or modified) — or a committed module that
+  // such a file imports (its WIP cluster). Only committed, clean, genuinely-dead files are deleted;
+  // everything else is reported. Mirrors knip's own opt-in file removal + the clean-tree codemod norm.
+  const uncommitted = await changedVsHead(git);
+  const likelyWipFiles = expandWipFilesByImports(uncommitted, cwd);
+  if (uncommitted.length > 0) {
+    reporter.note(
+      `${plural(uncommitted.length, "uncommitted file")} present · unused-file deletion skips work in progress (tend is most reliable on a clean tree)`,
+    );
+  }
 
   // On Ctrl-C / SIGTERM, stop starting new work (abort + cancel), then tear down sandboxes
   // (remove worktrees) before exiting so a cancelled run leaves the repo exactly as a clean
@@ -673,10 +767,33 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
         scope,
         timeoutMs: 120_000,
         bus,
+        tracer,
+        tracePhase: "audit",
       }),
       fixUnit,
-      deterministicFixUnit,
-      config,
+      // Deterministic units have no `claude -p` session to capture under sessions/, so record what
+      // each one attempted and how it resolved as a `deterministic.unit` decision — the only trace
+      // of the (no-AI) deterministic phase's per-unit work.
+      deterministicFixUnit: async (unit, loop) => {
+        const outcome = await deterministicFixUnit(unit, loop);
+        bus.emit({
+          type: "debug",
+          loop,
+          action: "deterministic.unit",
+          detail: `${unit.file} ${outcome.kept ? "kept" : `reverted (${outcome.reason ?? "?"})`}`,
+          data: {
+            file: unit.file,
+            strategies: unit.strategies ?? (unit.strategy ? [unit.strategy] : []),
+            findings: unit.findings.map((f) => `${f.tool}/${f.rule}`),
+            kept: outcome.kept,
+            reason: outcome.reason,
+            detail: outcome.detail,
+          },
+        });
+        return outcome;
+      },
+      // A knip `unused-file` hit on a currently-broken (WIP) file is reported, not auto-deleted.
+      config: { ...config, likelyWipFiles },
       inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
       signal: abort.signal,
       bus,

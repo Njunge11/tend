@@ -87,6 +87,18 @@ describe("tscCacheFile", () => {
     const owner = join(dir, "packages", "app");
     expect(tscCacheFile(cacheDir, dir, owner)).toBe(tscCacheFile(cacheDir, dir, owner));
   });
+
+  it("gives concurrent sandboxes of the same owner distinct cache files (no shared-file corruption)", () => {
+    const cacheDir = join(dir, ".tend", "cache");
+    const owner = join(dir, "packages", "app");
+    const sandboxA = tscCacheFile(cacheDir, dir, owner, "/work/tend-sandbox-1");
+    const sandboxB = tscCacheFile(cacheDir, dir, owner, "/work/tend-sandbox-2");
+    expect(sandboxA).not.toBe(sandboxB);
+    // ...but each sandbox's path is stable across iterations, so its cache stays warm.
+    expect(tscCacheFile(cacheDir, dir, owner, "/work/tend-sandbox-1")).toBe(sandboxA);
+    // and a discriminated path differs from the bare (serialized-consumer) path.
+    expect(sandboxA).not.toBe(tscCacheFile(cacheDir, dir, owner));
+  });
 });
 
 describe("runIncrementalTsc", () => {

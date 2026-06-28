@@ -22,6 +22,12 @@ export type FailureClass =
   | "tool-timeout"
   | "rate-limit"
   | "model-tool-failure"
+  /**
+   * The model/protocol refused this request in a way retrying can't fix: prompt too long,
+   * output truncated at max tokens, or the requested model is unavailable (mid-run 404).
+   * Terminal and no-burn — re-dispatching feeds the same oversized prompt or missing model.
+   */
+  | "model-rejected"
   | "sandbox-setup-failed"
   | "patch-conflict"
   | "unowned-patch"
@@ -29,6 +35,12 @@ export type FailureClass =
   | "no-edit"
   | "no-op"
   | "regression"
+  /**
+   * The fix didn't introduce a new issue, it just failed to clear the finding it targeted.
+   * Distinct from "regression" so it skips regression repair (there's no new finding to
+   * repair) and gets a small bounded retry instead of the full regression-repair fan-out.
+   */
+  | "unresolved-target"
   | "typecheck"
   | "broke-test"
   | "suppression"
@@ -81,7 +93,10 @@ export type SessionResult =
       ok: false;
       error: string;
       rateLimited: boolean;
-      failureClass: Extract<FailureClass, "tool-timeout" | "rate-limit" | "model-tool-failure">;
+      failureClass: Extract<
+        FailureClass,
+        "tool-timeout" | "rate-limit" | "model-tool-failure" | "model-rejected"
+      >;
       usage?: AiUsage;
     };
 

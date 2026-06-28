@@ -123,6 +123,26 @@ describe("ClaudeSession", () => {
     }
   });
 
+  it("maps a non-retryable payload (prompt too long) to model-rejected, not model-tool-failure", async () => {
+    const stream = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      error: "API Error: 400 prompt is too long: 240000 tokens > 200000 maximum",
+      total_cost_usd: 0.2,
+      usage: { input_tokens: 5, output_tokens: 0 },
+    });
+    const result = await runStream(stream);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.failureClass).toBe("model-rejected");
+      expect(result.rateLimited).toBe(false);
+    }
+    // usage is still surfaced — the failed session cost tokens.
+    expect(result.usage?.estimatedCostUsd).toBe(0.2);
+  });
+
   it("classifies exit 143 as a tool timeout", async () => {
     const result = await runStream("", 143);
 

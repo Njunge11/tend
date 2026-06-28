@@ -45,6 +45,18 @@ export class ClaudeSession implements SessionRunner {
         usage,
       };
     }
+    if (parsed.nonRetryable) {
+      // Prompt too long / output truncated at max tokens / model unavailable: retrying
+      // re-sends the same oversized prompt or missing model. Terminal, so it never burns the
+      // full per-issue retry budget on a guaranteed-identical failure.
+      return {
+        ok: false,
+        error: `Claude session failed with a non-retryable error (exit ${exitCode})`,
+        rateLimited: false,
+        failureClass: "model-rejected",
+        usage,
+      };
+    }
     if (exitCode !== 0 || parsed.errored) {
       const error = `Claude session failed (exit ${exitCode})`;
       return {

@@ -48,7 +48,12 @@ export type TendEvent =
   // `findings` = how many findings this job covered (0 for a split-parent placeholder).
   | { type: "file-result"; loop: number; file: string; outcome: FileOutcome; findings: number; reason?: string; detail?: string }
   | { type: "loop-complete"; loop: number; fixed: number; reverted: number; remaining: number; estimatedCostUsd: number }
-  | { type: "done"; exitStatus: number };
+  | { type: "done"; exitStatus: number }
+  // Dev-only structured decision/diagnostic record. Carries the orchestrator's internal verdicts
+  // (why a finding went terminal vs retried, which tools were skipped, why a batch split, what a
+  // deterministic unit did, model preflight). The live reporters ignore it; the tracer records it
+  // to events.jsonl (chronological) and decisions.jsonl (filterable) so a real run is auditable.
+  | { type: "debug"; loop?: number; action: string; detail?: string; data?: Record<string, unknown> };
 
 type Listener = (event: TendEvent) => void;
 

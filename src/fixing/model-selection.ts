@@ -17,18 +17,15 @@ export const DEFAULT_MODEL = "claude-sonnet-4-6";
  * The more capable model for fixes that restructure code rather than tweak it.
  * Cross-file duplication means reasoning about several call sites at once and
  * extracting a shared abstraction; cognitive-complexity findings demand a
- * whole-function rewrite that preserves behavior. Some Knip dead-code findings
- * also require repo wiring/reachability reasoning before deleting or unexporting
- * code. These are harder than the single-file, localized edits the default model
- * handles well — Opus is worth the cost (the default model repeatedly timed out
- * on a complexity-67 refactor in a real run).
+ * whole-function rewrite that preserves behavior. Both are harder than the
+ * single-file, localized edits the default model handles well — Opus is worth
+ * the cost (the default model repeatedly timed out on a complexity-67 refactor
+ * in a real run).
  */
 export const CAPABLE_MODEL = "claude-opus-4-8";
 
 /** Complexity refactors are detected by rule — their category ("smell") is too broad. */
 const COMPLEXITY_RULE = "sonarjs/cognitive-complexity";
-const HIGH_RISK_KNIP_RULES = new Set(["unused-file", "unused-export", "unused-type"]);
-const WIRING_PATH_RE = /(^|\/)(api|auth|authz|clients?|db|init|root|route|router|server|trpc)(\.|\/|-)/i;
 
 /**
  * Config slice that picks the fix model; `duplicationModel` / `complexityModel`
@@ -48,25 +45,18 @@ function isComplexityRefactor(finding: Pick<Finding, "rule">): boolean {
   return finding.rule === COMPLEXITY_RULE;
 }
 
-function isHighRiskKnipDeadCode(finding: Pick<Finding, "tool" | "rule" | "file">): boolean {
-  if (finding.tool !== "knip" || !HIGH_RISK_KNIP_RULES.has(finding.rule)) return false;
-  return finding.rule === "unused-file" || WIRING_PATH_RE.test(finding.file);
-}
-
 /**
  * Pick the `claude -p` model for one work unit (one file's findings). A unit that
  * contains any duplication finding gets the capable model (configurable via
  * `duplicationModel`), as does one containing any cognitive-complexity finding
  * (configurable via `complexityModel`); both default to {@link CAPABLE_MODEL}.
- * High-risk Knip dead-code cleanup also uses the capable model because safe
- * deletion often depends on framework wiring and indirect reachability. Everything
- * else — and any empty unit — gets the configured default model. Findings share a
- * single session per unit, so ONE capable-tier finding lifts the whole unit/batch
- * to the capable model. When a unit contains multiple capable kinds, the
- * duplication override wins, then the complexity override.
+ * Everything else — and any empty unit — gets the configured default model.
+ * Findings share a single session per unit, so ONE duplication or complexity
+ * finding lifts the whole unit/batch to the capable model. When a unit contains
+ * both kinds, the duplication override wins.
  */
 export function modelForUnit(
-  findings: Pick<Finding, "category" | "file" | "rule" | "tool">[],
+  findings: Pick<Finding, "category" | "rule">[],
   config: ModelSelectionConfig,
 ): string {
   if (findings.some(isDuplication)) {
@@ -74,9 +64,6 @@ export function modelForUnit(
   }
   if (findings.some(isComplexityRefactor)) {
     return config.complexityModel ?? CAPABLE_MODEL;
-  }
-  if (findings.some(isHighRiskKnipDeadCode)) {
-    return CAPABLE_MODEL;
   }
   return config.model;
 }
