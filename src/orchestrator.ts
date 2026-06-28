@@ -32,6 +32,12 @@ export type FixOutcome = {
   detail?: string;
   failureClass?: FailureClass;
   usage?: AiUsage;
+  /**
+   * The dispatch already ran an in-dispatch repair session (regression repair or test repair)
+   * for a gate stage and still failed. Re-dispatching from scratch repeats that same fan-out, so
+   * the orchestrator stops re-dispatching this finding rather than spending another full pass.
+   */
+  repairAttempted?: boolean;
 };
 
 export type OrchestrateDeps = {
@@ -52,6 +58,8 @@ export type OrchestrateDeps = {
     model: string;
     duplicationModel?: string;
     complexityModel?: string;
+    /** Repo-relative uncommitted files + their import cluster (work in progress) — not auto-deleted as unused. */
+    likelyWipFiles?: readonly string[];
   };
   /** Restrict findings to the fix scope (changed files); defaults to all. */
   inScope?: (findings: Finding[]) => Finding[];
@@ -88,6 +96,7 @@ function repairConfig(config: OrchestrateDeps["config"]) {
   return {
     ...config.fix,
     includeTests: config.includeTests,
+    likelyWipFiles: config.likelyWipFiles,
   };
 }
 
@@ -158,6 +167,8 @@ function classFromOutcome(outcome: FixOutcome): FailureClass | undefined {
   switch (outcome.reason) {
     case "regression":
       return "regression";
+    case "unresolved-target":
+      return "unresolved-target";
     case "typecheck":
       return "typecheck";
     case "broke-test":
@@ -182,7 +193,10 @@ function classFromOutcome(outcome: FixOutcome): FailureClass | undefined {
 }
 
 function isTerminalNoBurnFailure(outcome: FixOutcome): boolean {
-  return outcome.failureClass === "no-op";
+  // "no-op": the session made no edit and a retry won't help. "model-rejected": the model
+  // refused the request in a way retrying can't fix (prompt too long, max-tokens, missing
+  // model). Both are terminal — mark unfixable without spending the rest of the retry budget.
+  return outcome.failureClass === "no-op" || outcome.failureClass === "model-rejected";
 }
 
 /**
@@ -195,6 +209,7 @@ function isTerminalNoBurnFailure(outcome: FixOutcome): boolean {
 const LIMITED_RETRY_FAILURE_CLASSES: ReadonlySet<FailureClass> = new Set([
   "tool-timeout",
   "regression",
+  "unresolved-target",
   "typecheck",
   "broke-test",
 ]);
@@ -206,36 +221,125 @@ function effectiveBudget(failureClass: FailureClass | undefined, budget: number)
     : budget;
 }
 
-/** Record one reverted/failed outcome against a finding (budget-aware). */
-function applyFailedOutcome(store: FindingStore, finding: Finding, outcome: FixOutcome, budget: number): void {
+/**
+ * The orchestrator's verdict for one finding's outcome — the "why" behind whether it will be
+ * retried. Emitted as a `debug` decision event so a real run's retry/terminal choices are auditable.
+ */
+type FindingVerdict =
+  | "fixed"
+  | "fixed-out-of-scope-skipped"
+  | "retry"
+  | "budget-exhausted"
+  | "terminal-timeout"
+  | "terminal-repair-attempted"
+  | "terminal-no-burn"
+  | "rate-limit-no-burn";
+
+/**
+ * A timed-out unit that has nothing left to reduce. A multi-finding batch that times out is
+ * worth a bounded retry — splitting it (see {@link shouldSplitAfterFailure}) or a later loop
+ * fixing a sibling finding in the same file can let it finish. A SINGLE-finding unit has neither
+ * lever: there is no smaller form to split into, and (units own disjoint files) nothing else
+ * edits its file, so re-dispatching re-patches byte-identical input for another full timeout —
+ * pure waste. Such timeouts are terminal: revert (already done by the gate) and mark unfixable.
+ */
+function isSingleFindingTimeout(unit: WorkUnit, outcome: FixOutcome): boolean {
+  return outcome.failureClass === "tool-timeout" && unit.findings.length === 1;
+}
+
+/** Record one reverted/failed outcome against a finding (budget-aware). Returns the verdict + cap. */
+function applyFailedOutcome(
+  store: FindingStore,
+  finding: Finding,
+  outcome: FixOutcome,
+  budget: number,
+  terminalTimeout = false,
+): { verdict: FindingVerdict; cap?: number } {
   const reason = outcome.reason ?? "session-error";
   const failureClass = classFromOutcome(outcome);
   if (failureClass === "rate-limit") {
     store.recordFailureWithoutAttempt(finding.id, reason, outcome.detail, failureClass);
-  } else if (isTerminalNoBurnFailure(outcome)) {
+    return { verdict: "rate-limit-no-burn" };
+  }
+  if (isTerminalNoBurnFailure(outcome)) {
     store.recordFailureWithoutAttempt(finding.id, reason, outcome.detail, failureClass!);
     finding.status = "unfixable";
-  } else {
-    store.recordFailedAttempt(finding.id, reason, outcome.detail, failureClass);
-    if (store.isBudgetExhausted(finding.id, effectiveBudget(failureClass, budget)))
-      finding.status = "unfixable";
+    return { verdict: "terminal-no-burn" };
   }
+  if (terminalTimeout) {
+    // Burn the attempt (a real session ran and timed out) but do not allow a retry: the next
+    // attempt would feed the model the exact same input and time out again.
+    store.recordFailedAttempt(finding.id, reason, outcome.detail, failureClass);
+    finding.status = "unfixable";
+    return { verdict: "terminal-timeout" };
+  }
+  store.recordFailedAttempt(finding.id, reason, outcome.detail, failureClass);
+  // A dispatch that already ran an in-dispatch repair for this gate stage and still failed gets
+  // no cross-loop re-dispatch — that would re-run the same initial+repair fan-out (item 5). Other
+  // failures keep their normal (limited) budget.
+  const cap = outcome.repairAttempted ? 1 : effectiveBudget(failureClass, budget);
+  if (store.isBudgetExhausted(finding.id, cap)) {
+    finding.status = "unfixable";
+    return { verdict: outcome.repairAttempted ? "terminal-repair-attempted" : "budget-exhausted", cap };
+  }
+  return { verdict: "retry", cap };
 }
 
-export function applyOutcome(store: FindingStore, unit: WorkUnit, outcome: FixOutcome, budget: number): void {
+/** A single finding's resolved verdict, for the `finding.outcome` decision trace. */
+export type FindingDecision = {
+  id: string;
+  file: string;
+  rule: string;
+  tool: string;
+  kept: boolean;
+  verdict: FindingVerdict;
+  reason?: string;
+  failureClass?: FailureClass;
+  attempts: number;
+  status: Finding["status"];
+  cap?: number;
+};
+
+export function applyOutcome(
+  store: FindingStore,
+  unit: WorkUnit,
+  outcome: FixOutcome,
+  budget: number,
+  onDecision?: (decision: FindingDecision) => void,
+): void {
+  const terminalTimeout = isSingleFindingTimeout(unit, outcome);
   for (const finding of unit.findings) {
+    let verdict: FindingVerdict;
+    let cap: number | undefined;
     if (outcome.kept) {
       // Defense in depth: a kept unit only ever targeted its in-scope findings. Never credit an
       // out-of-fix-scope (report-only) finding as fixed even if one reaches a kept unit by some
       // other path — leave its status untouched (stays pending) so the report can't show it fixed.
-      if (finding.inFixScope === false) continue;
-      finding.status = "fixed";
-      delete finding.revertReason;
-      delete finding.revertDetail;
-      delete finding.finalFailureClass;
+      if (finding.inFixScope === false) {
+        verdict = "fixed-out-of-scope-skipped";
+      } else {
+        finding.status = "fixed";
+        delete finding.revertReason;
+        delete finding.revertDetail;
+        delete finding.finalFailureClass;
+        verdict = "fixed";
+      }
     } else {
-      applyFailedOutcome(store, finding, outcome, budget);
+      ({ verdict, cap } = applyFailedOutcome(store, finding, outcome, budget, terminalTimeout));
     }
+    onDecision?.({
+      id: finding.id,
+      file: finding.file,
+      rule: finding.rule,
+      tool: finding.tool,
+      kept: outcome.kept,
+      verdict,
+      reason: outcome.reason,
+      failureClass: classFromOutcome(outcome),
+      attempts: finding.attempts,
+      status: finding.status,
+      cap,
+    });
   }
 }
 
@@ -259,8 +363,27 @@ function splitUnit(unit: WorkUnit): WorkUnit[] {
   }));
 }
 
+/**
+ * Failure classes where a multi-finding batch is worth re-running as single-finding splits: the
+ * batch verdict is collective (one finding poisoned a gate that reverts the WHOLE unit), so the
+ * good siblings deserve their own isolated attempt instead of being reverted with the culprit.
+ * Besides tool-timeout (the batch may simply be too large) and regression (one finding introduced
+ * a new issue), this covers typecheck and broke-test — a single finding's edit that breaks the
+ * build or a test fails the shared gate and was reverting ~4 good siblings every loop.
+ */
+const SPLITTABLE_FAILURE_CLASSES: ReadonlySet<FailureClass> = new Set([
+  "tool-timeout",
+  "regression",
+  "typecheck",
+  "broke-test",
+]);
+
 function shouldSplitAfterFailure(unit: WorkUnit, outcome: FixOutcome): boolean {
-  return unit.findings.length > 1 && (outcome.failureClass === "tool-timeout" || outcome.failureClass === "regression");
+  return (
+    unit.findings.length > 1 &&
+    outcome.failureClass !== undefined &&
+    SPLITTABLE_FAILURE_CLASSES.has(outcome.failureClass)
+  );
 }
 
 /**
@@ -298,12 +421,44 @@ type RunCtx = {
 
 type DispatchOutcome = { unit: WorkUnit; outcome: FixOutcome; apply: boolean };
 
+/**
+ * Emit one dev-only decision/diagnostic record (the orchestrator's "why"). It rides the event
+ * bus as a `debug` event: the live reporters ignore it, while the tracer records it to
+ * events.jsonl + decisions.jsonl so a real run's verdicts are auditable after the fact.
+ */
+function debug(ctx: RunCtx, action: string, detail?: string, data?: Record<string, unknown>): void {
+  ctx.bus.emit({ type: "debug", loop: ctx.loop, action, detail, data });
+}
+
+/** Emit a `finding.outcome` decision for one finding's resolved verdict. */
+function logFindingDecision(ctx: RunCtx, decision: FindingDecision): void {
+  debug(
+    ctx,
+    "finding.outcome",
+    `${decision.file} ${decision.tool}/${decision.rule} → ${decision.verdict}` +
+      (decision.reason ? ` (${decision.reason})` : ""),
+    { ...decision },
+  );
+}
+
 /** One loop iteration's verdict: stop the run with a reason, or run another iteration. */
 type StepResult = { kind: "stop"; termination: Termination } | { kind: "continue" };
 
+/**
+ * Tools to re-run this loop. Loop 1 runs everything (undefined). Loop 2+ re-runs only the tools
+ * that still carry an in-fix-scope finding: a tool whose findings are ALL out of fix scope (the
+ * classic case is knip's repo-wide dead-code report on a subdir run) can't change as a result of
+ * tend's fixes — tend never edits the files it flags — so re-running its whole-repo scan every loop
+ * is pure wasted time. `reconcile` is told the same set so those un-rescanned findings keep their
+ * last known state instead of being misread as resolved (absent → "fixed").
+ */
+function auditToolsForLoop(ctx: RunCtx): Tool[] | undefined {
+  if (ctx.loop <= 1) return undefined;
+  return [...new Set(ctx.store.all().filter((f) => f.inFixScope !== false).map((f) => f.tool))] as Tool[];
+}
+
 /** Re-audit (subset of scanners after loop 1) and record scanner statuses / run scope. */
-async function runAudit(ctx: RunCtx): Promise<AuditResult> {
-  const relevantTools = ctx.loop > 1 ? ([...new Set(ctx.store.all().map((f) => f.tool))] as Tool[]) : undefined;
+async function runAudit(ctx: RunCtx, relevantTools: Tool[] | undefined): Promise<AuditResult> {
   const audited = await ctx.deps.audit(ctx.loop, relevantTools);
   if (audited.scannerStatuses)
     ctx.scannerStatuses = mergeScannerStatuses(ctx.scannerStatuses, audited.scannerStatuses);
@@ -381,13 +536,23 @@ function planWork(ctx: RunCtx, audited: AuditResult): WorkPlan {
   return { kind: "work", deterministicWork };
 }
 
-async function runDeterministicPhase(ctx: RunCtx, deterministicWork: WorkUnit[]): Promise<void> {
+/**
+ * Deterministic units edit the REAL cwd (no sandbox, unlike AI units) and the gate runs a
+ * whole-project typecheck. Running them concurrently let one unit's in-progress (or reverted)
+ * edit fail a sibling unit's global tsc and false-revert a perfectly good fix. They are fast
+ * (a delete / organize-imports / eslint --fix), so serializing them costs little and removes
+ * the whole cross-unit interference class — only one deterministic edit is ever on disk at a
+ * time when its gate runs.
+ */
+const DETERMINISTIC_CONCURRENCY = 1;
+
+async function runDeterministicPhase(ctx: RunCtx, deterministicWork: WorkUnit[]): Promise<Set<string>> {
   const { bus, config, deps, store } = ctx;
   bus.emit({
     type: "loop-start",
     loop: ctx.loop,
     files: deterministicWork.map((u) => u.file),
-    concurrency: config.maxSessions,
+    concurrency: DETERMINISTIC_CONCURRENCY,
     findings: deterministicWork.reduce((sum, u) => sum + u.findings.length, 0),
   });
   const deterministicFixUnit =
@@ -414,11 +579,21 @@ async function runDeterministicPhase(ctx: RunCtx, deterministicWork: WorkUnit[])
       });
       return { unit, outcome };
     },
-    { concurrency: config.maxSessions, signal: deps.signal },
+    { concurrency: DETERMINISTIC_CONCURRENCY, signal: deps.signal },
   );
+  const deletedFiles = new Set<string>();
   for (const { unit, outcome } of outcomes) {
-    applyOutcome(store, unit, outcome, config.perIssueBudget);
+    applyOutcome(store, unit, outcome, config.perIssueBudget, (d) => logFindingDecision(ctx, d));
     if (outcome.usage) ctx.usage = addUsage(ctx.usage, outcome.usage);
+    // A kept unused-file deletion removes the file from disk. Other scanners' findings on that
+    // same file are now moot — record the deleted paths so the caller can resolve them before
+    // dispatching AI work (otherwise an AI session edits a sandbox copy and its patch fails to
+    // apply to the now-missing index entry — a wasted session + a spurious patch-conflict revert).
+    if (outcome.kept) {
+      for (const finding of unit.findings) {
+        if (finding.rule === "unused-file") deletedFiles.add(finding.file);
+      }
+    }
   }
   const detFixed = outcomes.filter((o) => o.outcome.kept).length;
   const detReverted = outcomes.filter((o) => !o.outcome.kept).length;
@@ -430,6 +605,34 @@ async function runDeterministicPhase(ctx: RunCtx, deterministicWork: WorkUnit[])
     remaining: pendingUnderBudget(store, config.perIssueBudget).length,
     estimatedCostUsd: ctx.usage.estimatedCostUsd,
   });
+  return deletedFiles;
+}
+
+/**
+ * Resolve any still-pending findings sitting on a file that the deterministic phase just deleted
+ * as unused. The file is gone, so those findings are obviated — the next re-audit would drop them
+ * anyway (reconcile marks absent findings `fixed`). Doing it now stops tend from dispatching an AI
+ * session against a deleted file, which would burn a session and then fail to apply its patch
+ * ("does not exist in index" → a spurious patch-conflict revert). The unused-file findings
+ * themselves are already marked fixed by the delete unit and are skipped here.
+ */
+function resolveFindingsOnDeletedFiles(ctx: RunCtx, deletedFiles: Set<string>): void {
+  if (deletedFiles.size === 0) return;
+  for (const finding of ctx.store.all()) {
+    if (finding.status !== "pending") continue;
+    if (finding.rule === "unused-file") continue;
+    if (!deletedFiles.has(finding.file)) continue;
+    finding.status = "fixed";
+    delete finding.revertReason;
+    delete finding.revertDetail;
+    delete finding.finalFailureClass;
+    debug(
+      ctx,
+      "finding.obviated",
+      `${finding.file} ${finding.tool}/${finding.rule} → fixed (file deleted as unused)`,
+      { id: finding.id, file: finding.file, rule: finding.rule, tool: finding.tool },
+    );
+  }
 }
 
 /**
@@ -441,6 +644,14 @@ async function fixWithSplitFallback(ctx: RunCtx, work: WorkUnit): Promise<Dispat
   bus.emit({ type: "file-start", loop: ctx.loop, file: work.file, rule: work.findings[0]?.rule, model: modelForUnit(work.findings, config) });
   const outcome = await deps.fixUnit(work, ctx.loop);
   const smaller = shouldSplitAfterFailure(work, outcome) ? splitUnit(work) : [];
+  if (smaller.length > 0) {
+    debug(
+      ctx,
+      "batch.split",
+      `${work.file} reverted (${outcome.failureClass}) → splitting ${work.findings.length} findings into singles`,
+      { file: work.file, failureClass: outcome.failureClass, findings: work.findings.length },
+    );
+  }
   if (smaller.length === 0) {
     bus.emit({
       type: "file-result",
@@ -521,7 +732,7 @@ async function runAiPhase(ctx: RunCtx, units: WorkUnit[]): Promise<boolean> {
   );
   const outcomes = outcomesNested.flat();
   for (const { unit, outcome, apply } of outcomes) {
-    if (apply) applyOutcome(store, unit, outcome, config.perIssueBudget);
+    if (apply) applyOutcome(store, unit, outcome, config.perIssueBudget, (d) => logFindingDecision(ctx, d));
     if (outcome.usage) ctx.usage = addUsage(ctx.usage, outcome.usage);
   }
 
@@ -545,10 +756,21 @@ async function runOneIteration(ctx: RunCtx): Promise<StepResult> {
   ctx.loop++;
   ctx.bus.emit({ type: "scan-start", loop: ctx.loop });
 
-  const audited = await runAudit(ctx);
+  const auditTools = auditToolsForLoop(ctx);
+  if (auditTools) {
+    const present = [...new Set(ctx.store.all().map((f) => f.tool))];
+    const skipped = present.filter((tool) => !auditTools.includes(tool));
+    debug(
+      ctx,
+      "audit.tools",
+      `re-audit [${auditTools.join(", ") || "none"}]` + (skipped.length ? ` · skipped [${skipped.join(", ")}] (all findings out of fix scope)` : ""),
+      { running: auditTools, skipped },
+    );
+  }
+  const audited = await runAudit(ctx, auditTools);
   if (ctx.loop === 1 && audited.allScannersMissing) return { kind: "stop", termination: "no-scanners" };
 
-  ctx.store.reconcile(audited.findings, ctx.loop);
+  ctx.store.reconcile(audited.findings, ctx.loop, auditTools ? new Set(auditTools) : undefined);
   tagFindingScopes(ctx);
   collectRouted(ctx, audited.findings);
   emitAuditEvent(ctx, audited);
@@ -561,7 +783,10 @@ async function runOneIteration(ctx: RunCtx): Promise<StepResult> {
   ctx.fixingLoops++;
   const beforeAttemptState = statusAttemptSnapshot(ctx.store);
 
-  if (planned.deterministicWork.length > 0) await runDeterministicPhase(ctx, planned.deterministicWork);
+  if (planned.deterministicWork.length > 0) {
+    const deletedFiles = await runDeterministicPhase(ctx, planned.deterministicWork);
+    resolveFindingsOnDeletedFiles(ctx, deletedFiles);
+  }
 
   const units = dispatchableUnits(
     plannedRepairs(pendingUnderBudget(ctx.store, ctx.config.perIssueBudget), ctx.config, ctx.deps.cwd),

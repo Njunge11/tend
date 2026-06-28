@@ -14,6 +14,12 @@ export type UnitGateDeps = {
   cwd: string;
   typescript: boolean;
   runTsc: () => Promise<{ exitCode: number; output: string }>;
+  /**
+   * Normalized signatures of tsc errors that already existed on the pristine tree (captured once
+   * before any fix). Passed through to the typecheck gate so pre-existing errors don't false-revert
+   * a clean fix. `undefined` → no baseline captured → the gate fails closed on any tsc error.
+   */
+  typecheckBaseline?: readonly string[];
   runBuild?: () => Promise<{ exitCode: number; output: string }>;
   hasTestRunner: boolean;
   runRelated: (files: string[]) => Promise<TestOutcome[]>;
@@ -109,8 +115,43 @@ const DELETE_ONLY_FIX_RULES = new Set([
   "no-lone-blocks", // S1199 — remove the redundant braces
 ]);
 
+/**
+ * Rule-name traits whose canonical remedy is "remove the redundant construct" — the whole family
+ * of `no-useless-*` / `no-redundant-*` / `no-unnecessary-*` / `no-extra-*` / `no-lone-*` / empty-*
+ * rules, across plugins. Hand-curating every such rule (DELETE_ONLY_FIX_RULES) always lagged
+ * reality, so a correct delete-only fix for, say, `sonarjs/no-redundant-optional` was false-flagged
+ * as suppression and reverted, then retried 3×. Matching by trait covers the family. This only
+ * widens which delete-only diffs SKIP the anti-suppression veto — the rest of the gate still
+ * proves the fix (typecheck, related tests, and the rescan that the finding actually cleared), so a
+ * deletion that breaks the build or doesn't resolve the finding is still reverted. Generic findings
+ * (e.g. `eqeqeq`, which must be edited, not deleted) don't match and stay rejected when deleted.
+ */
+const DELETE_ONLY_RULE_TRAIT_PREFIXES = [
+  "no-useless-",
+  "no-redundant-",
+  "no-unnecessary-",
+  "no-extra-",
+  "no-lone-",
+  "no-empty",
+];
+
+/** The bare rule name with any leading plugin scope (e.g. `sonarjs/`, `@typescript-eslint/`) dropped. */
+function bareRuleName(rule: string): string {
+  const slash = rule.lastIndexOf("/");
+  return slash >= 0 ? rule.slice(slash + 1) : rule;
+}
+
+function hasDeleteOnlyTrait(rule: string): boolean {
+  const bare = bareRuleName(rule);
+  return DELETE_ONLY_RULE_TRAIT_PREFIXES.some((prefix) => bare.startsWith(prefix));
+}
+
 function isDeleteOnlyFixable(finding: Finding): boolean {
-  return isDeadCodeFinding(finding) || DELETE_ONLY_FIX_RULES.has(finding.rule);
+  return (
+    isDeadCodeFinding(finding) ||
+    DELETE_ONLY_FIX_RULES.has(finding.rule) ||
+    hasDeleteOnlyTrait(finding.rule)
+  );
 }
 
 function allowsDeleteOnly(unit: WorkUnit): boolean {
@@ -145,7 +186,11 @@ export async function gateUnitChanges(
   if (!supp.ok) return { kept: false, reason: supp.reason, detail: supp.detail, usage };
 
   opts.onProgress?.("typecheck");
-  const tc = await typecheck({ hasTsconfig: () => deps.typescript, runTsc: deps.runTsc });
+  const tc = await typecheck({
+    hasTsconfig: () => deps.typescript,
+    runTsc: deps.runTsc,
+    baselineErrors: deps.typecheckBaseline,
+  });
   if (!tc.ok) return { kept: false, reason: tc.reason, detail: tc.detail, usage };
 
   if (unit.strategy === "generated-source-repair" && deps.runBuild) {

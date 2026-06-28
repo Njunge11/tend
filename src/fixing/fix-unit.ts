@@ -39,6 +39,12 @@ export type FixUnitDeps = UnitGateDeps & {
 
 const DEFAULT_SESSION_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_GATE_TIMEOUT_MS = 30 * 60_000;
+/**
+ * After a session timeout fires we abort, then wait this long for the aborted session to settle
+ * and report whatever usage it accrued before the kill (so the timeout bills its partial cost).
+ * A session that never settles within the window falls back to zero usage.
+ */
+const SETTLE_GRACE_MS = 1_000;
 
 function readPromptTemplate(name: string): string {
   const path =
@@ -230,6 +236,7 @@ The previous session completed without changing any owned file. Retry once with 
 function classFromOutcome(reason: FixOutcome["reason"], fallback?: FailureClass): FailureClass | undefined {
   if (fallback) return fallback;
   if (reason === "regression") return "regression";
+  if (reason === "unresolved-target") return "unresolved-target";
   if (reason === "typecheck") return "typecheck";
   if (reason === "broke-test") return "broke-test";
   if (reason === "suppression") return "suppression";
@@ -271,13 +278,27 @@ async function runSessionWithTimeout(
   const timedOut = new Promise<SessionResult>((resolve) => {
     timeout = setTimeout(() => {
       controller.abort();
-      resolve({
+      const timeoutResult = (usage: SessionResult["usage"]): SessionResult => ({
         ok: false,
         error: `AI session timed out after ${formatDuration(timeoutMs)}`,
         rateLimited: false,
         failureClass: "tool-timeout",
-        usage: zeroUsage(),
+        usage: usage ?? zeroUsage(),
       });
+      // Give the aborted session a brief window to settle and report whatever usage it accrued
+      // before the kill, so a timeout still bills its partial cost instead of a flat zero. A truly
+      // hung session that never resolves falls back to zero usage after the grace window.
+      const fallback = setTimeout(() => resolve(timeoutResult(zeroUsage())), SETTLE_GRACE_MS);
+      run.then(
+        (settled) => {
+          clearTimeout(fallback);
+          resolve(timeoutResult(settled.usage));
+        },
+        () => {
+          clearTimeout(fallback);
+          resolve(timeoutResult(zeroUsage()));
+        },
+      );
     }, timeoutMs);
   });
 
@@ -444,6 +465,11 @@ export function makeFixUnit(deps: FixUnitDeps) {
     // sessions — even when the unit ends up reverted or unfixable, the tokens were spent.
     let usage = zeroUsage();
 
+    // Set once any in-dispatch repair session (regression repair / test repair) runs. A revert
+    // after a repair already failed the gate, so the orchestrator should not re-dispatch from
+    // scratch (which repeats this same fan-out) — see FixOutcome.repairAttempted (item 5).
+    let repairAttempted = false;
+
     // Sessions stream activity while they run; surface it as detail on the live stage so
     // long AI edits show ongoing progress instead of a single static label.
     const activity = (stage: FixStage) => (detail: string) => progress(stage, detail);
@@ -461,6 +487,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
 
     async function runRegressionRepair(outcome: FixOutcome): Promise<boolean> {
       if (outcome.reason !== "regression" && outcome.reason !== "typecheck") return false;
+      repairAttempted = true;
       const after = snapshotUnitNow(deps.cwd, snapshotFiles);
       progress("regression-repair");
       const repair = await runSessionWithTimeout(deps, {
@@ -486,6 +513,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
     let repairFailureDetail: string | undefined;
     // The repair session also edits the disk directly — just re-run it.
     async function repairBrokenTests(_attempt: number, regressed: Array<{ name: string }>): Promise<void> {
+      repairAttempted = true;
       const after = snapshotUnitNow(deps.cwd, snapshotFiles);
       const repair = await runSessionWithTimeout(deps, {
         file: unit.file,
@@ -531,6 +559,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
         ...outcome,
         failureClass: classFromOutcome(outcome.reason, outcome.failureClass),
         usage,
+        repairAttempted,
       };
     }
 

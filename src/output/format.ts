@@ -62,6 +62,8 @@ export function reasonLabel(reason: string | undefined): string {
       return "added a suppression";
     case "regression":
       return "introduced a new issue";
+    case "unresolved-target":
+      return "didn't clear the finding";
     case "session-error":
       return "the fix session failed";
     case "sandbox-setup-failed":

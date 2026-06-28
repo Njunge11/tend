@@ -161,13 +161,74 @@ describe("planRepair", () => {
     });
   });
 
+  it("classifies knip unused files as deterministic file deletion", () => {
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-file",
+      category: "dead-code",
+      file: "src/unused.ts",
+      message: "Unused file: src/unused.ts",
+    });
+
+    expect(planRepair({ finding })).toMatchObject({
+      strategy: "deterministic-unused-file-delete",
+      editableFiles: ["src/unused.ts"],
+      verificationTargets: ["src/unused.ts"],
+    });
+  });
+
+  it("does NOT delete a knip unused file that's part of uncommitted work (WIP, not dead)", () => {
+    // A not-yet-wired new file looks "unused" but is active work — deleting it would discard it.
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-file",
+      category: "dead-code",
+      file: "apps/admin/lib/trpc/client.tsx",
+      message: "Unused file: apps/admin/lib/trpc/client.tsx",
+    });
+
+    expect(
+      planRepair({ finding, config: { likelyWipFiles: ["apps/admin/lib/trpc/client.tsx"] } }),
+    ).toMatchObject({ strategy: "unsupported", reason: "unused-file-work-in-progress" });
+  });
+
+  it("still deletes an unused file when the WIP list doesn't include it (committed + clean)", () => {
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-file",
+      category: "dead-code",
+      file: "src/unused.ts",
+      message: "Unused file: src/unused.ts",
+    });
+
+    expect(
+      planRepair({ finding, config: { likelyWipFiles: ["src/something-else.ts"] } }),
+    ).toMatchObject({ strategy: "deterministic-unused-file-delete" });
+  });
+
+  it("classifies knip unused exported types as deterministic TypeScript cleanup", () => {
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-type",
+      category: "dead-code",
+      file: "src/root.ts",
+      message: "Unused exported type: AppRouter",
+    });
+
+    expect(planRepair({ finding })).toMatchObject({
+      strategy: "deterministic-ts-unused-export-cleanup",
+      editableFiles: ["src/root.ts"],
+      verificationTargets: ["src/root.ts"],
+    });
+  });
+
   it("classifies dead-code findings as AI dead-code cleanup", () => {
     const finding = makeFinding({
       tool: "knip",
-      rule: "unused-export",
+      rule: "unused-enum-member",
       category: "dead-code",
       file: "src/unused.ts",
-      message: "Unused export: unusedHelper",
+      message: "Unused enum member: unusedMember",
     });
 
     expect(planRepair({ finding })).toMatchObject({

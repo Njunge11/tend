@@ -8,6 +8,8 @@ export const REPAIR_STRATEGIES = [
   "deterministic-eslint-fix",
   "deterministic-ts-organize-imports",
   "deterministic-package-json-cleanup",
+  "deterministic-unused-file-delete",
+  "deterministic-ts-unused-export-cleanup",
   "single-file-ai-edit",
   "multi-file-duplicate-refactor",
   "generated-source-repair",
@@ -22,6 +24,7 @@ export type RepairStrategyReason =
   | ScopeExclusionReason
   | "generated-source-not-found"
   | "report-only"
+  | "unused-file-work-in-progress"
   | "deterministic-not-dispatched";
 
 type RepairPlannerInput = {
@@ -29,6 +32,15 @@ type RepairPlannerInput = {
   scope?: Partial<Pick<Finding, "inFixScope" | "scopeExclusionReason" | "inReportScope" | "inScope">>;
   config?: FixScopeConfig & {
     eslintAutofixableRules?: string[];
+    /**
+     * Repo-relative files that are part of uncommitted work — untracked or modified files, plus
+     * the committed modules they import (their WIP cluster). A knip `unused-file` hit on one of
+     * these is reported, not auto-deleted: a not-yet-wired new file looks "unused" but is active
+     * work, and whole-file deletion is the one fix that destroys it. Only committed, clean,
+     * genuinely-dead files are auto-deleted — matching knip's own conservative default (file
+     * removal is opt-in there) and the universal "run codemods on a clean tree" practice.
+     */
+    likelyWipFiles?: readonly string[];
   };
   cwd?: string;
   flowPath?: Finding["flowPath"];
@@ -140,6 +152,16 @@ function isPackageJsonUnusedDependency(input: RepairPlannerInput): boolean {
   return /(^|\/)package\.json$/.test(file) && (rule === "unused-dependency" || /unused .*dependency/i.test(message));
 }
 
+function isUnusedFile(input: RepairPlannerInput): boolean {
+  return (input.tool ?? input.finding.tool) === "knip" && (input.rule ?? input.finding.rule) === "unused-file";
+}
+
+function isUnusedExportOrType(input: RepairPlannerInput): boolean {
+  const tool = input.tool ?? input.finding.tool;
+  const rule = input.rule ?? input.finding.rule;
+  return tool === "knip" && (rule === "unused-export" || rule === "unused-type");
+}
+
 function isUnusedImport(input: RepairPlannerInput): boolean {
   const rule = input.rule ?? input.finding.rule;
   return UNUSED_IMPORT_RE.test(rule) || UNUSED_IMPORT_RE.test(input.finding.message);
@@ -239,6 +261,32 @@ export function planRepair(input: RepairPlannerInput): RepairPlan {
     return {
       finding: input.finding,
       strategy: "deterministic-package-json-cleanup",
+      editableFiles: [file],
+      verificationTargets: [file],
+      reason: "deterministic-not-dispatched",
+    };
+  }
+
+  if (isUnusedFile(input)) {
+    // Uncommitted (untracked/modified) files and their import cluster are active work, not dead —
+    // deleting an unfinished file that simply isn't wired up yet would discard it. Report instead;
+    // only committed, clean files are auto-deleted.
+    if (input.config?.likelyWipFiles?.includes(file)) {
+      return unsupported(input, "unused-file-work-in-progress");
+    }
+    return {
+      finding: input.finding,
+      strategy: "deterministic-unused-file-delete",
+      editableFiles: [file],
+      verificationTargets: [file],
+      reason: "deterministic-not-dispatched",
+    };
+  }
+
+  if (isUnusedExportOrType(input)) {
+    return {
+      finding: input.finding,
+      strategy: "deterministic-ts-unused-export-cleanup",
       editableFiles: [file],
       verificationTargets: [file],
       reason: "deterministic-not-dispatched",

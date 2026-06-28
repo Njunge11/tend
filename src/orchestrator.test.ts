@@ -13,6 +13,7 @@ import { filesUnder } from "./git/repo.js";
 import { filterToChanged } from "./scanners/scope.js";
 import { tmpRepo } from "../test/helpers/tmp-repo.js";
 import { ReportSchema } from "./report/schema.js";
+import { zeroUsage } from "./session/types.js";
 
 const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: DEFAULT_MODEL };
 
@@ -59,6 +60,29 @@ describe("orchestrate", () => {
     // three files fixed in one batch → 3 fixUnit calls, but only 2 audits (initial + one re-audit)
     expect(fixUnit).toHaveBeenCalledTimes(3);
     expect(audit).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-run a whole-repo scanner in loop 2+ when all its findings are out of fix scope (item 9)", async () => {
+    // knip's only finding is in dist/ (generated → out of fix scope). tend never edits it, so
+    // re-running knip's whole-repo scan every loop is wasted time. Loop 2 must re-run only sonarjs,
+    // and the un-rescanned knip finding must NOT be misread as resolved.
+    const source = ai("src/a.ts");
+    const deadOut = makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "dist/index.ts", message: "Unused export: foo" });
+    const audit = vi.fn(async (loop: number, tools?: Tool[]): Promise<AuditResult> => {
+      if (loop === 1) return { findings: [source, deadOut] };
+      // Loop 2 should be asked for sonarjs only (knip is all out-of-scope).
+      expect(tools).toEqual(["sonarjs"]);
+      return { findings: [] };
+    });
+
+    const res = await orchestrate({ audit, fixUnit: vi.fn(keep), config });
+
+    expect(audit).toHaveBeenCalledTimes(2);
+    // The knip finding was never re-scanned, so it keeps its real (unresolved) state — not "fixed".
+    expect(res.findings.find((f) => f.file === "dist/index.ts")).toMatchObject({
+      inFixScope: false,
+      status: "pending",
+    });
   });
 
   it("keeps loop-1 scanner statuses for tools not re-audited in later loops", async () => {
@@ -205,6 +229,30 @@ describe("orchestrate", () => {
     expect(fixUnit.mock.calls.every((c) => c[0].file !== "package.json")).toBe(true);
   });
 
+  it("an unused-file deletion obviates other findings on the same file (no wasted AI dispatch)", async () => {
+    // The ajiri admin race: client.tsx is both knip-unused (→ deterministic delete) AND has a
+    // sonarjs finding (→ AI fix). The delete must win and the sonarjs finding must NOT be sent to
+    // an AI session (which would edit a sandbox copy then fail to apply to the deleted index entry).
+    const deadFile = makeFinding({
+      tool: "knip",
+      rule: "unused-file",
+      category: "dead-code",
+      file: "src/dead.tsx",
+      message: "Unused file: src/dead.tsx",
+    });
+    const sonarOnDead = ai("src/dead.tsx", "no-nested-assignment");
+    const audit = vi.fn(scriptedAudit([[deadFile, sonarOnDead], []]));
+    const fixUnit = vi.fn(keep);
+    const deterministicFixUnit = vi.fn(keep);
+
+    const res = await orchestrate({ audit, fixUnit, deterministicFixUnit, config });
+
+    // No AI session is ever spawned for a file that was deleted out from under it.
+    expect(fixUnit).not.toHaveBeenCalled();
+    // The obviated finding is resolved, not left dangling as pending/unfixable.
+    expect(res.findings.find((f) => f.id === sonarOnDead.id)?.status).toBe("fixed");
+  });
+
   it("T-105: max-loops cap reached → stop, report remaining", async () => {
     // strictly-decreasing fixable counts so it never converges/stalls within the cap
     const audit = vi.fn(
@@ -250,6 +298,27 @@ describe("orchestrate", () => {
     expect(fixUnit).toHaveBeenCalledTimes(2);
     expect(res.findings.find((f) => f.file === "a.ts")?.attempts).toBe(2);
     expect(res.findings.find((f) => f.file === "a.ts")?.status).toBe("unfixable");
+  });
+
+  it("does not re-dispatch a gate failure whose in-dispatch repair already ran (item 5)", async () => {
+    // The dispatch already burned an initial + repair session; re-dispatching repeats that fan-out.
+    const stubborn = ai("a.ts");
+    const audit = vi.fn(async () => ({ findings: [stubborn] }));
+    const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "broke-test",
+      failureClass: "broke-test",
+      repairAttempted: true,
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    // One dispatch only (without the fix it was capped at the limited-retry budget of 2).
+    expect(fixUnit).toHaveBeenCalledOnce();
+    expect(res.findings.find((f) => f.file === "a.ts")).toMatchObject({
+      status: "unfixable",
+      attempts: 1,
+    });
   });
 
   it("aggregates estimated AI usage across fix outcomes, including reverted ones", async () => {
@@ -329,7 +398,11 @@ describe("orchestrate", () => {
     expect(res.findings.every((f) => f.status === "fixed")).toBe(true);
   });
 
-  it("retries timed-out findings once before marking them unfixable", async () => {
+  it("does not re-attempt a single-finding timeout (re-patching identical input is pure waste)", async () => {
+    // A multi-finding batch that times out splits into single-finding units (item 2). A
+    // single-finding unit that itself times out has nothing left to reduce and nothing else
+    // edits its file, so a cross-loop retry would re-feed identical input and time out again.
+    // Such timeouts are terminal: one attempt, then unfixable — no second 10-minute timeout.
     const first = ai("src/a.ts", "r1", 1);
     const second = ai("src/a.ts", "r2", 2);
     const audit = vi.fn(scriptedAudit([[first, second], [first, second], [first, second]]));
@@ -342,12 +415,113 @@ describe("orchestrate", () => {
 
     const res = await orchestrate({ audit, fixUnit, config });
 
-    expect(fixUnit).toHaveBeenCalledTimes(6);
+    // Loop 1: one multi-finding batch + two single-finding splits = 3 calls. The splits are
+    // terminal, so no further loop re-dispatches them. (Without the fix this was 6 calls.)
+    expect(fixUnit).toHaveBeenCalledTimes(3);
     expect(res.termination).toBe("converged");
     expect(res.findings).toHaveLength(2);
     expect(res.findings.every((f) => f.status === "unfixable")).toBe(true);
-    expect(res.findings.every((f) => f.attempts === 2)).toBe(true);
+    expect(res.findings.every((f) => f.attempts === 1)).toBe(true);
     expect(res.findings.every((f) => f.finalFailureClass === "tool-timeout")).toBe(true);
+  });
+
+  it("a single-finding unit that times out is terminal after one attempt", async () => {
+    const lone = ai("src/lone.ts", "r1", 1);
+    const audit = vi.fn(scriptedAudit([[lone], [lone], [lone]]));
+    const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "session-error",
+      detail: "AI session timed out after 10m",
+      failureClass: "tool-timeout",
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    expect(fixUnit).toHaveBeenCalledTimes(1);
+    expect(res.termination).toBe("converged");
+    expect(res.findings[0]).toMatchObject({
+      status: "unfixable",
+      attempts: 1,
+      finalFailureClass: "tool-timeout",
+    });
+  });
+
+  it("splits a multi-finding unit that reverts on typecheck or broke-test (item 2)", async () => {
+    // One bad finding in a shared batch fails the collective gate (typecheck/broke-test) and
+    // would revert the whole unit. Splitting lets the good siblings get their own attempt.
+    const good = ai("src/a.ts", "r1", 1);
+    const bad = ai("src/a.ts", "r2", 2);
+    // The culprit keeps being reported (so reconcile never calls it "fixed" by absence).
+    const audit = vi.fn(scriptedAudit([[good, bad], [bad], [bad]]));
+    const fixUnit = vi.fn(async (unit: WorkUnit): Promise<FixOutcome> => {
+      if (unit.findings.length > 1) {
+        return { kept: false, reason: "typecheck", detail: "tsc failed", failureClass: "typecheck" };
+      }
+      // Singles: the good one is kept; the culprit keeps failing typecheck.
+      return unit.findings[0]?.rule === "r2"
+        ? { kept: false, reason: "typecheck", detail: "tsc failed", failureClass: "typecheck" }
+        : { kept: true };
+    });
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    // batch (r1,r2) reverts typecheck → split into r1, r2 singles; r1 is kept, r2 keeps failing.
+    expect(fixUnit.mock.calls.slice(0, 3).map((c) => c[0].findings.map((f) => f.rule))).toEqual([
+      ["r1", "r2"],
+      ["r1"],
+      ["r2"],
+    ]);
+    expect(res.findings.find((f) => f.rule === "r1")?.status).toBe("fixed");
+    expect(res.findings.find((f) => f.rule === "r2")?.status).not.toBe("fixed");
+  });
+
+  it("runs deterministic units one at a time (no concurrent edits against the real cwd)", async () => {
+    // Deterministic units edit the real cwd behind a whole-project typecheck; running them
+    // concurrently let one unit's edit false-revert a sibling's global tsc (item 1).
+    const findings = Array.from({ length: 4 }, (_, i) =>
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: `src/d${i}.ts`, message: `Unused export: x${i}` }),
+    );
+    const audit = vi.fn(scriptedAudit([findings, []]));
+    let active = 0;
+    let maxActive = 0;
+    const deterministicFixUnit = vi.fn(async (): Promise<FixOutcome> => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+      return { kept: true, usage: zeroUsage() };
+    });
+
+    const events: TendEvent[] = [];
+    const bus = new EventBus();
+    bus.on((event) => events.push(event));
+    await orchestrate({ audit, fixUnit: vi.fn(keep), deterministicFixUnit, config, bus });
+
+    expect(deterministicFixUnit).toHaveBeenCalledTimes(4);
+    expect(maxActive).toBe(1);
+    // the loop-start event reports the deterministic phase concurrency truthfully
+    expect(events.find((e) => e.type === "loop-start")).toMatchObject({ concurrency: 1 });
+  });
+
+  it("marks a model-rejected (non-retryable) finding unfixable without burning the retry budget", async () => {
+    const finding = ai("src/a.ts");
+    const audit = vi.fn(scriptedAudit([[finding], [finding]]));
+    const fixUnit = vi.fn(async (): Promise<FixOutcome> => ({
+      kept: false,
+      reason: "session-error",
+      detail: "prompt is too long",
+      failureClass: "model-rejected",
+    }));
+
+    const res = await orchestrate({ audit, fixUnit, config });
+
+    // One attempt only: terminal, no-burn (attempts stays 0), never re-dispatched.
+    expect(fixUnit).toHaveBeenCalledOnce();
+    expect(res.findings[0]).toMatchObject({
+      status: "unfixable",
+      attempts: 0,
+      finalFailureClass: "model-rejected",
+    });
   });
 
   it("processes a large file's findings in bounded sequential batches (no oversized session)", async () => {

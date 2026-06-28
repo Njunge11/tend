@@ -516,6 +516,30 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expectSuppressionRevert(outcome, "src/a.ts", "export function brokenButReal() {\n  return a == b;\n}\n");
   });
 
+  it("allows a delete-only fix for a redundancy-trait rule outside the curated set (item 8)", async () => {
+    // `sonarjs/no-redundant-assignment` isn't in DELETE_ONLY_FIX_RULES, but its canonical fix IS a
+    // pure line deletion. The trait match lets it skip the anti-suppression veto; the rest of the
+    // gate still proves it (typecheck clean, finding cleared by the rescan), so it's kept — not
+    // false-flagged as "Code was deleted instead of fixed" and retried 3×.
+    write("src/a.ts", "function f() {\n  doWork();\n  return;\n}\n");
+    const redundant = makeFinding({
+      tool: "sonarjs",
+      rule: "sonarjs/no-redundant-assignment",
+      category: "smell",
+      file: "src/a.ts",
+    });
+    // A pure deletion of the redundant line (no added lines).
+    const session = diskSession({ "src/a.ts": "function f() {\n  doWork();\n}\n" }, { ok: true, edits: [] });
+    // Pre-fix scan sees the finding; post-fix rescan sees it cleared.
+    const scanFindings = vi.fn().mockResolvedValueOnce([redundant]).mockResolvedValue([]);
+    const work: WorkUnit = { file: "src/a.ts", files: ["src/a.ts"], findings: [redundant] };
+
+    const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
+
+    expect(outcome.kept).toBe(true);
+    expect(read("src/a.ts")).toBe("function f() {\n  doWork();\n}\n");
+  });
+
   it("keeps delete-only disk edits rejected for mixed dead-code and non-dead-code work units", async () => {
     write("src/a.ts", "export function usedButBuggy() {\n  return a == b;\n}\n");
     const session = diskSession({ "src/a.ts": "" }, { ok: true, edits: [] });
@@ -564,6 +588,35 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
+  it("reports the aborted session's partial usage on timeout (not a flat zero) (item 10)", async () => {
+    write("src/a.ts", "const x = a == b;\n");
+    const partial = {
+      estimatedCostUsd: 0.07,
+      inputTokens: 120,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      sessions: 1,
+    };
+    // The session settles shortly AFTER its abort signal fires, reporting the cost it accrued
+    // before the kill — exactly what a real killed `claude -p` does once its buffered stdout parses.
+    const session: SessionRunner = {
+      async run(request) {
+        return new Promise<SessionResult>((resolve) => {
+          request.signal?.addEventListener("abort", () => {
+            resolve({ ok: false, error: "killed", rateLimited: false, failureClass: "tool-timeout", usage: partial });
+          });
+        });
+      },
+    };
+
+    const outcome = await makeFixUnit(deps(session, { sessionTimeoutMs: 1 }))(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.failureClass).toBe("tool-timeout");
+    expect(outcome.usage).toMatchObject({ estimatedCostUsd: 0.07, inputTokens: 120, sessions: 1 });
+  });
+
   it("times out a hung gate phase and restores the pre-session snapshot", async () => {
     write("src/a.ts", "const x = a == b;\n");
     const session = diskSession({ "src/a.ts": "const x = a === b;\n" }, { ok: true, edits: [] });
@@ -605,6 +658,21 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(outcome.kept).toBe(false);
     expect(outcome.reason).toBe("broke-test");
     expect(outcome.detail).toBe("Repair session failed: repair timed out");
+    // An in-dispatch repair session ran and still failed, so the orchestrator won't re-dispatch.
+    expect(outcome.repairAttempted).toBe(true);
+  });
+
+  it("does not flag repairAttempted when the unit is reverted before any repair runs", async () => {
+    // A unit reverted at anti-suppression/typecheck with no repair session must stay eligible
+    // for the normal limited retry — repairAttempted must be falsy.
+    write("src/a.ts", "const x = a == b;\n");
+    const session = diskSession({ "src/a.ts": "const x = a == b; // eslint-disable-line\n" }, { ok: true, edits: [] });
+
+    const outcome = await makeFixUnit(deps(session))(unit("src/a.ts"));
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("suppression");
+    expect(outcome.repairAttempted).toBeFalsy();
   });
 
   it("uses regression repair prompt with rejected diff, exact findings, and gate output", async () => {
@@ -740,10 +808,12 @@ describe("makeFixUnit — disk is the source of truth", () => {
     expect(read("src/a.ts")).toBe("const x = a == b;\n");
   });
 
-  it("reverts when the edit leaves the target finding unresolved (never reports a false 'fixed')", async () => {
+  it("reverts with 'unresolved-target' (not 'regression') when the edit leaves the target finding unresolved", async () => {
     // The slow-regex case from the field: the AI rewrites the regex, but the scanner still
     // flags it with the same fingerprint. Same-id findings are in the pre-fix baseline, so the
-    // introduced-findings check passes by definition — only requireResolved catches this.
+    // introduced-findings check passes by definition — only requireResolved catches this. It is
+    // NOT a regression (nothing new introduced), so it skips the in-dispatch regression repair
+    // and reverts immediately — one session, not two.
     write("src/a.ts", "const re = /(a+)+b/;\n");
     const target = makeFinding({
       file: "src/a.ts",
@@ -757,46 +827,18 @@ describe("makeFixUnit — disk is the source of truth", () => {
       write("src/a.ts", `const re = /(a+)+b/; // attempt ${runs}\n`);
       return { ok: true, edits: [] };
     });
-    // Pre-fix baseline, post-fix rescan, and post-repair rescan all still see the finding.
     const scanFindings = vi.fn(async () => [target]);
     const work: WorkUnit = { file: "src/a.ts", files: ["src/a.ts"], findings: [target] };
 
     const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
 
     expect(outcome.kept).toBe(false);
-    expect(outcome.reason).toBe("regression");
-    expect(outcome.failureClass).toBe("regression");
+    expect(outcome.reason).toBe("unresolved-target");
+    expect(outcome.failureClass).toBe("unresolved-target");
     expect(outcome.detail).toContain("Fix did not clear target finding(s)");
-    // initial session + one regression-repair attempt, then revert
-    expect(session.calls).toHaveLength(2);
+    // No in-dispatch regression repair runs — just the initial session, then revert.
+    expect(session.calls).toHaveLength(1);
     expect(read("src/a.ts")).toBe("const re = /(a+)+b/;\n");
-  });
-
-  it("keeps the fix when the regression-repair session clears a finding the first edit missed", async () => {
-    write("src/a.ts", "const re = /(a+)+b/;\n");
-    const target = makeFinding({
-      file: "src/a.ts",
-      rule: "slow-regex",
-      message: "Make sure the regex cannot lead to denial of service",
-      range: { startLine: 1, startCol: 0, endLine: 1, endCol: 20 },
-    });
-    let runs = 0;
-    const session = fakeSession(async () => {
-      runs++;
-      write("src/a.ts", runs === 1 ? "const re = /(a+)+b/; // still bad\n" : "const re = /a+b/;\n");
-      return { ok: true, edits: [] };
-    });
-    // The finding survives the first edit and is gone after the repair session.
-    const scanFindings = vi.fn(async () => (runs >= 2 ? [] : [target]));
-    const work: WorkUnit = { file: "src/a.ts", files: ["src/a.ts"], findings: [target] };
-
-    const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
-
-    expect(outcome.kept).toBe(true);
-    expect(session.calls).toHaveLength(2);
-    // The repair prompt told the session exactly what it failed to clear.
-    expect(session.calls[1]?.prompt).toContain("Fix did not clear target finding(s)");
-    expect(read("src/a.ts")).toBe("const re = /a+b/;\n");
   });
 
   it("keeps a source fix that incidentally clones a sibling test (report-only collateral)", async () => {
@@ -848,7 +890,7 @@ describe("makeFixUnit — disk is the source of truth", () => {
     const outcome = await makeFixUnit(deps(session, { scanFindings }))(work);
 
     expect(outcome.kept).toBe(false);
-    expect(outcome.reason).toBe("regression");
+    expect(outcome.reason).toBe("unresolved-target");
     expect(outcome.detail).toContain("Fix did not clear target finding");
     expect(scanFindings).toHaveBeenCalledWith(["src/a.ts", "src/b.ts"], ["jscpd"]);
     expect(read("src/a.ts")).toBe("export function a(items) { return items.map((x) => x.id); }\n");

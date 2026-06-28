@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { dirname, relative, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execaNode } from "execa";
 import { ESLint, type Linter } from "eslint";
@@ -145,7 +145,21 @@ const TYPED_PARSER_LAYER: Linter.Config = {
 
 const TEND_DIR = dirname(fileURLToPath(import.meta.url));
 let typeScriptPinned = false;
+/** The TypeScript main file the toolchain was pinned to this process (for trace diagnostics). */
+let pinnedTypeScriptPath: string | null = null;
 let sonarjsRecommendedCache: Linter.Config | null = null;
+
+/** Read the version of the pinned TypeScript (`<pkgRoot>/package.json`), for trace diagnostics only. */
+function pinnedTypeScriptVersion(tsMainPath: string | null): string | null {
+  if (!tsMainPath) return null;
+  try {
+    const pkgRoot = dirname(dirname(tsMainPath)); // <pkgRoot>/lib/typescript.js → <pkgRoot>
+    const json = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")) as { version?: string };
+    return json.version ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Bind the WHOLE type-aware toolchain to ONE TypeScript instance — the analyzed project's — so
@@ -166,6 +180,7 @@ function pinProjectTypeScript(anchorDir: string): void {
   if (typeScriptPinned) return;
   typeScriptPinned = true;
   const tsPath = resolveProjectTypeScript(anchorDir, TEND_DIR);
+  pinnedTypeScriptPath = tsPath;
   if (tsPath) installTypeScriptResolutionHook(tsPath);
 }
 
@@ -318,15 +333,24 @@ export async function runEslintSonarjsInProcess(ctx: ScanContext): Promise<ScanR
         ]
       : groupByConfig(ctx);
 
+  // Trace-only diagnostics: which TypeScript was pinned (the phantom-finding root cause) and how the
+  // scope resolved into typed/untyped lint groups. Never affects findings — just rides on ScanResult.
+  const diagnostics = {
+    pinnedTypeScript: pinnedTypeScriptPath,
+    pinnedTypeScriptVersion: pinnedTypeScriptVersion(pinnedTypeScriptPath),
+    typedLintEnabled: typedLintEnabled(),
+    groups: groups.map((g) => ({ configDir: g.configDir, mode: g.mode, typed: g.typed, targets: g.targets.length })),
+  };
+
   try {
     const results: EslintResult[] = [];
     for (const group of groups) {
       results.push(...(await lintGroup(group, sonarjsRecommended)));
     }
     const findings = mapEslintResults(results, ctx).map((r) => normalize(r, ctx.loop));
-    return { tool: "sonarjs", findings, skipped: false };
+    return { tool: "sonarjs", findings, skipped: false, diagnostics };
   } catch (err) {
-    return { tool: "sonarjs", findings: [], skipped: false, error: err instanceof Error ? err.message : String(err) };
+    return { tool: "sonarjs", findings: [], skipped: false, error: err instanceof Error ? err.message : String(err), diagnostics };
   }
 }
 

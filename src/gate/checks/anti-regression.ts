@@ -31,7 +31,10 @@ export function antiRegression(
     const unresolved = after.filter((f) => knownIds.has(f.id));
     if (unresolved.length > 0) {
       const detail = unresolved.map((f) => `${f.file}:${f.range.startLine} ${f.rule}`).join(", ");
-      return reject("regression", `Fix did not clear target finding(s): ${detail}`);
+      // NOT "regression": nothing new was introduced, the edit just didn't clear its target.
+      // A dedicated reason keeps it out of regression repair (which has no new finding to act
+      // on) and lets the orchestrator cap its retries instead of re-running the full fan-out.
+      return reject("unresolved-target", `Fix did not clear target finding(s): ${detail}`);
     }
   }
 

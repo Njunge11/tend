@@ -76,6 +76,43 @@ describe("planWorkFromRepairs", () => {
       verificationTargets: ["src/a.ts", "src/b.ts"],
     });
   });
+
+  it("coalesces all unused-file deletions into one atomic unit (no concurrent-delete race)", () => {
+    const deadFiles = ["src/trpc/client.tsx", "src/trpc/server.tsx", "src/db/index.ts"];
+    const plans = deadFiles.map((file) => ({
+      finding: makeFinding({ tool: "knip", rule: "unused-file", category: "dead-code", file, message: `Unused file: ${file}` }),
+      strategy: "deterministic-unused-file-delete" as const,
+      editableFiles: [file],
+      verificationTargets: [file],
+    }));
+
+    const units = planWorkFromRepairs(plans);
+
+    expect(units).toHaveLength(1);
+    expect(units[0]?.findings).toHaveLength(3);
+    expect(new Set(units[0]?.files)).toStrictEqual(new Set(deadFiles));
+    expect(units[0]?.strategy).toBe("deterministic-unused-file-delete");
+  });
+
+  it("does not merge unused-file deletions with unrelated deterministic units", () => {
+    const units = planWorkFromRepairs([
+      {
+        finding: makeFinding({ tool: "knip", rule: "unused-file", category: "dead-code", file: "src/dead.ts", message: "Unused file: src/dead.ts" }),
+        strategy: "deterministic-unused-file-delete",
+        editableFiles: ["src/dead.ts"],
+        verificationTargets: ["src/dead.ts"],
+      },
+      {
+        finding: makeFinding({ tool: "sonarjs", rule: "sonarjs/x", file: "src/live.ts" }),
+        strategy: "deterministic-eslint-fix",
+        editableFiles: ["src/live.ts"],
+        verificationTargets: ["src/live.ts"],
+      },
+    ]);
+
+    expect(units).toHaveLength(2);
+    expect(units.find((u) => u.strategy === "deterministic-unused-file-delete")?.files).toContain("src/dead.ts");
+  });
 });
 
 describe("chunkUnit — bounded sequential batches", () => {

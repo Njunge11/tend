@@ -10,9 +10,12 @@ type ResultUsage = {
 };
 type StreamEvent = {
   type?: string;
+  subtype?: string;
   is_error?: boolean;
   error?: string;
-  message?: { content?: ToolUse[] };
+  /** `result` messages put the human-readable error/outcome text here in some CC versions. */
+  result?: string;
+  message?: { content?: ToolUse[]; stop_reason?: string };
   // `result` messages carry the run's estimated cost + token usage; field spellings
   // vary across Claude Code versions, so accept the ones we've seen.
   total_cost_usd?: number;
@@ -25,11 +28,29 @@ type ParsedStream = {
   edits: FileEdit[];
   rateLimited: boolean;
   errored: boolean;
+  /**
+   * The session failed in a way retrying can't fix — the prompt is too long, the output hit
+   * the max-tokens ceiling, or the requested model is unavailable (mid-run 404). Distinct from
+   * `rateLimited` (retryable) and a generic error (gets the full retry budget for nothing).
+   */
+  nonRetryable: boolean;
   /** Estimated cost/tokens from the stream's `result` message (zeroed if none). */
   usage: TokenCost;
 };
 
 const RATE_LIMIT_RE = /rate.?limit|overloaded|\b429\b/i;
+/**
+ * Errors no retry can clear. Kept deliberately specific so a transient/generic failure still
+ * gets its normal retry budget — only these terminate immediately. Rate-limit is checked first
+ * (it IS retryable) so an "overloaded" 429 never falls in here.
+ */
+const NON_RETRYABLE_RE =
+  /prompt is too long|input is too long|too many (?:input )?tokens|max(?:imum)?[ _-]?(?:output[ _-]?)?tokens|output token limit|context (?:window|length) exceeded|\b404\b|not[_ ]found[_ ]error|model[^.\n]{0,40}(?:not found|not available|does not exist)|unknown model|invalid[ _-]?model/i;
+
+function isNonRetryableText(text: string | undefined): boolean {
+  if (!text) return false;
+  return !RATE_LIMIT_RE.test(text) && NON_RETRYABLE_RE.test(text);
+}
 
 /** A finite, non-negative number, or 0 for anything else (missing/NaN/negative). */
 function num(v: unknown): number {
@@ -90,6 +111,7 @@ export function parseStreamJson(raw: string): ParsedStream {
   const edits: FileEdit[] = [];
   let rateLimited = false;
   let errored = false;
+  let nonRetryable = false;
   let usage: TokenCost | null = null;
 
   for (const line of raw.split("\n")) {
@@ -101,6 +123,11 @@ export function parseStreamJson(raw: string): ParsedStream {
       if (event.error && RATE_LIMIT_RE.test(event.error)) rateLimited = true;
     }
 
+    // Non-retryable signals can arrive on an is_error event, in a `result` message's text, or
+    // as a max-tokens stop_reason on an assistant turn (the edit was truncated mid-write).
+    if (isNonRetryableText(event.error) || isNonRetryableText(event.result)) nonRetryable = true;
+    if (event.message?.stop_reason === "max_tokens") nonRetryable = true;
+
     if (event.type === "result") {
       const u = extractUsage(event);
       if (u) usage = u;
@@ -109,5 +136,10 @@ export function parseStreamJson(raw: string): ParsedStream {
     edits.push(...extractEdits(event));
   }
 
-  return { edits, rateLimited, errored, usage: usage ?? zeroCost() };
+  // A non-retryable payload always counts as an error even if the stream forgot the is_error flag.
+  if (nonRetryable) errored = true;
+  // Rate-limit (retryable) wins if both somehow matched — never strand a 429 as terminal.
+  if (rateLimited) nonRetryable = false;
+
+  return { edits, rateLimited, errored, nonRetryable, usage: usage ?? zeroCost() };
 }

@@ -87,3 +87,45 @@ describe("parseStreamJson — usage/cost", () => {
     expect(usage.outputTokens).toBe(7);
   });
 });
+
+describe("parseStreamJson — non-retryable errors", () => {
+  it("flags a prompt-too-long error as non-retryable (and errored)", () => {
+    const parsed = parseStreamJson(
+      JSON.stringify({ type: "result", is_error: true, error: "API Error: 400 prompt is too long: 250000 tokens > 200000" }),
+    );
+    expect(parsed.nonRetryable).toBe(true);
+    expect(parsed.errored).toBe(true);
+    expect(parsed.rateLimited).toBe(false);
+  });
+
+  it("flags a max-tokens stop_reason as non-retryable even without an is_error flag", () => {
+    const parsed = parseStreamJson(
+      JSON.stringify({ type: "assistant", message: { stop_reason: "max_tokens", content: [] } }),
+    );
+    expect(parsed.nonRetryable).toBe(true);
+    expect(parsed.errored).toBe(true);
+  });
+
+  it("flags a mid-run model 404 as non-retryable", () => {
+    const parsed = parseStreamJson(
+      JSON.stringify({ type: "result", is_error: true, error: "API Error: 404 model: claude-x not found" }),
+    );
+    expect(parsed.nonRetryable).toBe(true);
+  });
+
+  it("does NOT flag a rate-limit/overloaded error as non-retryable (it stays retryable)", () => {
+    const parsed = parseStreamJson(
+      JSON.stringify({ type: "result", is_error: true, error: "API Error: 429 rate limit exceeded, overloaded" }),
+    );
+    expect(parsed.rateLimited).toBe(true);
+    expect(parsed.nonRetryable).toBe(false);
+  });
+
+  it("does NOT flag a generic execution error as non-retryable (keeps its retry budget)", () => {
+    const parsed = parseStreamJson(
+      JSON.stringify({ type: "result", is_error: true, error: "tool execution failed unexpectedly" }),
+    );
+    expect(parsed.errored).toBe(true);
+    expect(parsed.nonRetryable).toBe(false);
+  });
+});

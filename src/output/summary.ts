@@ -31,6 +31,7 @@ type Buckets = {
   regressed: Finding[];
   typecheckFailed: Finding[];
   testFailed: Finding[];
+  noOp: Finding[];
   retryExhausted: Finding[];
   unresolvedEligible: Finding[]; // unresolved for reasons other than explicit exclusions/failures
   secrets: Finding[];
@@ -61,6 +62,7 @@ function emptyBuckets(): Buckets {
     regressed: [],
     typecheckFailed: [],
     testFailed: [],
+    noOp: [],
     retryExhausted: [],
     unresolvedEligible: [],
     secrets: [],
@@ -69,6 +71,7 @@ function emptyBuckets(): Buckets {
 
 /** Which `reverted`/`unfixable` bucket a finding belongs to, by revert cause. */
 function classifyReverted(f: Finding): keyof Buckets {
+  if (f.finalFailureClass === "no-op") return "noOp";
   if (f.revertReason === "session-error" || f.finalFailureClass === "tool-timeout")
     return "timedOutSessionError";
   if (f.revertReason === "regression") return "regressed";
@@ -165,6 +168,7 @@ function couldntFixFindings(b: Buckets): Finding[] {
     ...b.regressed,
     ...b.typecheckFailed,
     ...b.testFailed,
+    ...b.noOp,
     ...b.retryExhausted,
   ];
 }
@@ -256,6 +260,7 @@ function plainSummaryLine(report: Report, b: Buckets): string {
     `regressed=${b.regressed.length}`,
     `typecheckFailed=${b.typecheckFailed.length}`,
     `testFailed=${b.testFailed.length}`,
+    `noOp=${b.noOp.length}`,
     // Why the loop stopped (omitted for reports written before termination tracking).
     ...(report.termination ? [`termination=${report.termination}`] : []),
   ].join(" ");
@@ -456,6 +461,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     ...revertedRow("regressed", b.regressed.length),
     ...revertedRow("typecheck failed", b.typecheckFailed.length),
     ...revertedRow("test failed", b.testFailed.length),
+    ...revertedRow("no edit made", b.noOp.length),
     ...revertedRow("retries exhausted", b.retryExhausted.length),
     ...leftRow("skipped tests", b.skippedTests.length, " (pass --include-tests)"),
     ...leftRow("skipped generated", b.generated.length),
@@ -658,6 +664,7 @@ function plainScopeLabel(report: Report): string {
 function findingReason(f: Finding): string {
   if (f.finalFailureClass === "tool-timeout") return "timeout/session error";
   if (f.finalFailureClass === "rate-limit") return "rate limited";
+  if (f.finalFailureClass === "model-rejected") return "model rejected (prompt/tokens/model)";
   if (f.finalFailureClass === "no-op") return "no-op";
   if (f.finalFailureClass === "sandbox-setup-failed") return "sandbox setup failed";
   if (f.finalFailureClass === "patch-conflict") return "patch conflict";
@@ -668,6 +675,8 @@ function findingReason(f: Finding): string {
       return "timeout/session error";
     case "regression":
       return "regression introduced";
+    case "unresolved-target":
+      return "did not clear the finding";
     case "typecheck":
       return "typecheck failed";
     case "broke-test":
@@ -691,6 +700,7 @@ type CouldntFixReason =
   | "regression"
   | "typecheck failed"
   | "test failed"
+  | "no edit made"
   | "retries exhausted"
   | "unsupported / report-only";
 
@@ -707,6 +717,7 @@ const COULDNT_FIX_REASON_ORDER: CouldntFixReason[] = [
   "regression",
   "typecheck failed",
   "test failed",
+  "no edit made",
   "retries exhausted",
   "unsupported / report-only",
 ];
@@ -716,11 +727,13 @@ function couldntFixReason(f: Finding): CouldntFixReason {
   if (f.finalFailureClass === "sandbox-setup-failed") return "sandbox setup failed";
   if (f.finalFailureClass === "patch-conflict") return "patch conflict";
   if (f.finalFailureClass === "unowned-patch") return "unowned patch";
+  if (f.finalFailureClass === "no-op") return "no edit made";
   if (
     f.revertReason === "session-error" ||
     f.finalFailureClass === "tool-timeout" ||
     f.finalFailureClass === "rate-limit" ||
     f.finalFailureClass === "model-tool-failure" ||
+    f.finalFailureClass === "model-rejected" ||
     f.finalFailureClass === "no-edit"
   )
     return "session error";

@@ -39,6 +39,12 @@ export type ScanResult = {
   findings: Finding[];
   skipped: boolean;
   error?: string;
+  /**
+   * Optional scanner-specific diagnostics for the trace (off unless TEND_TRACE_DIR is set).
+   * Never affects findings or control flow. sonarjs records the pinned TypeScript path/version and
+   * the resolved lint groups here so the phantom-finding (TS version skew) class is diagnosable.
+   */
+  diagnostics?: Record<string, unknown>;
 };
 
 /** Outcome of a scanner this loop, for the report's scanner-status line. */
