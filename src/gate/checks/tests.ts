@@ -70,6 +70,15 @@ function regressions(baseline: Set<string>, outcomes: TestOutcome[]): TestOutcom
   return outcomes.filter((o) => o.status === "fail" && baseline.has(o.name));
 }
 
+/** Stable key for the set of regressed test names — order-independent so a repair that only
+ *  reorders results (same names) reads as no progress, while different names read as progress. */
+function regressedKey(regressed: TestOutcome[]): string {
+  return regressed
+    .map((o) => o.name)
+    .sort()
+    .join("\n");
+}
+
 /**
  * Apply→test→repair flow. A red previously-green test opens a bounded repair window
  * rather than an instant revert; exhausting it without going green is a reject.
@@ -84,9 +93,14 @@ export async function runTestPhase(deps: RunTestPhaseDeps): Promise<TestPhaseRes
     if (regressed.length === 0) return pass();
 
     for (let attempt = 1; attempt <= deps.maxRepairs; attempt++) {
+      const before = regressedKey(regressed);
       await deps.repair(attempt, regressed);
       regressed = regressions(deps.baseline, await deps.runRelated());
       if (regressed.length === 0) return pass();
+      // No progress: the repair left the exact same set of tests red. Another attempt on an
+      // unchanged gate just burns a multi-minute session for the same result — stop now.
+      // Changing WHICH tests are red (different names, even same count) counts as progress.
+      if (regressedKey(regressed) === before) break;
     }
 
     const names = regressed.map((o) => o.name).join(", ");
