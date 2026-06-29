@@ -479,25 +479,8 @@ export class WorkerSandboxPool {
         }
         // Materialize the result onto the working tree. Files the patch deleted are
         // gone from the temp index; remove them from disk. The rest are written from the index.
-        const survivorsRaw = await this.exec("git", ["ls-files", "--", ...targets], {
-          cwd: main,
-          env: tmpEnv,
-          reject: false,
-        });
-        const survivors = new Set(lines(survivorsRaw.stdout));
-        for (const file of targets) {
-          if (!survivors.has(normalizeRel(file))) rmSync(join(main, file), { force: true });
-        }
-        if (survivors.size > 0) {
-          const out = await this.exec("git", ["checkout-index", "-f", "--", ...survivors], {
-            cwd: main,
-            env: tmpEnv,
-            reject: false,
-          });
-          if ((out.exitCode ?? 1) !== 0) {
-            return { ok: false, reason: "patch-conflict", detail: out.stderr || "failed to materialize merged files" };
-          }
-        }
+        const materializeError = await this.materializeMerged(main, targets, tmpEnv);
+        if (materializeError) return materializeError;
         // The patch is now on main. Advance the base so the NEXT sandbox forks from this result
         // instead of the frozen original — otherwise a later fix to the same file would be a
         // diff-from-original and conflict here on the 3-way merge. Runs inside applyQueue
@@ -509,6 +492,38 @@ export class WorkerSandboxPool {
         rmSync(`${tmpIndex}.lock`, { force: true });
       }
     }) as Promise<ApplyPatchResult>;
+  }
+
+  /**
+   * Materialize a clean 3-way merge from the throwaway index onto the working tree: remove the
+   * files the patch deleted (absent from the temp index) and write the survivors back via
+   * checkout-index. Returns a conflict result on failure, or `undefined` on success.
+   */
+  private async materializeMerged(
+    main: string,
+    targets: string[],
+    tmpEnv: { GIT_INDEX_FILE: string },
+  ): Promise<ApplyPatchResult | undefined> {
+    const survivorsRaw = await this.exec("git", ["ls-files", "--", ...targets], {
+      cwd: main,
+      env: tmpEnv,
+      reject: false,
+    });
+    const survivors = new Set(lines(survivorsRaw.stdout));
+    for (const file of targets) {
+      if (!survivors.has(normalizeRel(file))) rmSync(join(main, file), { force: true });
+    }
+    if (survivors.size > 0) {
+      const out = await this.exec("git", ["checkout-index", "-f", "--", ...survivors], {
+        cwd: main,
+        env: tmpEnv,
+        reject: false,
+      });
+      if ((out.exitCode ?? 1) !== 0) {
+        return { ok: false, reason: "patch-conflict", detail: out.stderr || "failed to materialize merged files" };
+      }
+    }
+    return undefined;
   }
 
   /**
