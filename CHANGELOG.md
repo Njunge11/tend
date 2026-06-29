@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.10](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.9...tend-cli-v0.14.10) (2026-06-29)
+
+
+### Bug Fixes
+
+* re-dispatch newly-surfaced findings before final-integration revert ([bbb5470](https://github.com/Njunge11/tend/commit/bbb547084759737fd9c825a9243e0117f75c532f))
+* stop discarding successful fixes whose result summary mentions error keywords ([41963be](https://github.com/Njunge11/tend/commit/41963be81a52acd18098fba53713215866224761))
+
 ## [0.14.9](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.8...tend-cli-v0.14.9) (2026-06-29)
 
 
