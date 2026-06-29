@@ -337,6 +337,111 @@ describe("deterministic fixers", () => {
     expect(env.read("src/barrel.ts")).toBe("const a = 1;");
   });
 
+  it("drops one unused name from a destructured `export const { ... } = expr` (the auth.ts case)", async () => {
+    // Verbatim shape that failed in apps/admin/auth.ts: NextAuth() returns an object that is
+    // destructured and re-exported; knip flags `signIn` as unused. The unrelated `signIn` callback
+    // key inside the config must NOT be treated as a local reference.
+    env.write(
+      "src/auth.ts",
+      [
+        'import NextAuth from "next-auth";',
+        "export const { handlers, auth, signIn, signOut } = NextAuth({",
+        "  callbacks: {",
+        "    async signIn({ profile }) {",
+        "      return Boolean(profile);",
+        "    },",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/auth.ts",
+      message: "Unused export: signIn",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/auth.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/auth.ts")).toBe(
+      [
+        'import NextAuth from "next-auth";',
+        "export const { handlers, auth, signOut } = NextAuth({",
+        "  callbacks: {",
+        "    async signIn({ profile }) {",
+        "      return Boolean(profile);",
+        "    },",
+        "  },",
+        "});",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("rebuilds a destructured pattern once when several of its names are unused", async () => {
+    env.write("src/api.ts", "export const { a, b, c } = make();\n");
+    const findings = [
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/api.ts", message: "Unused export: a" }),
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/api.ts", message: "Unused export: c" }),
+    ];
+
+    const outcome = await makeDeterministicFixUnit(deps())({
+      file: "src/api.ts",
+      files: ["src/api.ts"],
+      findings,
+      strategy: "deterministic-ts-unused-export-cleanup",
+      strategies: ["deterministic-ts-unused-export-cleanup"],
+      verificationTargets: ["src/api.ts"],
+    });
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/api.ts")).toBe("export const { b } = make();\n");
+  });
+
+  it("deletes the whole statement when every destructured name is unused", async () => {
+    env.write("src/api.ts", "export const { a, b } = make();\n");
+    const findings = [
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/api.ts", message: "Unused export: a" }),
+      makeFinding({ tool: "knip", rule: "unused-export", category: "dead-code", file: "src/api.ts", message: "Unused export: b" }),
+    ];
+
+    const outcome = await makeDeterministicFixUnit(deps())({
+      file: "src/api.ts",
+      files: ["src/api.ts"],
+      findings,
+      strategy: "deterministic-ts-unused-export-cleanup",
+      strategies: ["deterministic-ts-unused-export-cleanup"],
+      verificationTargets: ["src/api.ts"],
+    });
+
+    expect(outcome.kept).toBe(true);
+    expect(env.read("src/api.ts")).toBe("");
+  });
+
+  it("refuses (terminally) to drop a destructured binding that is still used locally", async () => {
+    env.write("src/api.ts", "export const { a, b } = make();\nconsole.log(a);\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-export",
+      category: "dead-code",
+      file: "src/api.ts",
+      message: "Unused export: a",
+    });
+
+    const outcome = await makeDeterministicFixUnit(deps())(
+      unit("src/api.ts", finding, "deterministic-ts-unused-export-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("deterministic-unsupported");
+    expect(env.read("src/api.ts")).toBe("export const { a, b } = make();\nconsole.log(a);\n");
+  });
+
   it("fails an unsupported export shape terminally, not as a retryable session error", async () => {
     env.write("src/barrel.ts", "export * from './m';\n");
     const finding = makeFinding({
