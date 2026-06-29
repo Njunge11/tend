@@ -8,6 +8,7 @@
  */
 import { rmSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { orchestrate, type AuditResult, type FixOutcome } from "../src/orchestrator.js";
 import { EventBus } from "../src/output/events.js";
 import { createTracer } from "../src/debug/trace.js";
@@ -15,7 +16,7 @@ import { zeroUsage } from "../src/session/types.js";
 import type { WorkUnit } from "../src/fixing/dispatch.js";
 import { makeFinding } from "../test/helpers/make-finding.js";
 
-const BASE = process.env.TEND_TRACE_DIR ?? "/tmp/tr";
+const BASE = process.env.TEND_TRACE_DIR ?? join(tmpdir(), "tr");
 const config = { maxLoops: 5, perIssueBudget: 3, maxSessions: 4, model: "claude-sonnet-4-6" };
 
 function runWithTrace(
