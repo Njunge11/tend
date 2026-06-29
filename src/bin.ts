@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { execa } from "execa";
@@ -43,7 +43,7 @@ import { ReportBuilder } from "./report/builder.js";
 import { ReportSchema, type Report } from "./report/schema.js";
 import { renderSummary } from "./output/summary.js";
 import { EventBus } from "./output/events.js";
-import { createTracer } from "./debug/trace.js";
+import { createTracer, pointLatestAt, runId } from "./debug/trace.js";
 import { detectOutputEnv } from "./output/env.js";
 import { makeTheme } from "./output/theme.js";
 import { createReporter } from "./output/reporter.js";
@@ -64,10 +64,14 @@ import { zeroUsage } from "./session/types.js";
 // the whole pipeline — repo-root-relative paths, root-checkout AI sandboxes — assumes cwd == repo
 // root. Hence `let`, not `const`.
 let cwd = process.cwd();
-const tracer = createTracer(process.env.TEND_TRACE_DIR);
+// One id per process (== one run) shared by the tracer and the per-run report archive, so a
+// run's trace dir (<TEND_TRACE_DIR>/<id>/) and report dir (.tend/runs/<id>/) carry the same id.
+const RUN_ID = runId();
+const tracer = createTracer(process.env.TEND_TRACE_DIR, RUN_ID);
 let TEND_DIR = join(cwd, ".tend");
 let SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
 let REPORT_PATH = join(TEND_DIR, "report.json");
+let RUNS_DIR = join(TEND_DIR, "runs");
 // tend-owned, outside any sandbox worktree → the tsc build-info survives worktree
 // reset/clean and is reused across iterations (Fix 5).
 let TEND_CACHE_DIR = join(TEND_DIR, "cache");
@@ -94,6 +98,7 @@ async function rebaseToRepoRoot(): Promise<{ prefix: string; startCwd: string }>
   TEND_DIR = join(cwd, ".tend");
   SNAPSHOT_PATH = join(TEND_DIR, "snapshot.json");
   REPORT_PATH = join(TEND_DIR, "report.json");
+  RUNS_DIR = join(TEND_DIR, "runs");
   TEND_CACHE_DIR = join(TEND_DIR, "cache");
   return { prefix, startCwd };
 }
@@ -132,6 +137,47 @@ const plural = (n: number, one: string) => `${n} ${n === 1 ? one : one + "s"}`;
 function persist(path: string, value: unknown): void {
   mkdirSync(TEND_DIR, { recursive: true });
   writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
+/** How many per-run report archives to keep under `.tend/runs/` before pruning the oldest. */
+const RUNS_RETENTION = 50;
+
+/**
+ * Archive the run's report under `.tend/runs/<RUN_ID>/report.json` (history; `.tend/report.json`
+ * stays the canonical latest, untouched here). Drops a `.tend/runs/latest` pointer at the newest
+ * run and prunes the oldest archives past `RUNS_RETENTION` so the directory can't grow forever.
+ * Best-effort: history is observability only and must never fail a run.
+ */
+function archiveReport(report: Report): void {
+  try {
+    const runDir = join(RUNS_DIR, RUN_ID);
+    mkdirSync(runDir, { recursive: true });
+    persist(join(runDir, "report.json"), report);
+    pointLatestAt(RUNS_DIR, RUN_ID);
+    pruneRunArchives();
+  } catch {
+    // never let history bookkeeping break a run
+  }
+}
+
+/**
+ * The oldest archive ids to drop so at most `retention` remain. runId is timestamp-prefixed, so
+ * a lexicographic sort is chronological and the slice off the front is the oldest.
+ */
+export function runsToPrune(ids: readonly string[], retention: number): string[] {
+  const sorted = [...ids].sort();
+  return sorted.slice(0, Math.max(0, sorted.length - retention));
+}
+
+/** Keep only the newest `RUNS_RETENTION` run archives; log which older ones were removed. */
+function pruneRunArchives(): void {
+  const ids = readdirSync(RUNS_DIR, { withFileTypes: true })
+    .filter((e) => e.isDirectory()) // exclude the `latest` symlink
+    .map((e) => e.name);
+  const excess = runsToPrune(ids, RUNS_RETENTION);
+  for (const id of excess) rmSync(join(RUNS_DIR, id), { recursive: true, force: true });
+  if (excess.length > 0)
+    out(`pruned ${plural(excess.length, "old run archive")} from .tend/runs (kept ${RUNS_RETENTION})`);
 }
 
 function loadJson<T>(path: string): T {
@@ -1058,6 +1104,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
     finalIntegration: finalIntegrationResult,
   });
   persist(REPORT_PATH, report);
+  archiveReport(report);
 
   out("");
   out(
@@ -1141,6 +1188,7 @@ async function runRetry(id: string): Promise<void> {
   }
 
   persist(REPORT_PATH, report);
+  archiveReport(report);
 
   if (result.outcome === "fixed") {
     out(`✔ fixed ${result.finding.file} (retry budget ${result.budget})`);
