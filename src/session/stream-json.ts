@@ -113,11 +113,15 @@ type EventSignals = { rateLimited: boolean; errored: boolean; nonRetryable: bool
 function eventSignals(event: StreamEvent): EventSignals {
   const errored = Boolean(event.is_error);
   const rateLimited = Boolean(event.is_error && event.error && RATE_LIMIT_RE.test(event.error));
-  // Non-retryable signals can arrive on an is_error event, in a `result` message's text, or
-  // as a max-tokens stop_reason on an assistant turn (the edit was truncated mid-write).
+  // Non-retryable signals can arrive on an is_error event, in a FAILED `result` message's text, or
+  // as a max-tokens stop_reason on an assistant turn (the edit was truncated mid-write). The result
+  // text is scanned ONLY when the result actually errored: on a success result `result` is the
+  // model's free-text summary, which legitimately mentions HTTP 404, "max tokens", model names,
+  // etc. while explaining the fix — scanning it there false-flags a good fix as a non-retryable
+  // failure and reverts it.
   const nonRetryable =
     isNonRetryableText(event.error) ||
-    isNonRetryableText(event.result) ||
+    (errored && isNonRetryableText(event.result)) ||
     event.message?.stop_reason === "max_tokens";
   return { rateLimited, errored, nonRetryable };
 }

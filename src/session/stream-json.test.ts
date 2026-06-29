@@ -128,4 +128,22 @@ describe("parseStreamJson — non-retryable errors", () => {
     expect(parsed.errored).toBe(true);
     expect(parsed.nonRetryable).toBe(false);
   });
+
+  it("does NOT flag a SUCCESS result whose summary text mentions 404/max-tokens as non-retryable", () => {
+    // On a success result, `result` is the model's free-text summary — it legitimately mentions
+    // HTTP status codes, token budgets, and model names while explaining the fix. Scanning that
+    // text for error keywords false-flags a good fix as a non-retryable failure and reverts it.
+    const parsed = parseStreamJson(
+      JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result:
+          "Deduped the auth preamble into _shared.ts. No behavior change: same status codes " +
+          "(401/404/403/500), same audit calls; kept well under the max tokens budget.",
+      }),
+    );
+    expect(parsed.nonRetryable).toBe(false);
+    expect(parsed.errored).toBe(false);
+  });
 });
