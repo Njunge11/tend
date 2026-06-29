@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.8](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.7...tend-cli-v0.14.8) (2026-06-29)
+
+
+### Bug Fixes
+
+* document per-run .tend/runs archive and cut 0.14.8 ([0f3c564](https://github.com/Njunge11/tend/commit/0f3c564ce1e279712b29f97c60d579d9d54befdc))
+
 ## [0.14.7](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.6...tend-cli-v0.14.7) (2026-06-27)
 
 
