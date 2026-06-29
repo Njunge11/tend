@@ -24,7 +24,8 @@ import { effortForUnit } from "./fixing/effort.js";
 import { detectBuildCommand } from "./fixing/generated-source.js";
 import { planWorkFromRepairs, type WorkUnit } from "./fixing/dispatch.js";
 import type { Finding, Tool } from "./findings/finding.js";
-import { planRepair } from "./fixing/repair-strategy.js";
+import { isAiDispatchStrategy, planRepair } from "./fixing/repair-strategy.js";
+import type { FixScopeConfig } from "./scanners/scope-policy.js";
 import {
   mapOwnerRoot,
   pruneStaleWorktrees,
@@ -387,7 +388,7 @@ type FinalIntegrationResult =
 type FinalIntegrationGate = {
   runTsc: () => Promise<{ exitCode: number; output: string }>;
   runRelated: (files: string[]) => Promise<TestOutcome[]>;
-  scanFindings: (files: string[], tools?: Tool[]) => Promise<unknown[]>;
+  scanFindings: (files: string[], tools?: Tool[]) => Promise<Finding[]>;
 };
 
 /** Failure detail when the final whole-run typecheck fails; undefined when clean or skipped.
@@ -422,18 +423,6 @@ async function finalTestFailure(
   return `final integration related tests failed: ${failed.map((test) => test.name).join(", ")}`;
 }
 
-/** Failure detail when the final scanner rescan still finds issues; undefined when clean or skipped. */
-async function finalRescanFailure(
-  gate: FinalIntegrationGate,
-  tools: Tool[],
-  files: string[],
-): Promise<string | undefined> {
-  if (tools.length === 0) return undefined;
-  const findings = await gate.scanFindings(files, tools);
-  if (findings.length === 0) return undefined;
-  return `final integration scanner rescan found ${findings.length} finding${findings.length === 1 ? "" : "s"}`;
-}
-
 /**
  * The final-integration gate failed and the run's AI edits were rolled back to the known-good
  * baseline. Re-mark every finding whose fix landed on a reverted file: it is no longer fixed on
@@ -461,8 +450,43 @@ export function demoteFinalIntegrationFindings(
   return demoted;
 }
 
+/**
+ * The final-integration gate as a pure control-flow unit, with every effect injected so it is
+ * testable in isolation. Runs the whole-run checks in order — typecheck → tests → scanner rescan —
+ * short-circuiting on the first failure. When the rescan surfaces findings (a fix accepted during
+ * the run introduced a NEW finding on a file it touched, e.g. an extracted shared module that
+ * collides with a third file), it asks `repair` to fix them in place and re-verifies, capped at
+ * `maxRepairRounds` rounds so an extract→new-clone→extract cycle always terminates. Returns
+ * `ok: true` only when every check is clean; otherwise `ok: false` with a detail, leaving the
+ * caller to revert to known-good — the same safe floor as before. Exported for testing.
+ */
+export async function runFinalIntegration(deps: {
+  acceptedFiles: () => string[];
+  acceptedTools: () => Tool[];
+  typecheckFailure: () => Promise<string | undefined>;
+  testFailure: (files: string[]) => Promise<string | undefined>;
+  scanFindings: (files: string[], tools: Tool[]) => Promise<Finding[]>;
+  repair: (findings: Finding[]) => Promise<boolean>;
+  maxRepairRounds?: number;
+}): Promise<FinalIntegrationResult> {
+  const maxRounds = deps.maxRepairRounds ?? 1;
+  for (let round = 0; ; round++) {
+    const files = deps.acceptedFiles().sort((a, b) => a.localeCompare(b));
+    if (files.length === 0) return { ok: true, files };
+    // Checks run in order and short-circuit: tests only run after a clean typecheck, the rescan
+    // only after green tests — same sequencing as the per-unit gate.
+    const blocker = (await deps.typecheckFailure()) ?? (await deps.testFailure(files));
+    if (blocker) return { ok: false, files, detail: blocker };
+    const tools = deps.acceptedTools();
+    const blocking = tools.length === 0 ? [] : await deps.scanFindings(files, tools);
+    if (blocking.length === 0) return { ok: true, files };
+    const detail = `final integration scanner rescan found ${plural(blocking.length, "finding")}`;
+    if (round >= maxRounds || !(await deps.repair(blocking))) return { ok: false, files, detail };
+  }
+}
+
 async function makeProductionFixUnit(
-  config: { model: string; effort?: Effort; thinkingBudget?: number },
+  config: { model: string; effort?: Effort; thinkingBudget?: number; fix?: FixScopeConfig; includeTests?: boolean },
   baselineTargets: string[],
   // The package root that owns the scoped files. Detection (TypeScript/test runner),
   // the test baseline, typecheck, and related-test runs all execute here so a
@@ -759,22 +783,62 @@ async function makeProductionFixUnit(
     }
   };
 
+  // A fix accepted during the run can introduce a NEW finding on a file it touched — e.g.
+  // extracting a shared module collides with a pre-existing block in a third (out-of-scope) file,
+  // creating a fresh clone that only the whole-run rescan surfaces, after the loop. Rather than
+  // discard every accepted fix, try ONCE to repair the newly-surfaced findings in place (the
+  // duplicate planner collapses the new clone into the shared module). The repair is routed through
+  // the same `fixUnit`/sandbox pool, so it forks from the already-fixed tree and its patch stacks
+  // cleanly onto the accepted ones, and it gates itself (typecheck/tests/rescan) before applying —
+  // a repair that can't land cleanly simply doesn't, and the caller still reverts to known-good.
+  // Returns true when at least one unit landed a fix on disk (caller re-verifies); false when
+  // nothing was AI-dispatchable or kept. Note this deliberately edits the clone's partner file even
+  // when it sits outside the run's fix scope: the scope expansion is bounded to undoing the mess an
+  // accepted in-scope fix made, and the alternative is throwing that fix away.
+  const planConfig = { ...config.fix, includeTests: config.includeTests };
+  const repairRescanFindings = async (findings: Finding[]): Promise<boolean> => {
+    const plans = findings.map((finding) =>
+      planRepair({
+        finding,
+        cwd,
+        scope: finding,
+        config: planConfig,
+        flowPath: finding.flowPath,
+        file: finding.file,
+        category: finding.category,
+        rule: finding.rule,
+        tool: finding.tool,
+      }),
+    );
+    const units = planWorkFromRepairs(plans.filter((plan) => isAiDispatchStrategy(plan.strategy)));
+    if (units.length === 0) return false;
+    bus?.emit({
+      type: "debug",
+      action: "final-integration.redispatch",
+      detail: `repairing ${plural(units.length, "newly-surfaced unit")} before deciding rollback`,
+      data: { files: [...new Set(units.flatMap((unit) => unit.files))] },
+    });
+    let kept = false;
+    for (const unit of units) {
+      if ((await fixUnit(unit, 0)).kept) kept = true;
+    }
+    return kept;
+  };
+
   return {
     typescript,
     runner,
     fixUnit,
     deterministicFixUnit: makeDeterministicFixUnit(mainGateDeps),
-    finalIntegration: async () => {
-      const files = [...acceptedFiles].sort((a, b) => a.localeCompare(b));
-      if (files.length === 0) return { ok: true, files };
-      // Checks run in order and short-circuit: tests only run after a clean typecheck, the
-      // rescan only after green tests — same sequencing as the per-unit gate.
-      const detail =
-        (await finalTypecheckFailure(mainGateDeps, typescript, typecheckBaseline)) ??
-        (await finalTestFailure(mainGateDeps, runner, files)) ??
-        (await finalRescanFailure(mainGateDeps, [...acceptedTools], files));
-      return detail === undefined ? { ok: true, files } : { ok: false, files, detail };
-    },
+    finalIntegration: () =>
+      runFinalIntegration({
+        acceptedFiles: () => [...acceptedFiles],
+        acceptedTools: () => [...acceptedTools],
+        typecheckFailure: () => finalTypecheckFailure(mainGateDeps, typescript, typecheckBaseline),
+        testFailure: (files) => finalTestFailure(mainGateDeps, runner, files),
+        scanFindings: (files, tools) => mainGateDeps.scanFindings(files, tools),
+        repair: repairRescanFindings,
+      }),
   };
 }
 
