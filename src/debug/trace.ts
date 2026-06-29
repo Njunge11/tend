@@ -82,15 +82,16 @@ function safeName(file: string): string {
 let runSeq = 0;
 
 /** Filesystem-safe, sortable id unique to this run: ISO start time (colons → dashes), pid, and a
- *  per-process sequence so back-to-back tracers in one process never land in the same subdir. */
-function runId(): string {
+ *  per-process sequence so back-to-back ids in one process never collide. Shared by the tracer
+ *  and the per-run report archive so a run's trace dir and report dir carry the same id. */
+export function runId(): string {
   return `${nowIso().replace(/[:.]/g, "-")}-${process.pid}-${runSeq++}`;
 }
 
-/** Point `<traceDir>/latest` at the newest run subdir. Best-effort: symlinks can fail (Windows,
- *  permissions) and tracing must never break a run, so any error is swallowed. */
-function pointLatestAt(traceDir: string, id: string): void {
-  const link = join(traceDir, "latest");
+/** Point `<dir>/latest` at the newest per-run subdir `id`. Best-effort: symlinks can fail
+ *  (Windows, permissions) and this must never break a run, so any error is swallowed. */
+export function pointLatestAt(dir: string, id: string): void {
+  const link = join(dir, "latest");
   try {
     rmSync(link, { force: true, recursive: true });
     symlinkSync(id, link);
@@ -100,10 +101,10 @@ function pointLatestAt(traceDir: string, id: string): void {
 }
 
 /** Returns a Tracer when `TEND_TRACE_DIR` is set, otherwise null (tracing disabled). Each call
- *  namespaces its output under a fresh per-run subdir so concurrent/sequential runs never mix. */
-export function createTracer(traceDir: string | undefined): Tracer | null {
+ *  namespaces its output under a per-run subdir so concurrent/sequential runs never mix. Pass a
+ *  shared `id` (from `runId()`) to align the trace dir with the run's report archive. */
+export function createTracer(traceDir: string | undefined, id: string = runId()): Tracer | null {
   if (!traceDir) return null;
-  const id = runId();
   const dir = join(traceDir, id);
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, "sessions"), { recursive: true });

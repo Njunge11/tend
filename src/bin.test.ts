@@ -3,6 +3,7 @@ import { makeFinding } from "../test/helpers/make-finding.js";
 import {
   demoteFinalIntegrationFindings,
   parseTestReport,
+  runsToPrune,
   snapshotOverwriteVerdict,
 } from "./bin.js";
 import { captureBaseline, type TestOutcome } from "./gate/checks/tests.js";
@@ -147,5 +148,30 @@ describe("snapshotOverwriteVerdict", () => {
     expect(
       snapshotOverwriteVerdict({ snapshotExists: true, priorFixedFilesPendingCount: 1 }),
     ).toBe("would-strand-baseline");
+  });
+});
+
+describe("runsToPrune", () => {
+  it("drops nothing when at or under the retention cap", () => {
+    expect(runsToPrune(["a", "b"], 2)).toEqual([]);
+    expect(runsToPrune(["a"], 50)).toEqual([]);
+    expect(runsToPrune([], 50)).toEqual([]);
+  });
+
+  it("drops the oldest ids past the cap (timestamp-prefixed → lexicographic is chronological)", () => {
+    const ids = [
+      "2026-06-29T03-00-00-000Z-1-0",
+      "2026-06-29T03-01-00-000Z-1-0",
+      "2026-06-29T03-02-00-000Z-1-0",
+    ];
+    expect(runsToPrune(ids, 1)).toEqual([ids[0], ids[1]]); // keep only the newest
+    expect(runsToPrune(ids, 2)).toEqual([ids[0]]); // keep the two newest
+  });
+
+  it("sorts unordered input before choosing the oldest", () => {
+    const newest = "2026-06-29T03-02-00-000Z-1-0";
+    const mid = "2026-06-29T03-01-00-000Z-1-0";
+    const oldest = "2026-06-29T03-00-00-000Z-1-0";
+    expect(runsToPrune([newest, oldest, mid], 1)).toEqual([oldest, mid]);
   });
 });
