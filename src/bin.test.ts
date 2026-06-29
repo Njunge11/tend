@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
-import { demoteFinalIntegrationFindings, parseTestReport } from "./bin.js";
+import {
+  demoteFinalIntegrationFindings,
+  parseTestReport,
+  snapshotOverwriteVerdict,
+} from "./bin.js";
 import { captureBaseline, type TestOutcome } from "./gate/checks/tests.js";
 
 /** A vitest/jest-shaped JSON report with one test file's worth of assertions. */
@@ -121,5 +125,27 @@ describe("demoteFinalIntegrationFindings", () => {
 
     expect(demoted).toBe(1);
     expect(finding.status).toBe("unfixable");
+  });
+});
+
+describe("snapshotOverwriteVerdict", () => {
+  it("first run — no existing snapshot → safe to capture", () => {
+    expect(
+      snapshotOverwriteVerdict({ snapshotExists: false, priorFixedFilesPendingCount: 3 }),
+    ).toBe("safe");
+  });
+
+  it("prior fixes committed/undone/none pending → safe to overwrite", () => {
+    // Covers: clean tree (committed), post-`tend undo`, a run that fixed nothing, and a
+    // developer's own unrelated WIP — none leave the prior run's edits pending.
+    expect(
+      snapshotOverwriteVerdict({ snapshotExists: true, priorFixedFilesPendingCount: 0 }),
+    ).toBe("safe");
+  });
+
+  it("the footgun — a prior run's kept edits still uncommitted → would strand baseline", () => {
+    expect(
+      snapshotOverwriteVerdict({ snapshotExists: true, priorFixedFilesPendingCount: 1 }),
+    ).toBe("would-strand-baseline");
   });
 });

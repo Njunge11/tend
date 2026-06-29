@@ -190,4 +190,32 @@ describe("Snapshot", () => {
       }
     }
   });
+
+  describe("parentSha — detects whether anything was committed since capture", () => {
+    it("returns HEAD-at-capture even when the captured tree was dirty (no commit yet)", async () => {
+      repo.write("src/a.ts", "A\n");
+      await repo.commit("init");
+      const baseHead = (await repo.git.revparse(["HEAD"])).trim();
+
+      // Snapshot a dirty tree: the snapshot legitimately differs from HEAD with no commit yet.
+      write("src/a.ts", "WIP\n");
+      const snap = await Snapshot.capture(repo.git, repo.dir);
+
+      // No commit since capture → parent == current HEAD (this is how the guard tells nothing
+      // was committed, which diff(snapshot, HEAD) couldn't on a dirty capture).
+      expect(await snap.parentSha()).toBe(baseHead);
+      expect((await repo.git.revparse(["HEAD"])).trim()).toBe(baseHead);
+
+      // Commit the edits → HEAD moves off the snapshot's (fixed) parent.
+      await repo.commit("keep edits");
+      expect((await repo.git.revparse(["HEAD"])).trim()).not.toBe(baseHead);
+      expect(await snap.parentSha()).toBe(baseHead);
+    });
+
+    it("returns null for a snapshot captured with no commits in the repo", async () => {
+      repo.write("src/a.ts", "A\n"); // never committed — repo has no HEAD
+      const snap = await Snapshot.capture(repo.git, repo.dir);
+      expect(await snap.parentSha()).toBeNull();
+    });
+  });
 });
