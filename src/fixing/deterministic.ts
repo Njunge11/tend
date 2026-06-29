@@ -191,13 +191,40 @@ type ExportTarget =
       statement: ts.ExportDeclaration;
       clause: ts.NamedExports;
       specifier: ts.ExportSpecifier;
+    }
+  | {
+      // One name inside a destructured `export const { a, b } = expr`. The `export` keyword belongs
+      // to the whole statement, so it cannot be stripped per-binding — the cleanup either drops just
+      // this element from the pattern, or (when it is the last one) removes the whole statement.
+      kind: "binding";
+      statement: ts.VariableStatement;
+      declarationList: ts.VariableDeclarationList;
+      pattern: ts.ObjectBindingPattern;
+      element: ts.BindingElement;
+      name: ts.Identifier;
     };
+
+/** Find a single unused name inside an exported object-destructuring statement. */
+function findExportedObjectBinding(statement: ts.Node, name: string): ExportTarget | undefined {
+  if (!ts.isVariableStatement(statement)) return undefined;
+  for (const declaration of statement.declarationList.declarations) {
+    const pattern = declaration.name;
+    if (!ts.isObjectBindingPattern(pattern)) continue;
+    const element = pattern.elements.find((el) => ts.isIdentifier(el.name) && el.name.text === name);
+    if (element && ts.isIdentifier(element.name)) {
+      return { kind: "binding", statement, declarationList: statement.declarationList, pattern, element, name: element.name };
+    }
+  }
+  return undefined;
+}
 
 function findExportTarget(sourceFile: ts.SourceFile, name: string): ExportTarget | undefined {
   for (const statement of sourceFile.statements) {
     if (hasExportModifier(statement)) {
       const foundName = declarationName(statement);
       if (foundName?.text === name) return { kind: "declaration", node: statement, name: foundName };
+      const binding = findExportedObjectBinding(statement, name);
+      if (binding) return binding;
       continue;
     }
     if (ts.isExportDeclaration(statement) && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
@@ -266,6 +293,72 @@ function removeSpecifiersChange(
   };
 }
 
+/**
+ * Is this identifier a real value reference, as opposed to a NAME slot (a member name like
+ * `obj.signIn`, an object-method/property key, or an import/export specifier)? Used to decide
+ * whether dropping a destructured binding would strand a local user of that name.
+ */
+function isValueReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) return false;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isQualifiedName(parent) && parent.right === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) ||
+      ts.isMethodDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent) ||
+      ts.isGetAccessorDeclaration(parent) ||
+      ts.isSetAccessorDeclaration(parent) ||
+      ts.isPropertySignature(parent) ||
+      ts.isEnumMember(parent)) &&
+    parent.name === node
+  ) {
+    return false;
+  }
+  // The property side of `{ key: local }` in a binding pattern, and import/export specifier slots.
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (ts.isImportSpecifier(parent) || ts.isExportSpecifier(parent)) return false;
+  return true;
+}
+
+/** Whether `name` is read anywhere in the file as a value, ignoring its own binding identifier. */
+function isLocallyReferenced(sourceFile: ts.SourceFile, name: string, declaration: ts.Identifier): boolean {
+  let referenced = false;
+  const visit = (node: ts.Node): void => {
+    if (referenced) return;
+    if (node !== declaration && ts.isIdentifier(node) && node.text === name && isValueReference(node)) {
+      referenced = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return referenced;
+}
+
+/**
+ * Remove unused names from one destructured `export const { ... } = expr`. If every binding is
+ * unused and it is the sole declaration, the whole statement goes; otherwise the object pattern is
+ * rebuilt from the survivors in a single replacement (mirroring {@link removeSpecifiersChange}).
+ */
+function removeBindingsChange(
+  sourceFile: ts.SourceFile,
+  statement: ts.VariableStatement,
+  declarationList: ts.VariableDeclarationList,
+  pattern: ts.ObjectBindingPattern,
+  remove: ReadonlySet<ts.BindingElement>,
+): ts.TextChange {
+  const kept = pattern.elements.filter((element) => !remove.has(element));
+  if (kept.length === 0 && declarationList.declarations.length === 1) {
+    return { span: deletionSpan(sourceFile, statement), newText: "" };
+  }
+  const start = pattern.getStart(sourceFile);
+  return {
+    span: { start, length: pattern.getEnd() - start },
+    newText: `{ ${kept.map((element) => element.getText(sourceFile)).join(", ")} }`,
+  };
+}
+
 type TextChangesResult = { ok: true; changes: ts.TextChange[] } | { ok: false; error: ApplyResult };
 
 function unusedExportCleanupChanges(source: string, fileName: string, findings: { message: string }[]): TextChangesResult {
@@ -274,6 +367,12 @@ function unusedExportCleanupChanges(source: string, fileName: string, findings: 
   // Group re-export removals per statement so several unused names in one `export { a, b }` rebuild
   // the clause exactly once instead of fighting over the same commas.
   const specifierRemovals = new Map<ts.ExportDeclaration, { clause: ts.NamedExports; remove: Set<ts.ExportSpecifier> }>();
+  // Group destructured-binding removals per pattern so several unused names in one
+  // `export const { a, b, c } = expr` rebuild the pattern exactly once.
+  const bindingRemovals = new Map<
+    ts.ObjectBindingPattern,
+    { statement: ts.VariableStatement; declarationList: ts.VariableDeclarationList; remove: Set<ts.BindingElement> }
+  >();
 
   for (const finding of findings) {
     const name = symbolNameFromFindingMessage(finding.message);
@@ -292,6 +391,23 @@ function unusedExportCleanupChanges(source: string, fileName: string, findings: 
       continue;
     }
 
+    if (target.kind === "binding") {
+      // A destructured `export const` cannot drop the `export` for one name only, so if the binding
+      // is still read locally there is no safe deterministic edit — leave it for the AI track.
+      if (isLocallyReferenced(sourceFile, name, target.name)) {
+        return {
+          ok: false,
+          error: unsupported(`Unused export "${name}" is a destructured binding still referenced locally`),
+        };
+      }
+      const group =
+        bindingRemovals.get(target.pattern) ??
+        ({ statement: target.statement, declarationList: target.declarationList, remove: new Set<ts.BindingElement>() } as const);
+      group.remove.add(target.element);
+      bindingRemovals.set(target.pattern, group);
+      continue;
+    }
+
     if (hasIdentifierReference(sourceFile, name, target.name)) {
       const change = removeExportChange(sourceFile, target.node);
       if (!change) {
@@ -305,6 +421,10 @@ function unusedExportCleanupChanges(source: string, fileName: string, findings: 
 
   for (const [statement, { clause, remove }] of specifierRemovals) {
     changes.push(removeSpecifiersChange(sourceFile, statement, clause, remove));
+  }
+
+  for (const [pattern, { statement, declarationList, remove }] of bindingRemovals) {
+    changes.push(removeBindingsChange(sourceFile, statement, declarationList, pattern, remove));
   }
 
   return { ok: true, changes };
