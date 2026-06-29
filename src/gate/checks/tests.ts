@@ -75,7 +75,7 @@ function regressions(baseline: Set<string>, outcomes: TestOutcome[]): TestOutcom
 function regressedKey(regressed: TestOutcome[]): string {
   return regressed
     .map((o) => o.name)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .join("\n");
 }
 
