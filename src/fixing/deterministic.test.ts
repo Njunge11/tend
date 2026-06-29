@@ -204,9 +204,8 @@ describe("deterministic fixers", () => {
     expect(env.read("src/helpers.ts")).toBe("function helper() {\n  return 1;\n}\n\nexport const value = helper();\n");
   });
 
-  it("marks package cleanup as needing a lockfile update and reverts package.json", async () => {
-    const original = JSON.stringify({ name: "x", devDependencies: { vitest: "^4.0.0" } }, null, 2) + "\n";
-    env.write("package.json", original);
+  it("regenerates the lockfile via the package manager and keeps the dependency removal", async () => {
+    env.write("package.json", JSON.stringify({ name: "x", devDependencies: { vitest: "^4.0.0", tsx: "^4.0.0" } }, null, 2) + "\n");
     env.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
     const finding = makeFinding({
       tool: "knip",
@@ -215,15 +214,92 @@ describe("deterministic fixers", () => {
       file: "package.json",
       message: "Unused devDependency: vitest",
     });
+    const calls: { cmd: string; args: readonly string[] }[] = [];
+    const runPackageManager = (cmd: string, args: readonly string[]) => {
+      calls.push({ cmd, args });
+      env.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n# regenerated without vitest\n");
+    };
 
-    const outcome = await makeDeterministicFixUnit(deps())(
+    const outcome = await makeDeterministicFixUnit(deps({ runPackageManager }))(
+      unit("package.json", finding, "deterministic-package-json-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(true);
+    expect(JSON.parse(env.read("package.json")).devDependencies).toStrictEqual({ tsx: "^4.0.0" });
+    expect(calls).toEqual([{ cmd: "pnpm", args: ["install", "--lockfile-only", "--ignore-scripts"] }]);
+    expect(env.read("pnpm-lock.yaml")).toContain("# regenerated without vitest");
+  });
+
+  it("reverts BOTH package.json and the regenerated lockfile when the gate fails", async () => {
+    const originalPkg = JSON.stringify({ name: "x", devDependencies: { vitest: "^4.0.0" } }, null, 2) + "\n";
+    const originalLock = "lockfileVersion: '9.0'\n";
+    env.write("package.json", originalPkg);
+    env.write("pnpm-lock.yaml", originalLock);
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-dependency",
+      category: "dead-code",
+      file: "package.json",
+      message: "Unused devDependency: vitest",
+    });
+    // The stub "regenerates" the lockfile; the gate then fails on typecheck, forcing a revert.
+    const runPackageManager = () => env.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n# regenerated\n");
+
+    const outcome = await makeDeterministicFixUnit(
+      deps({ typescript: true, runTsc: async () => ({ exitCode: 1, output: "boom" }), runPackageManager }),
+    )(unit("package.json", finding, "deterministic-package-json-cleanup"));
+
+    expect(outcome.kept).toBe(false);
+    expect(env.read("package.json")).toBe(originalPkg); // restored
+    expect(env.read("pnpm-lock.yaml")).toBe(originalLock); // lockfile restored too — not leaked
+  });
+
+  it("punts (needs-lockfile-update) for a package manager without a lockfile-only mode", async () => {
+    const originalPkg = JSON.stringify({ name: "x", dependencies: { lodash: "^4.0.0" } }, null, 2) + "\n";
+    env.write("package.json", originalPkg);
+    env.write("bun.lockb", " bun\n"); // bun has no safe lockfile-only regen
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-dependency",
+      category: "dead-code",
+      file: "package.json",
+      message: "Unused dependency: lodash",
+    });
+    const runPackageManager = vi.fn();
+
+    const outcome = await makeDeterministicFixUnit(deps({ runPackageManager }))(
       unit("package.json", finding, "deterministic-package-json-cleanup"),
     );
 
     expect(outcome.kept).toBe(false);
     expect(outcome.reason).toBe("needs-lockfile-update");
-    expect(outcome.usage?.sessions).toBe(0);
-    expect(env.read("package.json")).toBe(original);
+    expect(runPackageManager).not.toHaveBeenCalled();
+    expect(env.read("package.json")).toBe(originalPkg); // restored
+  });
+
+  it("returns needs-lockfile-update (and reverts) when the regen command fails", async () => {
+    const originalPkg = JSON.stringify({ name: "x", dependencies: { lodash: "^4.0.0" } }, null, 2) + "\n";
+    env.write("package.json", originalPkg);
+    env.write("pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    const finding = makeFinding({
+      tool: "knip",
+      rule: "unused-dependency",
+      category: "dead-code",
+      file: "package.json",
+      message: "Unused dependency: lodash",
+    });
+    const runPackageManager = () => {
+      throw Object.assign(new Error("Command failed"), { stderr: "ERR_PNPM_NO_OFFLINE_META no metadata" });
+    };
+
+    const outcome = await makeDeterministicFixUnit(deps({ runPackageManager }))(
+      unit("package.json", finding, "deterministic-package-json-cleanup"),
+    );
+
+    expect(outcome.kept).toBe(false);
+    expect(outcome.reason).toBe("needs-lockfile-update");
+    expect(outcome.detail).toContain("failed");
+    expect(env.read("package.json")).toBe(originalPkg); // restored
   });
 
   it("fails explicitly when a deterministic fixer changes nothing", async () => {
