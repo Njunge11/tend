@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TendEvent } from "../output/events.js";
 
@@ -7,7 +7,15 @@ import type { TendEvent } from "../output/events.js";
  * event stream AND each AI session's input/output/result/errors — is written to disk
  * so a run can be reconstructed exactly after the fact. Off by default (no env, no cost).
  *
+ * Each run gets its own subdir so running tend twice into one `TEND_TRACE_DIR` keeps the
+ * two traces separate instead of interleaving their .jsonl lines and overwriting session
+ * dirs. A `latest` symlink points at the newest run for convenience.
+ *
  * Layout under the trace dir:
+ *   <runId>/                              one per run (start timestamp + pid)
+ *   latest -> <runId>                     symlink to the most recent run
+ *
+ * Layout inside each run subdir:
  *   events.jsonl                          one line per bus event, timestamped (incl. `debug`)
  *   decisions.jsonl                       one line per `debug` event — the orchestrator's verdicts
  *                                         (terminal/retry/skip/split/budget), filtered for easy reading
@@ -69,11 +77,37 @@ function safeName(file: string): string {
   return file.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80);
 }
 
-/** Returns a Tracer when `TEND_TRACE_DIR` is set, otherwise null (tracing disabled). */
-export function createTracer(dir: string | undefined): Tracer | null {
-  if (!dir) return null;
+// Distinguishes runs created within the same process+millisecond (the pid is identical there,
+// so timestamp+pid alone can collide); separate processes are already disambiguated by pid.
+let runSeq = 0;
+
+/** Filesystem-safe, sortable id unique to this run: ISO start time (colons → dashes), pid, and a
+ *  per-process sequence so back-to-back tracers in one process never land in the same subdir. */
+function runId(): string {
+  return `${nowIso().replace(/[:.]/g, "-")}-${process.pid}-${runSeq++}`;
+}
+
+/** Point `<traceDir>/latest` at the newest run subdir. Best-effort: symlinks can fail (Windows,
+ *  permissions) and tracing must never break a run, so any error is swallowed. */
+function pointLatestAt(traceDir: string, id: string): void {
+  const link = join(traceDir, "latest");
+  try {
+    rmSync(link, { force: true, recursive: true });
+    symlinkSync(id, link);
+  } catch {
+    // ignore — `latest` is a convenience pointer, not load-bearing
+  }
+}
+
+/** Returns a Tracer when `TEND_TRACE_DIR` is set, otherwise null (tracing disabled). Each call
+ *  namespaces its output under a fresh per-run subdir so concurrent/sequential runs never mix. */
+export function createTracer(traceDir: string | undefined): Tracer | null {
+  if (!traceDir) return null;
+  const id = runId();
+  const dir = join(traceDir, id);
   mkdirSync(dir, { recursive: true });
   mkdirSync(join(dir, "sessions"), { recursive: true });
+  pointLatestAt(traceDir, id);
   const eventsPath = join(dir, "events.jsonl");
   const decisionsPath = join(dir, "decisions.jsonl");
   const scannersPath = join(dir, "scanners.jsonl");
