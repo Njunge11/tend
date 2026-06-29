@@ -25,6 +25,12 @@ export type UnitGateDeps = {
   runRelated: (files: string[]) => Promise<TestOutcome[]>;
   scanFindings: (files: string[], tools?: Tool[]) => Promise<Finding[]>;
   baseline: Set<string>;
+  /**
+   * Runs a package-manager command (cmd, args, cwd) for lockfile regeneration after a package.json
+   * dependency removal, throwing on a non-zero exit. Optional — defaults to a real `execFileSync`
+   * in the deterministic fixer; injected as a stub in tests so they never shell out.
+   */
+  runPackageManager?: (cmd: string, args: readonly string[], cwd: string) => void;
 };
 
 type FileSnapshot = Map<string, string | null>;

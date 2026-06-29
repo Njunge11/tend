@@ -1,6 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { existsSync,readFileSync,rmSync,writeFileSync } from "node:fs";
 import { join,resolve } from "node:path";
 import ts from "typescript";
+import { detectPackageManager, type PackageManager } from "../detect/package-manager.js";
 import type { RevertReason } from "../gate/check.js";
 import type { FixOutcome } from "../orchestrator.js";
 import { applyEslintFixesForFindings } from "../scanners/eslint-sonarjs.js";
@@ -56,8 +58,38 @@ function packageNameFromFindingMessage(message: string): string | undefined {
   return match?.[1];
 }
 
-function hasLockfile(cwd: string): boolean {
-  return LOCKFILES.some((file) => existsSync(join(cwd, file)));
+function lockfileIn(cwd: string): string | undefined {
+  return LOCKFILES.find((file) => existsSync(join(cwd, file)));
+}
+
+/**
+ * Runs a package-manager command (for lockfile regeneration) in `cwd`, throwing on a non-zero exit.
+ * Injectable through {@link DeterministicFixUnitDeps.runPackageManager} so tests can stub it; the
+ * default shells out with output captured (not inherited) so a slow `install` stays quiet.
+ */
+export type PackageManagerRunner = (cmd: string, args: readonly string[], cwd: string) => void;
+
+const defaultPackageManagerRun: PackageManagerRunner = (cmd, args, cwd) => {
+  execFileSync(cmd, [...args], { cwd, stdio: "pipe" });
+};
+
+/**
+ * The command that regenerates ONLY the lockfile to match an edited package.json — no node_modules
+ * linking, no lifecycle scripts. yarn-classic and bun have no reliable lockfile-only mode, so they
+ * return undefined and the cleanup punts rather than risk a package.json/lockfile that disagree.
+ */
+function lockfileOnlyCommand(pm: PackageManager, cwd: string): { cmd: string; args: string[] } | undefined {
+  switch (pm) {
+    case "pnpm":
+      return { cmd: "pnpm", args: ["install", "--lockfile-only", "--ignore-scripts"] };
+    case "npm":
+      return { cmd: "npm", args: ["install", "--package-lock-only", "--ignore-scripts"] };
+    case "yarn":
+      // Only Berry (>= 2) supports `--mode update-lockfile`; its presence is marked by `.yarnrc.yml`.
+      return existsSync(join(cwd, ".yarnrc.yml")) ? { cmd: "yarn", args: ["install", "--mode", "update-lockfile"] } : undefined;
+    case "bun":
+      return undefined;
+  }
 }
 
 type PackageJson = {
@@ -105,18 +137,38 @@ function cleanupSinglePackageFile(cwd: string, file: string, findings: { message
   return { ok: true };
 }
 
-function applyPackageJsonCleanup(cwd: string, unit: WorkUnit): ApplyResult {
+function applyPackageJsonCleanup(cwd: string, unit: WorkUnit, run: PackageManagerRunner): ApplyResult {
   const packageFiles = [...new Set(unit.findings.map((finding) => finding.file).filter((file) => /(^|\/)package\.json$/.test(file)))];
   for (const file of packageFiles) {
     const result = cleanupSinglePackageFile(cwd, file, unit.findings.filter((f) => f.file === file));
     if (!result.ok) return result;
   }
 
-  if (hasLockfile(cwd)) {
+  // No lockfile → the package.json edit is the whole fix.
+  if (!lockfileIn(cwd)) return { ok: true };
+
+  // A lockfile exists: it must be regenerated to match, or the repo is left inconsistent. Run the
+  // package manager's lockfile-only update; the gate snapshots the lockfile too, so a failure here
+  // (or a later gate revert) restores both files atomically.
+  const pm = detectPackageManager(cwd);
+  const command = lockfileOnlyCommand(pm, cwd);
+  if (!command) {
     return {
       ok: false,
       reason: "needs-lockfile-update",
-      detail: "package.json dependency cleanup requires a lockfile update, which is not implemented yet",
+      detail: `package.json dependency cleanup needs a lockfile update, which is not supported for ${pm}`,
+    };
+  }
+
+  try {
+    run(command.cmd, command.args, cwd);
+  } catch (error) {
+    const stderr = (error as { stderr?: Buffer | string })?.stderr;
+    const detail = (typeof stderr === "string" ? stderr : stderr?.toString()) || (error instanceof Error ? error.message : String(error));
+    return {
+      ok: false,
+      reason: "needs-lockfile-update",
+      detail: `lockfile regeneration via \`${command.cmd} ${command.args.join(" ")}\` failed: ${detail.trim().slice(0, 200)}`,
     };
   }
 
@@ -517,10 +569,15 @@ async function applyEslint(cwd: string, unit: WorkUnit): Promise<ApplyResult> {
   return { ok: false, reason: "session-error", detail: result.error };
 }
 
-async function applyStrategy(strategy: DeterministicRepairStrategy, cwd: string, unit: WorkUnit): Promise<ApplyResult> {
+async function applyStrategy(
+  strategy: DeterministicRepairStrategy,
+  cwd: string,
+  unit: WorkUnit,
+  run: PackageManagerRunner,
+): Promise<ApplyResult> {
   switch (strategy) {
     case "deterministic-package-json-cleanup":
-      return applyPackageJsonCleanup(cwd, unit);
+      return applyPackageJsonCleanup(cwd, unit, run);
     case "deterministic-unused-file-delete":
       return applyUnusedFileDelete(cwd, unit);
     case "deterministic-ts-unused-export-cleanup":
@@ -533,6 +590,7 @@ async function applyStrategy(strategy: DeterministicRepairStrategy, cwd: string,
 }
 
 export function makeDeterministicFixer(deps: DeterministicFixUnitDeps): DeterministicFixer {
+  const run = deps.runPackageManager ?? defaultPackageManagerRun;
   return {
     async fix(unit: WorkUnit): Promise<FixOutcome> {
       const strategies = strategiesFor(unit);
@@ -545,14 +603,21 @@ export function makeDeterministicFixer(deps: DeterministicFixUnitDeps): Determin
         };
       }
 
-      const before = snapshotUnitFiles(deps.cwd, unit.files);
+      // A package.json cleanup also rewrites the shared lockfile; own it in the snapshot so a gate
+      // revert restores it alongside the package.json (otherwise a regenerated lockfile would leak).
+      const ownedFiles = [...unit.files];
+      if (strategies.includes("deterministic-package-json-cleanup")) {
+        const lock = lockfileIn(deps.cwd);
+        if (lock && !ownedFiles.includes(lock)) ownedFiles.push(lock);
+      }
+      const before = snapshotUnitFiles(deps.cwd, ownedFiles);
       // Baseline findings already in the verification scope, so the gate's anti-regression
       // doesn't blame this fix for pre-existing cross-file (jscpd) duplicates it never touched.
       const verificationTargets = unit.verificationTargets ?? unit.files;
       const scannerTools = [...new Set(unit.findings.map((finding) => finding.tool))];
       const preexistingIds = new Set((await deps.scanFindings(verificationTargets, scannerTools)).map((f) => f.id));
       for (const strategy of strategies) {
-        const applied = await applyStrategy(strategy, deps.cwd, unit);
+        const applied = await applyStrategy(strategy, deps.cwd, unit, run);
         if (!applied.ok) {
           restoreSnapshot(deps.cwd, before);
           return {
