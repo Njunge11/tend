@@ -292,7 +292,7 @@ function applyFailedOutcome(
 }
 
 /** A single finding's resolved verdict, for the `finding.outcome` decision trace. */
-export type FindingDecision = {
+type FindingDecision = {
   id: string;
   file: string;
   rule: string;
