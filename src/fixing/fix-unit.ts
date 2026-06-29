@@ -68,15 +68,6 @@ function replaceAllLiteral(input: string, search: string, replacement: string): 
   return input.split(search).join(replacement);
 }
 
-/** Fill every `{{key}}` placeholder in a template from a map of key → rendered value. */
-function fillTemplate(template: string, replacements: Record<string, string>): string {
-  let out = template;
-  for (const [key, value] of Object.entries(replacements)) {
-    out = replaceAllLiteral(out, `{{${key}}}`, value);
-  }
-  return out;
-}
-
 type FixPromptStrategy = RepairStrategy | "regression-repair";
 
 function formatDuration(ms: number): string {
@@ -523,6 +514,23 @@ export function makeFixUnit(deps: FixUnitDeps) {
     // sees the whole history of dead ends, not just the most recent one (Fix 3 / §12).
     const repairAttempts: RepairAttempt[] = [];
 
+    // Both repair paths (regression and broken-test) run the same regression-repair session
+    // against the latest snapshot, differing only in the progress stage they report.
+    async function runRepairSession(after: Map<string, string | null>, stage: FixStage): Promise<SessionResult> {
+      const repair = await runSessionWithTimeout(deps, {
+        file: unit.file,
+        findings: unit.findings,
+        prompt: renderRegressionRepairPrompt({
+          unit,
+          fileContents: contentMapFor(after, unit.files),
+          attempts: repairAttempts,
+        }),
+        onActivity: activity(stage),
+      });
+      if (repair.usage) usage = addUsage(usage, repair.usage);
+      return repair;
+    }
+
     async function runRegressionRepair(outcome: FixOutcome): Promise<boolean> {
       if (outcome.reason !== "regression" && outcome.reason !== "typecheck") return false;
       repairAttempted = true;
@@ -533,17 +541,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
         newFindings: outcome.reason === "regression" ? await scanNewFindings() : [],
       });
       progress("regression-repair");
-      const repair = await runSessionWithTimeout(deps, {
-        file: unit.file,
-        findings: unit.findings,
-        prompt: renderRegressionRepairPrompt({
-          unit,
-          fileContents: contentMapFor(after, unit.files),
-          attempts: repairAttempts,
-        }),
-        onActivity: activity("regression-repair"),
-      });
-      if (repair.usage) usage = addUsage(usage, repair.usage);
+      const repair = await runRepairSession(after, "regression-repair");
       if (!repair.ok) {
         repairFailureDetail = `Regression repair session failed: ${repair.error}`;
         return false;
@@ -561,17 +559,7 @@ export function makeFixUnit(deps: FixUnitDeps) {
         gateOutput: `Fix left previously-green test(s) red:\n${regressed.map((test) => test.name).join("\n")}`,
         newFindings: [],
       });
-      const repair = await runSessionWithTimeout(deps, {
-        file: unit.file,
-        findings: unit.findings,
-        prompt: renderRegressionRepairPrompt({
-          unit,
-          fileContents: contentMapFor(after, unit.files),
-          attempts: repairAttempts,
-        }),
-        onActivity: activity("test-repair"),
-      });
-      if (repair.usage) usage = addUsage(usage, repair.usage);
+      const repair = await runRepairSession(after, "test-repair");
       if (!repair.ok) repairFailureDetail = `Repair session failed: ${repair.error}`;
     }
     async function gateCurrent(): Promise<FixOutcome> {

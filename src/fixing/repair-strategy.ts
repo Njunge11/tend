@@ -220,6 +220,26 @@ function planForGeneratedFinding(input: RepairPlannerInput, file: string): Repai
   };
 }
 
+function planForTestFile(
+  input: RepairPlannerInput,
+  scope: Partial<Pick<Finding, "inFixScope" | "scopeExclusionReason" | "inReportScope" | "inScope">>,
+  file: string,
+): RepairPlan | undefined {
+  if (
+    isTestFile(file) &&
+    input.config?.includeTests &&
+    (scope.scopeExclusionReason === undefined || scope.scopeExclusionReason === "tests")
+  ) {
+    return {
+      finding: input.finding,
+      strategy: "test-file-repair",
+      editableFiles: [file],
+      verificationTargets: [file],
+    };
+  }
+  return undefined;
+}
+
 export function planRepair(input: RepairPlannerInput): RepairPlan {
   const file = input.file ?? input.finding.file;
   const category = input.category ?? input.finding.category;
@@ -240,18 +260,8 @@ export function planRepair(input: RepairPlannerInput): RepairPlan {
   const generatedPlan = planForGeneratedFinding(input, file);
   if (generatedPlan) return generatedPlan;
 
-  if (
-    isTestFile(file) &&
-    input.config?.includeTests &&
-    (scope.scopeExclusionReason === undefined || scope.scopeExclusionReason === "tests")
-  ) {
-    return {
-      finding: input.finding,
-      strategy: "test-file-repair",
-      editableFiles: [file],
-      verificationTargets: [file],
-    };
-  }
+  const testFilePlan = planForTestFile(input, scope, file);
+  if (testFilePlan) return testFilePlan;
 
   if (scope.inFixScope === false) {
     return unsupported(input, scope.scopeExclusionReason ?? "out-of-scope");

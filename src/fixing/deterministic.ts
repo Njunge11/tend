@@ -266,7 +266,9 @@ function removeSpecifiersChange(
   };
 }
 
-function unusedExportCleanupChanges(source: string, fileName: string, findings: { message: string }[]): ApplyResult | ts.TextChange[] {
+type TextChangesResult = { ok: true; changes: ts.TextChange[] } | { ok: false; error: ApplyResult };
+
+function unusedExportCleanupChanges(source: string, fileName: string, findings: { message: string }[]): TextChangesResult {
   const sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true);
   const changes: ts.TextChange[] = [];
   // Group re-export removals per statement so several unused names in one `export { a, b }` rebuild
@@ -276,11 +278,11 @@ function unusedExportCleanupChanges(source: string, fileName: string, findings: 
   for (const finding of findings) {
     const name = symbolNameFromFindingMessage(finding.message);
     if (!name) {
-      return unsupported(`Could not parse unused export name from finding: ${finding.message}`);
+      return { ok: false, error: unsupported(`Could not parse unused export name from finding: ${finding.message}`) };
     }
     const target = findExportTarget(sourceFile, name);
     if (!target) {
-      return unsupported(`Could not find exported declaration for unused symbol: ${name}`);
+      return { ok: false, error: unsupported(`Could not find exported declaration for unused symbol: ${name}`) };
     }
 
     if (target.kind === "specifier") {
@@ -293,7 +295,7 @@ function unusedExportCleanupChanges(source: string, fileName: string, findings: 
     if (hasIdentifierReference(sourceFile, name, target.name)) {
       const change = removeExportChange(sourceFile, target.node);
       if (!change) {
-        return unsupported(`Could not remove export modifier for unused symbol: ${name}`);
+        return { ok: false, error: unsupported(`Could not remove export modifier for unused symbol: ${name}`) };
       }
       changes.push(change);
     } else {
@@ -305,7 +307,7 @@ function unusedExportCleanupChanges(source: string, fileName: string, findings: 
     changes.push(removeSpecifiersChange(sourceFile, statement, clause, remove));
   }
 
-  return changes;
+  return { ok: true, changes };
 }
 
 function applyUnusedExportCleanup(cwd: string, unit: WorkUnit): ApplyResult {
@@ -319,13 +321,13 @@ function applyUnusedExportCleanup(cwd: string, unit: WorkUnit): ApplyResult {
         detail: `Unused export file was missing: ${file}`,
       };
     }
-    const changes = unusedExportCleanupChanges(
+    const result = unusedExportCleanupChanges(
       readFileSync(abs, "utf8"),
       abs,
       unit.findings.filter((finding) => finding.file === file),
     );
-    if (!Array.isArray(changes)) return changes;
-    applyTextChanges(abs, changes);
+    if (!result.ok) return result.error;
+    applyTextChanges(abs, result.changes);
   }
   return { ok: true };
 }

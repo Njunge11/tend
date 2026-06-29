@@ -57,7 +57,7 @@ export function expandWipFilesByImports(
 //   import("./dyn")       ·   require("./cjs")
 // Bare specifiers ("react", "@scope/pkg") lack the leading ./ or ../ and are intentionally ignored.
 const RELATIVE_IMPORT_RE =
-  /(?:\bfrom|\bimport|\bexport|\brequire)\s*\(?\s*["'](\.\.?\/[^"']*)["']/g;
+  /(?:\bfrom|\bimport|\bexport|\brequire)\s*(?:\(\s*)?["'](\.\.?\/[^"']*)["']/g;
 
 function relativeImportSpecifiers(src: string): string[] {
   const specs: string[] = [];
