@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.10...tend-cli-v0.15.0) (2026-06-29)
+
+
+### Features
+
+* **deterministic:** regenerate the lockfile so unused-dependency cleanup applies ([b8ecaa4](https://github.com/Njunge11/tend/commit/b8ecaa4165549e142a0c8555a03bf0660bcb2fc7))
+
+
+### Bug Fixes
+
+* **deterministic:** clean up unused names in destructured exports ([88b4625](https://github.com/Njunge11/tend/commit/88b46256ac6261ba95ee94586c819eb90f9b6769))
+
 ## [0.14.10](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.9...tend-cli-v0.14.10) (2026-06-29)
 
 
