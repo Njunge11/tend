@@ -78,12 +78,47 @@ describe("runTestPhase — apply / repair window", () => {
     expect(repair).toHaveBeenCalledTimes(1);
   });
 
-  it("T-055: repair window exhausted, still red → reject", async () => {
-    const runRelated = vi.fn().mockResolvedValue([fail("greenTest")]);
+  it("T-055: repair window exhausted (making progress each round), still red → reject", async () => {
+    // Each repair shifts WHICH test is red — that counts as progress, so the loop runs the
+    // full maxRepairs before rejecting (it does not short-circuit on no-progress).
+    const multi = new Set(["t1", "t2", "t3"]);
+    const runRelated = vi
+      .fn()
+      .mockResolvedValueOnce([fail("t1")])
+      .mockResolvedValueOnce([fail("t2")])
+      .mockResolvedValue([fail("t3")]);
     const repair = vi.fn().mockResolvedValue(undefined);
-    const r = await runTestPhase({ baseline, runRelated, repair, maxRepairs: 2 });
+    const r = await runTestPhase({ baseline: multi, runRelated, repair, maxRepairs: 2 });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("broke-test");
+    expect(repair).toHaveBeenCalledTimes(2);
+  });
+
+  it("T-055b: stuck gate (repair makes no progress) → short-circuits after ONE attempt", async () => {
+    // Same regressed test red before and after the repair → no progress → stop immediately
+    // instead of burning the remaining maxRepairs sessions on an unchanged gate.
+    const runRelated = vi.fn().mockResolvedValue([fail("greenTest")]);
+    const repair = vi.fn().mockResolvedValue(undefined);
+    const r = await runTestPhase({ baseline, runRelated, repair, maxRepairs: 3 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("broke-test");
+    expect(repair).toHaveBeenCalledTimes(1);
+  });
+
+  it("T-055c: repair that changes WHICH test is red (same count) is progress → no short-circuit", async () => {
+    // T1 red → repair → T2 red: different names, same count. That's progress, so the loop
+    // continues rather than stopping after the first attempt.
+    const both = new Set(["t1", "t2"]);
+    const runRelated = vi
+      .fn()
+      .mockResolvedValueOnce([fail("t1")])
+      .mockResolvedValueOnce([fail("t2")])
+      .mockResolvedValue([fail("t2")]);
+    const repair = vi.fn().mockResolvedValue(undefined);
+    const r = await runTestPhase({ baseline: both, runRelated, repair, maxRepairs: 3 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("broke-test");
+    // attempt 1: t1→t2 (progress, continue); attempt 2: t2→t2 (no progress, stop).
     expect(repair).toHaveBeenCalledTimes(2);
   });
 
