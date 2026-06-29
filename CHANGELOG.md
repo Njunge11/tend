@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.14.9](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.8...tend-cli-v0.14.9) (2026-06-29)
+
+
+### Bug Fixes
+
+* clear sonarjs complexity/smell findings in src/fixing ([45619c2](https://github.com/Njunge11/tend/commit/45619c2a009dddf6c2a1e4944f0bd1e66b9660be))
+* drop unused export on FindingDecision type (knip) ([1b7b0a1](https://github.com/Njunge11/tend/commit/1b7b0a106bdcc60ae85f73e4ba468f2afcf018d8))
+* flatten nested template literals in tracer log lines (sonarjs) ([860c223](https://github.com/Njunge11/tend/commit/860c223ee4c1cd20bfbfaab8b7482c7201f6175a))
+* give Array.sort a comparator in regressedKey (sonarjs S2871) ([969ee8c](https://github.com/Njunge11/tend/commit/969ee8cd0350f76603dca97f5eb60cafe4887dc1))
+* reduce runRun cognitive complexity and add sort comparator (sonarjs) ([b24a4ef](https://github.com/Njunge11/tend/commit/b24a4ef597fab859580e134787ef2b049a1475da))
+* simplify stream-json non-retryable detection (sonarjs complexity) ([55d9566](https://github.com/Njunge11/tend/commit/55d9566b92cdc3ad6e8814db28171e72932924fc))
+* use os.tmpdir() instead of hardcoded /tmp in waste-trace-harness (sonarjs) ([26482eb](https://github.com/Njunge11/tend/commit/26482eb0d8f68dd0e2a8f10837fad008f25015d1))
+
 ## [0.14.8](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.7...tend-cli-v0.14.8) (2026-06-29)
 
 
