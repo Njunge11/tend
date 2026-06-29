@@ -44,12 +44,18 @@ const RATE_LIMIT_RE = /rate.?limit|overloaded|\b429\b/i;
  * gets its normal retry budget — only these terminate immediately. Rate-limit is checked first
  * (it IS retryable) so an "overloaded" 429 never falls in here.
  */
-const NON_RETRYABLE_RE =
-  /prompt is too long|input is too long|too many (?:input )?tokens|max(?:imum)?[ _-]?(?:output[ _-]?)?tokens|output token limit|context (?:window|length) exceeded|\b404\b|not[_ ]found[_ ]error|model[^.\n]{0,40}(?:not found|not available|does not exist)|unknown model|invalid[ _-]?model/i;
+const NON_RETRYABLE_RES = [
+  /prompt is too long|input is too long|too many (?:input )?tokens/i,
+  /max(?:imum)?[ _-]?(?:output[ _-]?)?tokens|output token limit/i,
+  /context (?:window|length) exceeded/i,
+  /\b404\b|not[_ ]found[_ ]error/i,
+  /model[^.\n]{0,40}(?:not found|not available|does not exist)/i,
+  /unknown model|invalid[ _-]?model/i,
+];
 
 function isNonRetryableText(text: string | undefined): boolean {
   if (!text) return false;
-  return !RATE_LIMIT_RE.test(text) && NON_RETRYABLE_RE.test(text);
+  return !RATE_LIMIT_RE.test(text) && NON_RETRYABLE_RES.some((re) => re.test(text));
 }
 
 /** A finite, non-negative number, or 0 for anything else (missing/NaN/negative). */
@@ -102,6 +108,20 @@ function extractEdits(event: StreamEvent): FileEdit[] {
   return edits;
 }
 
+type EventSignals = { rateLimited: boolean; errored: boolean; nonRetryable: boolean };
+
+function eventSignals(event: StreamEvent): EventSignals {
+  const errored = Boolean(event.is_error);
+  const rateLimited = Boolean(event.is_error && event.error && RATE_LIMIT_RE.test(event.error));
+  // Non-retryable signals can arrive on an is_error event, in a `result` message's text, or
+  // as a max-tokens stop_reason on an assistant turn (the edit was truncated mid-write).
+  const nonRetryable =
+    isNonRetryableText(event.error) ||
+    isNonRetryableText(event.result) ||
+    event.message?.stop_reason === "max_tokens";
+  return { rateLimited, errored, nonRetryable };
+}
+
 /**
  * Parse Claude Code `--output-format stream-json` (newline-delimited JSON) into the
  * file edits it produced. `Write` tool uses carry full file contents. Malformed lines
@@ -118,15 +138,10 @@ export function parseStreamJson(raw: string): ParsedStream {
     const event = parseEvent(line);
     if (!event) continue;
 
-    if (event.is_error) {
-      errored = true;
-      if (event.error && RATE_LIMIT_RE.test(event.error)) rateLimited = true;
-    }
-
-    // Non-retryable signals can arrive on an is_error event, in a `result` message's text, or
-    // as a max-tokens stop_reason on an assistant turn (the edit was truncated mid-write).
-    if (isNonRetryableText(event.error) || isNonRetryableText(event.result)) nonRetryable = true;
-    if (event.message?.stop_reason === "max_tokens") nonRetryable = true;
+    const sig = eventSignals(event);
+    rateLimited ||= sig.rateLimited;
+    errored ||= sig.errored;
+    nonRetryable ||= sig.nonRetryable;
 
     if (event.type === "result") {
       const u = extractUsage(event);
