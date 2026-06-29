@@ -3,9 +3,11 @@ import { makeFinding } from "../test/helpers/make-finding.js";
 import {
   demoteFinalIntegrationFindings,
   parseTestReport,
+  runFinalIntegration,
   runsToPrune,
   snapshotOverwriteVerdict,
 } from "./bin.js";
+import type { Finding, Tool } from "./findings/finding.js";
 import { captureBaseline, type TestOutcome } from "./gate/checks/tests.js";
 
 /** A vitest/jest-shaped JSON report with one test file's worth of assertions. */
@@ -173,5 +175,101 @@ describe("runsToPrune", () => {
     const mid = "2026-06-29T03-01-00-000Z-1-0";
     const oldest = "2026-06-29T03-00-00-000Z-1-0";
     expect(runsToPrune([newest, oldest, mid], 1)).toEqual([oldest, mid]);
+  });
+});
+
+describe("runFinalIntegration — re-dispatch new findings before reverting", () => {
+  const clone = makeFinding({
+    tool: "jscpd",
+    rule: "duplicate-code",
+    category: "duplication",
+    file: "src/_shared.ts",
+    message: "Duplicated 10 lines, also at src/other.ts:78-87",
+  });
+
+  /** Build injected deps with sensible clean defaults; override per test. Records repair calls. */
+  function deps(over: {
+    files?: string[];
+    tools?: Tool[];
+    typecheck?: string | undefined;
+    test?: string | undefined;
+    scans?: Finding[][];
+    repair?: (findings: Finding[]) => Promise<boolean>;
+    maxRepairRounds?: number;
+  }) {
+    const scans = over.scans ?? [[]];
+    let scanCall = 0;
+    const repairCalls: Finding[][] = [];
+    return {
+      repairCalls,
+      args: {
+        acceptedFiles: () => over.files ?? ["src/_shared.ts"],
+        acceptedTools: () => over.tools ?? (["jscpd"] as Tool[]),
+        typecheckFailure: () => Promise.resolve(over.typecheck),
+        testFailure: () => Promise.resolve(over.test),
+        scanFindings: () => Promise.resolve(scans[Math.min(scanCall++, scans.length - 1)] ?? []),
+        repair:
+          over.repair ??
+          ((findings: Finding[]) => {
+            repairCalls.push(findings);
+            return Promise.resolve(true);
+          }),
+        maxRepairRounds: over.maxRepairRounds,
+      },
+    };
+  }
+
+  it("passes when nothing was accepted (no files → ok, no checks run)", async () => {
+    const d = deps({ files: [] });
+    expect(await runFinalIntegration(d.args)).toEqual({ ok: true, files: [] });
+    expect(d.repairCalls).toHaveLength(0);
+  });
+
+  it("passes when the rescan is clean", async () => {
+    const d = deps({ scans: [[]] });
+    const result = await runFinalIntegration(d.args);
+    expect(result.ok).toBe(true);
+    expect(d.repairCalls).toHaveLength(0);
+  });
+
+  it("short-circuits on a typecheck failure without rescanning or repairing", async () => {
+    const d = deps({ typecheck: "tsc broke", scans: [[clone]] });
+    const result = await runFinalIntegration(d.args);
+    expect(result).toMatchObject({ ok: false, detail: "tsc broke" });
+    expect(d.repairCalls).toHaveLength(0);
+  });
+
+  it("KEEPS the run: a newly-surfaced clone is repaired in place, re-verify is clean → ok", async () => {
+    // Round 0 rescan finds the new clone; repair clears it; round 1 rescan is clean.
+    const d = deps({ scans: [[clone], []] });
+    const result = await runFinalIntegration(d.args);
+    expect(result.ok).toBe(true);
+    expect(d.repairCalls).toHaveLength(1); // repaired exactly once
+    expect(d.repairCalls[0]).toEqual([clone]); // and was handed the surfaced finding
+  });
+
+  it("reverts (ok:false) when the surfaced finding cannot be repaired — preserves the old floor", async () => {
+    const d = deps({ scans: [[clone]], repair: () => Promise.resolve(false) });
+    const result = await runFinalIntegration(d.args);
+    expect(result).toMatchObject({ ok: false });
+    expect(result).toMatchObject({ detail: "final integration scanner rescan found 1 finding" });
+  });
+
+  it("terminates after the round cap when repair keeps surfacing new findings (no infinite loop)", async () => {
+    let repairCalls = 0;
+    const d = {
+      acceptedFiles: () => ["src/_shared.ts"],
+      acceptedTools: () => ["jscpd"] as Tool[],
+      typecheckFailure: () => Promise.resolve(undefined),
+      testFailure: () => Promise.resolve(undefined),
+      scanFindings: () => Promise.resolve([clone]), // always dirty
+      repair: () => {
+        repairCalls++;
+        return Promise.resolve(true);
+      },
+    };
+    const result = await runFinalIntegration(d);
+    expect(result.ok).toBe(false);
+    expect(repairCalls).toBe(1); // round 0 repairs once; round 1 hits the cap before repairing again
   });
 });
