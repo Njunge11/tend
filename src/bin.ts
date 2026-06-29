@@ -165,7 +165,7 @@ function archiveReport(report: Report): void {
  * a lexicographic sort is chronological and the slice off the front is the oldest.
  */
 export function runsToPrune(ids: readonly string[], retention: number): string[] {
-  const sorted = [...ids].sort();
+  const sorted = [...ids].sort((a, b) => a.localeCompare(b));
   return sorted.slice(0, Math.max(0, sorted.length - retention));
 }
 
@@ -301,7 +301,7 @@ type TestRunnerReport = {
 /**
  * Parse a vitest/jest JSON report into per-test outcomes.
  *
- * A test that didn't run (skipped/pending/todo/disabled) is dropped, not scored: it can't
+ * A test that didn't run (a status in DID_NOT_RUN_STATUSES) is dropped, not scored: it can't
  * be a regression and must never enter the outcomes set. Skipping is environment-dependent
  * — e.g. `it.runIf(existsSync(dist/...))` is green in the main repo where dist/ exists but
  * skips in the sandbox worktree where it's absent. Folding a skip into "fail" would wrongly
@@ -855,6 +855,95 @@ async function verifyModelAccess(model: string): Promise<boolean> {
   return false;
 }
 
+/**
+ * Wrap the deterministic fix unit so each (no-AI) unit's attempt and resolution is recorded as a
+ * `deterministic.unit` debug decision. Deterministic units have no `claude -p` session to capture
+ * under sessions/, so this is the only trace of the deterministic phase's per-unit work.
+ */
+function traceDeterministicUnit(
+  deterministicFixUnit: (unit: WorkUnit, loop: number) => Promise<FixOutcome>,
+  bus: EventBus,
+): (unit: WorkUnit, loop: number) => Promise<FixOutcome> {
+  return async (unit, loop) => {
+    const outcome = await deterministicFixUnit(unit, loop);
+    const resolution = outcome.kept ? "kept" : `reverted (${outcome.reason ?? "?"})`;
+    bus.emit({
+      type: "debug",
+      loop,
+      action: "deterministic.unit",
+      detail: `${unit.file} ${resolution}`,
+      data: {
+        file: unit.file,
+        strategies: unit.strategies ?? (unit.strategy ? [unit.strategy] : []),
+        findings: unit.findings.map((f) => `${f.tool}/${f.rule}`),
+        kept: outcome.kept,
+        reason: outcome.reason,
+        detail: outcome.detail,
+      },
+    });
+    return outcome;
+  };
+}
+
+/**
+ * Individually-clean fixes combined into a tree that fails the final-integration gate. Leaving a
+ * non-compiling tree breaks tend's core promise, so roll the run's AI edits back to the known-good
+ * baseline and re-mark the affected findings as final-integration-failed (no longer fixed on disk).
+ * The per-unit gate already gave each fix an error-grounded repair; the cross-unit interaction is
+ * only visible here, where the safe action is revert-to-known-good. Sets `result.exitStatus = 1`.
+ */
+function rollbackFailedIntegration(
+  failure: Extract<FinalIntegrationResult, { ok: false }>,
+  sandboxPool: WorkerSandboxPool,
+  result: Awaited<ReturnType<typeof orchestrate>>,
+  bus: EventBus,
+): void {
+  const detail = (failure.detail || "final integration failed").split("\n")[0] ?? "final integration failed";
+  const restored = sandboxPool.rollbackMainChanges();
+  const demoted = demoteFinalIntegrationFindings(result.findings, restored, detail);
+  bus.emit({
+    type: "debug",
+    loop: result.loops,
+    action: "final-integration.rollback",
+    detail: `final integration failed → reverted ${restored.length} file(s) to known-good, ${demoted} fix(es) un-kept`,
+    data: { files: restored, demoted, reason: failure.detail },
+  });
+  result.exitStatus = 1;
+}
+
+/**
+ * Emit the run's context notes — toolchain/model, scope/scanner count, and (when a test runner
+ * exists) the one-time baseline line. Pulled out of `runRun` to keep that orchestration function
+ * within the cognitive-complexity budget; the output order is identical to the inline version.
+ */
+function reportRunContext(
+  reporter: ReturnType<typeof createReporter>,
+  ctx: {
+    pm: string;
+    typescript: boolean;
+    runner: TestRunner;
+    model: string;
+    effort: Effort | undefined;
+    availableCount: number;
+    all: boolean | undefined;
+    paths: string[];
+    scope: string[] | null;
+    baselineTargets: string[];
+  },
+): void {
+  const modelLabel = ctx.effort ? `${ctx.model} (effort ${ctx.effort})` : ctx.model;
+  reporter.note(
+    `${ctx.pm} · ${ctx.typescript ? "TypeScript" : "JavaScript"} · ${ctx.runner ?? "no test runner"} · ${modelLabel}`,
+  );
+  const scopeNote = describeScopeNote(ctx.all, ctx.paths, ctx.scope);
+  reporter.note(`${scopeNote} · ${plural(ctx.availableCount, "scanner")}`);
+  if (ctx.runner && ctx.baselineTargets.length > 0) {
+    reporter.note(
+      `baseline: ${ctx.runner} related ${describeScopeNote(ctx.all, ctx.paths, ctx.scope)} (one-time)`,
+    );
+  }
+}
+
 async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // Resolve color/interactivity once, then paint the header immediately so the screen is
   // never blank while we take the snapshot. (`--no-color` arrives from commander as color:false.)
@@ -927,10 +1016,6 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   persist(SNAPSHOT_PATH, snapshot.toJSON());
   reporter.note("snapshot saved · undo: tend undo");
 
-  const modelLabel = config.effort
-    ? `${config.model} (effort ${config.effort})`
-    : config.model;
-
   const { available, missing } = await scannerAvailability(realWhich);
   if (available.length === 0) {
     err(`No scanners found. Install at least one of: ${missing.join(", ")}`);
@@ -951,17 +1036,18 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   // Package manager stays repo-rooted: the lockfile lives at the workspace root, not the
   // owning package.
   const pm = detectPackageManager(cwd);
-  reporter.note(
-    `${pm} · ${typescript ? "TypeScript" : "JavaScript"} · ${runner ?? "no test runner"} · ${modelLabel}`,
-  );
-
-  const scopeNote = describeScopeNote(opts.all, paths, scope);
-  reporter.note(`${scopeNote} · ${plural(available.length, "scanner")}`);
-  if (runner && baselineTargets.length > 0) {
-    reporter.note(
-      `baseline: ${runner} related ${describeScopeNote(opts.all, paths, scope)} (one-time)`,
-    );
-  }
+  reportRunContext(reporter, {
+    pm,
+    typescript,
+    runner,
+    model: config.model,
+    effort: config.effort,
+    availableCount: available.length,
+    all: opts.all,
+    paths,
+    scope,
+    baselineTargets,
+  });
   // Self-heal: clear any tend worktrees a crashed/cancelled prior run left registered before
   // this run adds its own.
   await pruneStaleWorktrees(snapshot.repoRoot());
@@ -1029,27 +1115,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
         tracePhase: "audit",
       }),
       fixUnit,
-      // Deterministic units have no `claude -p` session to capture under sessions/, so record what
-      // each one attempted and how it resolved as a `deterministic.unit` decision — the only trace
-      // of the (no-AI) deterministic phase's per-unit work.
-      deterministicFixUnit: async (unit, loop) => {
-        const outcome = await deterministicFixUnit(unit, loop);
-        bus.emit({
-          type: "debug",
-          loop,
-          action: "deterministic.unit",
-          detail: `${unit.file} ${outcome.kept ? "kept" : `reverted (${outcome.reason ?? "?"})`}`,
-          data: {
-            file: unit.file,
-            strategies: unit.strategies ?? (unit.strategy ? [unit.strategy] : []),
-            findings: unit.findings.map((f) => `${f.tool}/${f.rule}`),
-            kept: outcome.kept,
-            reason: outcome.reason,
-            detail: outcome.detail,
-          },
-        });
-        return outcome;
-      },
+      deterministicFixUnit: traceDeterministicUnit(deterministicFixUnit, bus),
       // A knip `unused-file` hit on a currently-broken (WIP) file is reported, not auto-deleted.
       config: { ...config, likelyWipFiles },
       inScope: scope ? (fs) => filterToChanged(fs, scope) : undefined,
@@ -1057,24 +1123,8 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       bus,
     });
     finalIntegrationResult = await finalIntegration();
-    if (!finalIntegrationResult.ok) {
-      // Individually-clean fixes combined into a tree that fails the final-integration gate. Leaving
-      // a non-compiling tree breaks tend's core promise, so roll the run's AI edits back to the
-      // known-good baseline and re-mark the affected findings as final-integration-failed (no longer
-      // fixed on disk). The per-unit gate already gave each fix an error-grounded repair; the cross-
-      // unit interaction is only visible here, where the safe action is revert-to-known-good.
-      const detail = (finalIntegrationResult.detail || "final integration failed").split("\n")[0] ?? "final integration failed";
-      const restored = sandboxPool.rollbackMainChanges();
-      const demoted = demoteFinalIntegrationFindings(result.findings, restored, detail);
-      bus.emit({
-        type: "debug",
-        loop: result.loops,
-        action: "final-integration.rollback",
-        detail: `final integration failed → reverted ${restored.length} file(s) to known-good, ${demoted} fix(es) un-kept`,
-        data: { files: restored, demoted, reason: finalIntegrationResult.detail },
-      });
-      result.exitStatus = 1;
-    }
+    if (!finalIntegrationResult.ok)
+      rollbackFailedIntegration(finalIntegrationResult, sandboxPool, result, bus);
   } finally {
     stopSignals();
     disposeEslintWorker(); // close the worker's IPC channel so the process can exit
