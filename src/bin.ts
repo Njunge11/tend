@@ -414,7 +414,20 @@ async function makeProductionFixUnit(
         const child = execa(
           "claude",
           [
-            ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : []),
+            // Make the worker hermetic regardless of auth mode: no inherited MCP servers,
+            // user CLAUDE.md, settings, hooks, or auto-memory — the worker must only ever
+            // touch the files it is given inside its sandbox worktree.
+            //   - API-key auth: `--bare` already disables all of the above (and requires an
+            //     API key, so it cannot be used on OAuth).
+            //   - OAuth/subscription auth: `--safe-mode` disables CLAUDE.md, skills, plugins,
+            //     hooks, MCP, settings, and auto-memory while keeping OAuth auth, model
+            //     selection, and the built-in Read/Write/Edit tools working normally.
+            // `--strict-mcp-config` (with no `--mcp-config`) loads zero MCP servers on both
+            // paths, and `--disallowedTools "mcp__*"` denies any MCP tool as defense in depth.
+            ...(process.env.ANTHROPIC_API_KEY ? ["--bare"] : ["--safe-mode"]),
+            "--strict-mcp-config",
+            "--disallowedTools",
+            "mcp__*",
             "--no-session-persistence",
             "-p",
             req.prompt,
