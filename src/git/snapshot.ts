@@ -125,6 +125,18 @@ export class Snapshot {
     return lines(diff).sort((a, b) => a.localeCompare(b));
   }
 
+  /** The commit the snapshot was parented on — i.e. HEAD at capture time — or null when the
+   *  repo had no commits then. Comparing this to the current HEAD tells whether anything was
+   *  committed since the snapshot, which `diff(snapshot, HEAD)` can't (tend often snapshots a
+   *  dirty tree, so the snapshot legitimately differs from HEAD without any commit happening). */
+  async parentSha(): Promise<string | null> {
+    try {
+      return (await createGit(this.root).raw(["rev-parse", `${this.sha}^`])).trim();
+    } catch {
+      return null; // rootless snapshot (no commits at capture)
+    }
+  }
+
   /** Restore a single file to its captured contents (worktree only — the user's index is untouched). */
   async restoreFile(rel: string): Promise<void> {
     await createGit(this.root).raw(["restore", "--source", this.sha, "--worktree", "--", rel]);

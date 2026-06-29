@@ -144,6 +144,96 @@ function loadReport(): Report {
   return ReportSchema.parse(loadJson<unknown>(REPORT_PATH));
 }
 
+/**
+ * Decide whether capturing a fresh snapshot now would strand a still-live restore point.
+ *
+ * `.tend/snapshot.json` is the single pointer `tend undo` follows back to the pre-tend baseline.
+ * Overwriting it is only dangerous when a previous run's edits are STILL PENDING on disk — i.e.
+ * the developer ran tend, it kept some fixes, and they neither committed nor `tend undo`-ed
+ * before running again. A fresh snapshot would then record run 1's edits as the baseline, so
+ * `tend undo` could never reach the true original again.
+ *
+ * The precise signal is the count of last-run "fixed" files whose edit is still pending. tend
+ * knows exactly which files it changed (the prior report's `fixed` findings); a fix is still
+ * pending only when nothing was committed since the snapshot (HEAD still sits on the snapshot's
+ * parent) AND the fixed file still differs from the snapshot (the edit is on disk, not undone).
+ * This deliberately does NOT fire on a developer's own unrelated work, on fixes that were
+ * committed (even if the file was later re-edited), or right after `tend undo`.
+ */
+export function snapshotOverwriteVerdict(input: {
+  snapshotExists: boolean;
+  priorFixedFilesPendingCount: number;
+}): "safe" | "would-strand-baseline" {
+  if (!input.snapshotExists) return "safe"; // nothing to overwrite
+  if (input.priorFixedFilesPendingCount === 0) return "safe"; // prior fixes committed/undone/none
+  return "would-strand-baseline";
+}
+
+/** Files a finding wrote to: its own file plus any flowPath siblings (multi-file refactors). */
+function findingFiles(finding: Finding): string[] {
+  return [finding.file, ...(finding.flowPath?.map((s) => s.file) ?? [])];
+}
+
+/** Repo-relative files the prior run kept edits on (status "fixed"), from `.tend/report.json`. */
+function priorFixedFiles(): Set<string> {
+  if (!existsSync(REPORT_PATH)) return new Set();
+  try {
+    const report = ReportSchema.parse(loadJson<unknown>(REPORT_PATH));
+    const files = new Set<string>();
+    for (const f of report.findings) {
+      if (f.status === "fixed") for (const file of findingFiles(f)) files.add(file);
+    }
+    return files;
+  } catch {
+    return new Set(); // unreadable report — can't attribute edits, so don't block
+  }
+}
+
+/**
+ * Guard the per-run snapshot overwrite. Returns true when it's safe to capture a fresh
+ * snapshot; on the dangerous case (a prior run's kept edits are still uncommitted) it prints
+ * guidance and returns false so the caller aborts rather than silently stranding the baseline.
+ * We refuse rather than silently keep the old snapshot: reusing a stale restore point could let
+ * a later `tend undo` discard a developer's unrelated work, so the choice is left to them.
+ */
+async function snapshotOverwriteAllowed(git: ReturnType<typeof createGit>): Promise<boolean> {
+  if (!existsSync(SNAPSHOT_PATH)) return true;
+  const fixedFiles = priorFixedFiles();
+  if (fixedFiles.size === 0) return true;
+  let existing: Snapshot;
+  try {
+    existing = Snapshot.fromJSON(loadJson(SNAPSHOT_PATH));
+  } catch {
+    return true; // unreadable prior snapshot — nothing reliable to preserve
+  }
+  const [changed, parent, head] = await Promise.all([
+    existing.changedSince(git),
+    existing.parentSha(),
+    git.revparse(["HEAD"]).then((s) => s.trim()).catch(() => null),
+  ]);
+  // Anything committed since the snapshot (HEAD moved off its parent) means the user resolved
+  // the prior run — its baseline now lives in git history, so overwriting strands nothing.
+  if (head !== parent) return true;
+  // Otherwise a prior fix is still pending iff its file is still changed vs the snapshot (the
+  // edit is on disk, not `tend undo`-ed away).
+  const changedSet = new Set(changed);
+  const pending = [...fixedFiles].filter((f) => changedSet.has(f));
+  const verdict = snapshotOverwriteVerdict({
+    snapshotExists: true,
+    priorFixedFilesPendingCount: pending.length,
+  });
+  if (verdict === "safe") return true;
+  err(
+    "✖ Refusing to overwrite the previous run's restore point.\n" +
+      `  A previous \`tend\` run's edits are still uncommitted on disk (${plural(pending.length, "file")}, e.g. ${pending[0]}).\n` +
+      "  Capturing a new snapshot now would make `tend undo` stop at those edits instead of\n" +
+      "  your original baseline, leaving the clean state unrecoverable.\n" +
+      "    • To keep the edits:    commit (or stash) them, then run tend again.\n" +
+      "    • To discard the edits: run `tend undo` to restore the baseline, then run tend again.",
+  );
+  return false;
+}
+
 // Unique JSON-report path per runTests invocation; concurrent gates never collide.
 let testReportSeq = 0;
 
@@ -771,6 +861,13 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
   if (!resolved) return;
   const { scope } = resolved;
 
+  // Refuse to clobber a still-live restore point (uncommitted edits from a prior run) before
+  // spending anything — cheaper than the model ping below, and never strands the baseline.
+  if (!(await snapshotOverwriteAllowed(git))) {
+    process.exitCode = 1;
+    return;
+  }
+
   // Verify every model this run can route to before doing any work. `claude -p`
   // exits 0 for an unknown model, so without this a typo'd --model silently burns
   // entire fix passes as no-op session errors (see model-preflight.ts).
@@ -982,6 +1079,13 @@ async function runRetry(id: string): Promise<void> {
   const target = resolveRetryTarget(id, report.findings);
   if ("error" in target) {
     err(`✖ ${target.error}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Same restore-point guard as `run`: retry also captures+overwrites the snapshot (below), so
+  // refuse upfront if a prior run's uncommitted edits would be stranded.
+  if (!(await snapshotOverwriteAllowed(git))) {
     process.exitCode = 1;
     return;
   }
