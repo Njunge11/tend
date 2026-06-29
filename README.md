@@ -98,8 +98,8 @@ Full flags and config reference: **[docs/USAGE.md](docs/USAGE.md)**.
 ## Output
 
 While it runs, a live task tree; when it finishes, a summary (fixed / couldn't-fix / left /
-secrets, elapsed time, estimated AI cost & tokens) and a machine-readable `.tend/report.json`.
-Pass `--plain` for line-per-event output in CI.
+secrets, elapsed time, estimated AI cost & tokens) and a machine-readable `.tend/report.json`
+(each run is also archived under `.tend/runs/<id>/`). Pass `--plain` for line-per-event output in CI.
 
 ## Status & contributing
 
