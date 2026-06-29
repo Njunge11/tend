@@ -1,6 +1,69 @@
 import { describe, expect, it } from "vitest";
 import { makeFinding } from "../test/helpers/make-finding.js";
-import { demoteFinalIntegrationFindings } from "./bin.js";
+import { demoteFinalIntegrationFindings, parseTestReport } from "./bin.js";
+import { captureBaseline, type TestOutcome } from "./gate/checks/tests.js";
+
+/** A vitest/jest-shaped JSON report with one test file's worth of assertions. */
+function report(assertions: { fullName: string; status: string }[]) {
+  return { testResults: [{ assertionResults: assertions }] };
+}
+
+describe("parseTestReport", () => {
+  it("maps passed→pass and failed→fail", () => {
+    const outcomes = parseTestReport(
+      report([
+        { fullName: "a passes", status: "passed" },
+        { fullName: "b fails", status: "failed" },
+      ]),
+    );
+    expect(outcomes).toEqual<TestOutcome[]>([
+      { name: "a passes", status: "pass" },
+      { name: "b fails", status: "fail" },
+    ]);
+  });
+
+  it("omits tests that did not run (skipped/pending/todo/disabled)", () => {
+    const outcomes = parseTestReport(
+      report([
+        { fullName: "skipped", status: "skipped" },
+        { fullName: "pending", status: "pending" },
+        { fullName: "todo", status: "todo" },
+        { fullName: "disabled", status: "disabled" },
+      ]),
+    );
+    expect(outcomes).toEqual([]);
+  });
+
+  it("stays fail-closed for unrecognized statuses", () => {
+    const outcomes = parseTestReport(report([{ fullName: "weird", status: "errored" }]));
+    expect(outcomes).toEqual<TestOutcome[]>([{ name: "weird", status: "fail" }]);
+  });
+
+  it("a baseline-green test that skips at the gate is NOT a regression", async () => {
+    // The bug: this test is green in main (dist/ present) but skips in the sandbox
+    // worktree (dist/ absent). It must never be counted as a regression.
+    const name = "real built worker — runs against dist";
+    const baseline = await captureBaseline(async () =>
+      parseTestReport(report([{ fullName: name, status: "passed" }])),
+    );
+    expect(baseline.has(name)).toBe(true);
+
+    const gateOutcomes = parseTestReport(report([{ fullName: name, status: "skipped" }]));
+    const regressed = gateOutcomes.filter((o) => o.status === "fail" && baseline.has(o.name));
+    expect(regressed).toEqual([]);
+  });
+
+  it("a baseline-green test that genuinely fails at the gate IS a regression", async () => {
+    const name = "really tests something";
+    const baseline = await captureBaseline(async () =>
+      parseTestReport(report([{ fullName: name, status: "passed" }])),
+    );
+
+    const gateOutcomes = parseTestReport(report([{ fullName: name, status: "failed" }]));
+    const regressed = gateOutcomes.filter((o) => o.status === "fail" && baseline.has(o.name));
+    expect(regressed).toEqual<TestOutcome[]>([{ name, status: "fail" }]);
+  });
+});
 
 /** A fixed AI-track finding on `file`, the shape the orchestrator leaves after a kept unit. */
 function fixedAiFinding(file: string) {

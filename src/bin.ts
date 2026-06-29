@@ -147,6 +147,10 @@ function loadReport(): Report {
 // Unique JSON-report path per runTests invocation; concurrent gates never collide.
 let testReportSeq = 0;
 
+/** Assertion statuses meaning the test never executed, shared by vitest and jest. These
+ *  are dropped, not scored: a test that didn't run is neither a pass nor a regression. */
+const DID_NOT_RUN_STATUSES = new Set(["skipped", "pending", "todo", "disabled"]);
+
 /** Shape shared by vitest's and jest's JSON reporters (the parts we read). */
 type TestRunnerReport = {
   testResults?: {
@@ -157,6 +161,30 @@ type TestRunnerReport = {
     }[];
   }[];
 };
+
+/**
+ * Parse a vitest/jest JSON report into per-test outcomes.
+ *
+ * A test that didn't run (skipped/pending/todo/disabled) is dropped, not scored: it can't
+ * be a regression and must never enter the outcomes set. Skipping is environment-dependent
+ * — e.g. `it.runIf(existsSync(dist/...))` is green in the main repo where dist/ exists but
+ * skips in the sandbox worktree where it's absent. Folding a skip into "fail" would wrongly
+ * flag a baseline-green test as regressed and revert a valid fix. Anything that isn't an
+ * explicit pass or a recognized skip stays fail-closed (treated as "fail").
+ */
+export function parseTestReport(json: TestRunnerReport): TestOutcome[] {
+  const outcomes: TestOutcome[] = [];
+  for (const file of json.testResults ?? []) {
+    for (const a of file.assertionResults ?? []) {
+      if (DID_NOT_RUN_STATUSES.has(a.status)) continue;
+      outcomes.push({
+        name: a.fullName ?? a.title ?? "",
+        status: a.status === "passed" ? "pass" : "fail",
+      });
+    }
+  }
+  return outcomes;
+}
 
 /**
  * Run the detected test runner over the given files and parse pass/fail per test.
@@ -207,16 +235,7 @@ async function runTests(
         `could not parse ${runner} JSON report: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const outcomes: TestOutcome[] = [];
-    for (const file of json.testResults ?? []) {
-      for (const a of file.assertionResults ?? []) {
-        outcomes.push({
-          name: a.fullName ?? a.title ?? "",
-          status: a.status === "passed" ? "pass" : "fail",
-        });
-      }
-    }
-    return outcomes;
+    return parseTestReport(json);
   } finally {
     rmSync(reportFile, { force: true });
   }
