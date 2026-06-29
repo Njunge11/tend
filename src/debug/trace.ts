@@ -176,7 +176,7 @@ export function createTracer(traceDir: string | undefined, id: string = runId())
         `${nowIso()} session#${n} ${record.file} model=${record.model} effort=${record.effort} ` +
           `exit=${record.exitCode}${record.timedOut ? " TIMED_OUT" : ""} ${Math.round(record.durationMs / 1000)}s ` +
           `out=${record.stdout.length}b err=${record.stderr.length}b ` +
-          `rules=[${record.findings.map((f) => `${f.tool}/${f.rule}`).join(",")}]\n`,
+          `rules=[${record.findings.map((f) => f.tool + "/" + f.rule).join(",")}]\n`,
       );
     },
     scanner(record: ScannerTrace): void {
@@ -232,11 +232,13 @@ export function createTracer(traceDir: string | undefined, id: string = runId())
       const tsTag = record.diagnostics?.["pinnedTypeScript"]
         ? ` ts=${record.diagnostics["pinnedTypeScript"]}`
         : "";
+      const reasonTag = record.reason ? ` (${record.reason})` : "";
+      const exitTag = record.exitCode != null ? ` exit=${record.exitCode}` : "";
       append(
         logPath,
         `${ts} scanner#${n} ${record.tool} loop=${record.loop} ${record.phase} ${record.status}` +
-          `${record.reason ? ` (${record.reason})` : ""} findings=${record.findings.length}` +
-          `${record.exitCode != null ? ` exit=${record.exitCode}` : ""}${tsTag}\n`,
+          `${reasonTag} findings=${record.findings.length}` +
+          `${exitTag}${tsTag}\n`,
       );
     },
   };
