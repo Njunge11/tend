@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.15.0...tend-cli-v0.15.1) (2026-06-30)
+
+
+### Bug Fixes
+
+* report final-integration rescan findings instead of reverting clean fixes ([522207a](https://github.com/Njunge11/tend/commit/522207a9b62c067d1bbdd155c9b9f8bdb63f2579))
+
 ## [0.15.0](https://github.com/Njunge11/tend/compare/tend-cli-v0.14.10...tend-cli-v0.15.0) (2026-06-29)
 
 
