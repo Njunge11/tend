@@ -778,6 +778,70 @@ describe("renderSummary", () => {
   });
 });
 
+describe("final integration rendering", () => {
+  /** Build a one-loop report (exit 0 by default) carrying a finalIntegration result, on top of one kept fix. */
+  function reportWithFinalIntegration(finalIntegration: Report["finalIntegration"], exitStatus = 0): Report {
+    const builder = reportWith({ ...makeFinding({ tool: "jscpd", file: "src/_shared.ts" }), status: "fixed" });
+    return builder.build({ loops: 1, durationMs: 1000, exitStatus, finalIntegration });
+  }
+
+  /** A surfaced rescan finding by identity (the FinalIntegration `findings[]` shape). */
+  const keptFinding = { tool: "jscpd" as const, rule: "duplicate-code", file: "src/_shared.ts", line: 78 };
+
+  it("reports kept fixes in the overall table, pluralised, when the rescan surfaces multiple findings", () => {
+    const out = renderSummary(
+      reportWithFinalIntegration({ ok: true, files: ["src/_shared.ts"], findings: [keptFinding, { ...keptFinding, line: 87 }] }),
+    );
+
+    expect(out).toMatch(/final integration\s+│ 2 new findings reported · fixes kept/);
+    // A kept run is not a revert — the failure phrasing must be absent.
+    expect(out).not.toContain("reverted to last good state");
+  });
+
+  it("uses the singular 'finding' in the overall table when exactly one is surfaced", () => {
+    const out = renderSummary(reportWithFinalIntegration({ ok: true, files: ["src/_shared.ts"], findings: [keptFinding] }));
+
+    expect(out).toMatch(/final integration\s+│ 1 new finding reported · fixes kept/);
+  });
+
+  it("omits the final-integration row entirely on a clean kept run (no surfaced findings)", () => {
+    const report = reportWithFinalIntegration({ ok: true, files: ["src/_shared.ts"], findings: [] });
+
+    expect(renderSummary(report)).not.toContain("final integration");
+    expect(renderSummary(report, { plain: true })).not.toContain("final-integration");
+  });
+
+  it("emits the kept-fixes line in --plain output once the run carries a non-zero exit", () => {
+    // plainFailureLines is gated to runs that need attention (exit != 0), so the kept-fixes
+    // line only joins the machine output when something else already pushed the exit non-zero.
+    const plain = renderSummary(
+      reportWithFinalIntegration({ ok: true, files: ["src/_shared.ts"], findings: [keptFinding] }, 1),
+      { plain: true },
+    );
+
+    expect(plain).toContain("final-integration status=passed action=kept-fixes new-findings=1");
+    expect(plain).not.toContain("action=reverted-to-known-good");
+  });
+
+  it("renders the reverted-to-known-good phrasing in both outputs when the gate actually failed", () => {
+    const report = reportWithFinalIntegration(
+      { ok: false, files: ["src/_shared.ts"], detail: "tsc broke", findings: [] },
+      1,
+    );
+
+    expect(renderSummary(report)).toMatch(/final integration\s+│ tsc broke · reverted to last good state/);
+    expect(renderSummary(report, { plain: true })).toContain(
+      "final-integration status=failed action=reverted-to-known-good files=1",
+    );
+  });
+
+  it("round-trips surfaced findings through the report schema by identity", () => {
+    const report = reportWithFinalIntegration({ ok: true, files: ["src/_shared.ts"], findings: [keptFinding] });
+    const parsed = ReportSchema.parse(JSON.parse(JSON.stringify(report)));
+    expect(parsed.finalIntegration).toEqual({ ok: true, files: ["src/_shared.ts"], findings: [keptFinding] });
+  });
+});
+
 describe("auditEligibility", () => {
   /** A pending, in-scope sonarjs finding with the given overrides. */
   function pendingFinding(overrides: Partial<Finding> = {}): Finding {
