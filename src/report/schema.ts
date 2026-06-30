@@ -70,10 +70,21 @@ export const FailureSummarySchema = z.object({
   finalIntegrationFailures: z.number().int().nonnegative().default(0),
 });
 
+/** Identity of a new finding surfaced by the post-run rescan: tool / rule / file / line. */
+export const FinalIntegrationFindingSchema = z.object({
+  tool: z.enum(TOOLS),
+  rule: z.string(),
+  file: z.string(),
+  line: z.number().int().nonnegative(),
+});
+
 export const FinalIntegrationSchema = z.object({
   ok: z.boolean(),
   files: z.array(z.string()).default([]),
   detail: z.string().optional(),
+  // New scanner findings the post-run rescan surfaced and the repair budget couldn't clear.
+  // Reported (by identity) alongside the kept fixes — a new finding is never a reason to revert.
+  findings: z.array(FinalIntegrationFindingSchema).default([]),
 });
 
 /** Why the scan → fix → re-audit loop stopped. Single source of truth for the orchestrator. */

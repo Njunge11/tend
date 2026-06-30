@@ -6,6 +6,7 @@ import {
   runFinalIntegration,
   runsToPrune,
   snapshotOverwriteVerdict,
+  toReportFinalIntegration,
 } from "./bin.js";
 import type { Finding, Tool } from "./findings/finding.js";
 import { captureBaseline, type TestOutcome } from "./gate/checks/tests.js";
@@ -178,7 +179,7 @@ describe("runsToPrune", () => {
   });
 });
 
-describe("runFinalIntegration — re-dispatch new findings before reverting", () => {
+describe("runFinalIntegration — repair what's cheap, report the rest, never revert a clean fix", () => {
   const clone = makeFinding({
     tool: "jscpd",
     rule: "duplicate-code",
@@ -248,14 +249,14 @@ describe("runFinalIntegration — re-dispatch new findings before reverting", ()
     expect(d.repairCalls[0]).toEqual([clone]); // and was handed the surfaced finding
   });
 
-  it("reverts (ok:false) when the surfaced finding cannot be repaired — preserves the old floor", async () => {
+  it("KEEPS the run and reports the finding when it cannot be repaired — never reverts a clean fix", async () => {
     const d = deps({ scans: [[clone]], repair: () => Promise.resolve(false) });
     const result = await runFinalIntegration(d.args);
-    expect(result).toMatchObject({ ok: false });
-    expect(result).toMatchObject({ detail: "final integration scanner rescan found 1 finding" });
+    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({ findings: [clone] }); // the surfaced finding is carried, not reverted
   });
 
-  it("terminates after the round cap when repair keeps surfacing new findings (no infinite loop)", async () => {
+  it("KEEPS the run and reports survivors after the round cap when repair keeps surfacing new findings", async () => {
     let repairCalls = 0;
     const d = {
       acceptedFiles: () => ["src/_shared.ts"],
@@ -269,7 +270,40 @@ describe("runFinalIntegration — re-dispatch new findings before reverting", ()
       },
     };
     const result = await runFinalIntegration(d);
-    expect(result.ok).toBe(false);
-    expect(repairCalls).toBe(1); // round 0 repairs once; round 1 hits the cap before repairing again
+    expect(result).toMatchObject({ ok: true, findings: [clone] });
+    expect(repairCalls).toBe(1); // round 0 repairs once; round 1 hits the cap, then reports the survivor
+  });
+});
+
+describe("toReportFinalIntegration", () => {
+  it("records surfaced findings by identity (tool / rule / file / line) on a kept run", () => {
+    const finding = makeFinding({
+      tool: "jscpd",
+      rule: "duplicate-code",
+      file: "src/_shared.ts",
+      range: { startLine: 78, startCol: 1, endLine: 87, endCol: 1 },
+    });
+    expect(toReportFinalIntegration({ ok: true, files: ["src/_shared.ts"], findings: [finding] })).toEqual({
+      ok: true,
+      files: ["src/_shared.ts"],
+      findings: [{ tool: "jscpd", rule: "duplicate-code", file: "src/_shared.ts", line: 78 }],
+    });
+  });
+
+  it("emits an empty findings list (never undefined) when the run kept everything cleanly", () => {
+    expect(toReportFinalIntegration({ ok: true, files: ["src/a.ts"] })).toEqual({
+      ok: true,
+      files: ["src/a.ts"],
+      findings: [],
+    });
+  });
+
+  it("carries the failure detail and no findings on a real typecheck/test revert", () => {
+    expect(toReportFinalIntegration({ ok: false, files: ["src/a.ts"], detail: "tsc broke" })).toEqual({
+      ok: false,
+      files: ["src/a.ts"],
+      detail: "tsc broke",
+      findings: [],
+    });
   });
 });

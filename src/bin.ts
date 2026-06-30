@@ -41,7 +41,7 @@ import { expandWipFilesByImports } from "./fixing/wip-files.js";
 import { parseTscErrors, typecheck } from "./gate/checks/typecheck.js";
 import { orchestrate, type FixOutcome } from "./orchestrator.js";
 import { ReportBuilder } from "./report/builder.js";
-import { ReportSchema, type Report } from "./report/schema.js";
+import { ReportSchema, type FinalIntegration, type Report } from "./report/schema.js";
 import { renderSummary } from "./output/summary.js";
 import { EventBus } from "./output/events.js";
 import { createTracer, pointLatestAt, runId } from "./debug/trace.js";
@@ -381,7 +381,9 @@ async function runTests(
 type TestRunner = "vitest" | "jest" | null;
 
 type FinalIntegrationResult =
-  | { ok: true; files: string[] }
+  // `findings` carries the new scanner findings surfaced by the post-run rescan that were NOT
+  // auto-repaired. They are reported alongside the kept fixes, never a reason to revert.
+  | { ok: true; files: string[]; findings?: Finding[] }
   | { ok: false; files: string[]; detail: string };
 
 /** The slice of the gate deps the final-integration checks consume. */
@@ -456,9 +458,12 @@ export function demoteFinalIntegrationFindings(
  * short-circuiting on the first failure. When the rescan surfaces findings (a fix accepted during
  * the run introduced a NEW finding on a file it touched, e.g. an extracted shared module that
  * collides with a third file), it asks `repair` to fix them in place and re-verifies, capped at
- * `maxRepairRounds` rounds so an extract→new-clone→extract cycle always terminates. Returns
- * `ok: true` only when every check is clean; otherwise `ok: false` with a detail, leaving the
- * caller to revert to known-good — the same safe floor as before. Exported for testing.
+ * `maxRepairRounds` rounds so an extract→new-clone→extract cycle always terminates.
+ *
+ * A fix that compiles and passes tests is NEVER reverted just because the rescan reports a new
+ * finding: a new finding is information, not a broken build. So `ok: false` is returned ONLY when
+ * `typecheckFailure` or `testFailure` is set; any findings the repair budget couldn't clear are
+ * returned with `ok: true` and carried so the caller can report them. Exported for testing.
  */
 export async function runFinalIntegration(deps: {
   acceptedFiles: () => string[];
@@ -478,10 +483,12 @@ export async function runFinalIntegration(deps: {
     const blocker = (await deps.typecheckFailure()) ?? (await deps.testFailure(files));
     if (blocker) return { ok: false, files, detail: blocker };
     const tools = deps.acceptedTools();
-    const blocking = tools.length === 0 ? [] : await deps.scanFindings(files, tools);
-    if (blocking.length === 0) return { ok: true, files };
-    const detail = `final integration scanner rescan found ${plural(blocking.length, "finding")}`;
-    if (round >= maxRounds || !(await deps.repair(blocking))) return { ok: false, files, detail };
+    const findings = tools.length === 0 ? [] : await deps.scanFindings(files, tools);
+    if (findings.length === 0) return { ok: true, files };
+    // The fixes compiled and passed tests; a new scanner finding is not grounds to wipe them.
+    // Try one in-place repair so a trivially-fixable surfaced finding is cleaned up, then report
+    // whatever survives the repair budget — kept on disk, never reverted.
+    if (round >= maxRounds || !(await deps.repair(findings))) return { ok: true, files, findings };
   }
 }
 
@@ -949,12 +956,30 @@ function traceDeterministicUnit(
   };
 }
 
+/** Project the gate result onto the report's `finalIntegration` shape, recording any surfaced
+ *  rescan findings by identity (tool / rule / file / line) so a kept-but-flagged run is auditable.
+ *  Exported for testing. */
+export function toReportFinalIntegration(result: FinalIntegrationResult): FinalIntegration {
+  if (!result.ok) return { ok: false, files: result.files, detail: result.detail, findings: [] };
+  return {
+    ok: true,
+    files: result.files,
+    findings: (result.findings ?? []).map((f) => ({
+      tool: f.tool,
+      rule: f.rule,
+      file: f.file,
+      line: f.range.startLine,
+    })),
+  };
+}
+
 /**
  * Individually-clean fixes combined into a tree that fails the final-integration gate. Leaving a
  * non-compiling tree breaks tend's core promise, so roll the run's AI edits back to the known-good
  * baseline and re-mark the affected findings as final-integration-failed (no longer fixed on disk).
  * The per-unit gate already gave each fix an error-grounded repair; the cross-unit interaction is
  * only visible here, where the safe action is revert-to-known-good. Sets `result.exitStatus = 1`.
+ * Only typecheck/test failures reach here — a scanner-only rescan finding is reported, not reverted.
  */
 function rollbackFailedIntegration(
   failure: Extract<FinalIntegrationResult, { ok: false }>,
@@ -1215,7 +1240,7 @@ async function runRun(opts: Parameters<CliHandlers["run"]>[0]): Promise<void> {
       includeGenerated: config.fix.includeGenerated,
       includeFixtures: config.fix.includeFixtures,
     },
-    finalIntegration: finalIntegrationResult,
+    finalIntegration: finalIntegrationResult && toReportFinalIntegration(finalIntegrationResult),
   });
   persist(REPORT_PATH, report);
   archiveReport(report);

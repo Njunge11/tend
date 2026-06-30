@@ -329,6 +329,10 @@ function plainFailureLines(report: Report): string[] {
     lines.push(
       `final-integration status=failed action=reverted-to-known-good files=${report.finalIntegration.files.length} detail=${JSON.stringify(firstLine(report.finalIntegration.detail ?? ""))}`,
     );
+  } else if (report.finalIntegration && report.finalIntegration.findings.length > 0) {
+    lines.push(
+      `final-integration status=passed action=kept-fixes new-findings=${report.finalIntegration.findings.length}`,
+    );
   }
   return lines;
 }
@@ -466,7 +470,9 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
     ["fix passes", fixPassesText(report)],
     ...(report.finalIntegration && !report.finalIntegration.ok
       ? ([["final integration", theme.error(`${firstLine(report.finalIntegration.detail ?? "failed")} · reverted to last good state`)]] as string[][])
-      : []),
+      : report.finalIntegration && report.finalIntegration.findings.length > 0
+        ? ([["final integration", theme.dim(`${report.finalIntegration.findings.length} new finding${report.finalIntegration.findings.length === 1 ? "" : "s"} reported · fixes kept`)]] as string[][])
+        : []),
     ["elapsed", formatDuration(report.durationMs)],
     ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
     // Only meaningful once something was attempted; hidden on a nothing-to-fix run.
