@@ -1,6 +1,6 @@
 import { BaseReporter } from "./base-reporter.js";
 import type { TendEvent } from "./events.js";
-import { formatAuditFunnel, formatClock, reasonLabel } from "./format.js";
+import { fixPhaseLabel, formatAuditFunnel, formatClock, reasonLabel } from "./format.js";
 import { fixStageLabel } from "../fixing/progress.js";
 import type { Reporter } from "./reporter.js";
 
@@ -32,7 +32,7 @@ export class PlainReporter extends BaseReporter implements Reporter {
         this.write(this.formatAuditLine(event));
         break;
       case "loop-start":
-        this.write(`fix pass ${event.loop} ${glyph.bullet} ${event.findings} eligible findings across ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
+        this.write(`fix pass ${event.loop} ${glyph.bullet} ${fixPhaseLabel(event.phase)} ${glyph.bullet} ${event.findings} eligible findings across ${event.files.length} files ${glyph.bullet} ${event.concurrency} concurrent`);
         break;
       case "file-start":
         this.fileStartTimes.set(event.file, Date.now());
@@ -48,7 +48,7 @@ export class PlainReporter extends BaseReporter implements Reporter {
       }
       case "loop-complete": {
         const cost = event.estimatedCostUsd > 0 ? ` ${glyph.bullet} $${event.estimatedCostUsd.toFixed(2)}` : "";
-        this.write(`loop ${event.loop}: ${event.fixed} fixed ${glyph.bullet} ${event.reverted} reverted ${glyph.bullet} ${event.remaining} remaining${cost}`);
+        this.write(`loop ${event.loop} ${glyph.bullet} ${fixPhaseLabel(event.phase)}: ${event.fixed} fixed ${glyph.bullet} ${event.reverted} reverted ${glyph.bullet} ${event.remaining} remaining${cost}`);
         break;
       }
       // snapshot/detected arrive as start() notes; done is covered by the final summary.

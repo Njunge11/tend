@@ -557,6 +557,7 @@ async function runDeterministicPhase(ctx: RunCtx, deterministicWork: WorkUnit[])
   bus.emit({
     type: "loop-start",
     loop: ctx.loop,
+    phase: "deterministic",
     files: deterministicWork.map((u) => u.file),
     concurrency: DETERMINISTIC_CONCURRENCY,
     findings: deterministicWork.reduce((sum, u) => sum + u.findings.length, 0),
@@ -606,6 +607,7 @@ async function runDeterministicPhase(ctx: RunCtx, deterministicWork: WorkUnit[])
   bus.emit({
     type: "loop-complete",
     loop: ctx.loop,
+    phase: "deterministic",
     fixed: detFixed,
     reverted: detReverted,
     remaining: pendingUnderBudget(store, config.perIssueBudget).length,
@@ -727,6 +729,7 @@ async function runAiPhase(ctx: RunCtx, units: WorkUnit[]): Promise<boolean> {
   bus.emit({
     type: "loop-start",
     loop: ctx.loop,
+    phase: "ai",
     files: units.map((u) => u.file),
     concurrency: config.maxSessions,
     findings: units.reduce((sum, u) => sum + u.findings.length, 0),
@@ -747,6 +750,7 @@ async function runAiPhase(ctx: RunCtx, units: WorkUnit[]): Promise<boolean> {
   bus.emit({
     type: "loop-complete",
     loop: ctx.loop,
+    phase: "ai",
     fixed: aiFixed,
     reverted: aiReverted,
     remaining: pendingUnderBudget(store, config.perIssueBudget).length,

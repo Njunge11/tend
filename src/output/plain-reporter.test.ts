@@ -36,12 +36,12 @@ describe("PlainReporter", () => {
         eligible: 4,
         excluded: { tests: 8, generated: 0, fixtures: 0, outOfScope: 1, reportOnly: 0 },
       },
-      { type: "loop-start", loop: 1, files: ["a.ts", "b.ts"], concurrency: 4, findings: 4 },
+      { type: "loop-start", loop: 1, phase: "ai", files: ["a.ts", "b.ts"], concurrency: 4, findings: 4 },
       { type: "file-start", loop: 1, file: "a.ts", rule: "cognitive-complexity", model: "claude-opus-4-8" },
       { type: "file-stage", loop: 1, file: "a.ts", stage: "typecheck" },
       { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed", findings: 2 },
       { type: "file-result", loop: 1, file: "b.ts", outcome: "reverted", findings: 2, reason: "broke-test" },
-      { type: "loop-complete", loop: 1, fixed: 1, reverted: 1, remaining: 0, estimatedCostUsd: 0.42 },
+      { type: "loop-complete", loop: 1, phase: "ai", fixed: 1, reverted: 1, remaining: 0, estimatedCostUsd: 0.42 },
       { type: "done", exitStatus: 0 },
     ];
     for (const e of events) reporter.onEvent(e);
@@ -54,13 +54,13 @@ describe("PlainReporter", () => {
     expect(lines.some((l) => l.includes("initial audit: fix scope 159 files eligible for fixes") && l.includes("in-scope findings 13 across 10 files"))).toBe(true);
     // The funnel explains the 13 → 4 collapse at the moment it happens, omitting zero reasons.
     expect(lines.some((l) => l.includes("→ 4 eligible to fix (8 in test files, 1 excluded from fix scope)"))).toBe(true);
-    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("4 eligible findings across 2 files") && l.includes("4 concurrent"))).toBe(true);
+    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("AI") && l.includes("4 eligible findings across 2 files") && l.includes("4 concurrent"))).toBe(true);
     expect(lines).toContain("progress a.ts: typecheck");
     // The fixed line shows the model the job ran on, verbatim.
     expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("claude-opus-4-8"))).toBe(true);
     expect(lines.some((l) => l.includes("reverted b.ts") && l.includes("broke tests"))).toBe(true);
     // loop-complete now renders an intermediate summary line.
-    expect(lines.some((l) => l.includes("loop 1:") && l.includes("1 fixed") && l.includes("1 reverted") && l.includes("$0.42"))).toBe(true);
+    expect(lines.some((l) => l.includes("loop 1") && l.includes("AI:") && l.includes("1 fixed") && l.includes("1 reverted") && l.includes("$0.42"))).toBe(true);
     // file-start and done produce no standalone lines.
     expect(lines.some((l) => l.includes("a.ts") && l.includes("cognitive-complexity"))).toBe(false);
   });
@@ -68,13 +68,29 @@ describe("PlainReporter", () => {
   it("labels a deterministic-phase job's model as 'deterministic'", () => {
     const { reporter, lines } = harness();
     const events: TendEvent[] = [
-      { type: "loop-start", loop: 1, files: ["a.ts"], concurrency: 1, findings: 1 },
+      { type: "loop-start", loop: 1, phase: "deterministic", files: ["a.ts"], concurrency: 1, findings: 1 },
       { type: "file-start", loop: 1, file: "a.ts", rule: "no-unused", model: "deterministic" },
       { type: "file-result", loop: 1, file: "a.ts", outcome: "fixed", findings: 1 },
     ];
     for (const e of events) reporter.onEvent(e);
 
     expect(lines.some((l) => l.includes("fixed a.ts") && l.includes("deterministic"))).toBe(true);
+  });
+
+  it("labels each fix phase of one loop so auto-fix and AI counts stay distinguishable", () => {
+    const { reporter, lines } = harness();
+    const events: TendEvent[] = [
+      { type: "loop-start", loop: 1, phase: "deterministic", files: ["a.ts"], concurrency: 1, findings: 11 },
+      { type: "loop-complete", loop: 1, phase: "deterministic", fixed: 11, reverted: 0, remaining: 6, estimatedCostUsd: 0 },
+      { type: "loop-start", loop: 1, phase: "ai", files: ["b.ts"], concurrency: 2, findings: 6 },
+      { type: "loop-complete", loop: 1, phase: "ai", fixed: 6, reverted: 0, remaining: 0, estimatedCostUsd: 0.41 },
+    ];
+    for (const e of events) reporter.onEvent(e);
+
+    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("auto-fix") && l.includes("11 eligible findings"))).toBe(true);
+    expect(lines.some((l) => l.includes("loop 1") && l.includes("auto-fix:") && l.includes("11 fixed"))).toBe(true);
+    expect(lines.some((l) => l.includes("fix pass 1") && l.includes("AI") && l.includes("6 eligible findings"))).toBe(true);
+    expect(lines.some((l) => l.includes("loop 1") && l.includes("AI:") && l.includes("6 fixed") && l.includes("$0.41"))).toBe(true);
   });
 
   it("writes streamed session activity line-by-line during a long AI edit", () => {
