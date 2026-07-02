@@ -8,8 +8,8 @@ import type { Tool } from "../findings/finding.js";
 import { fixStageLabel, type FixStage } from "../fixing/progress.js";
 import type { ScannerStatusKind } from "../scanners/scanner.js";
 import { BaseReporter } from "./base-reporter.js";
-import type { AuditExclusions, TendEvent } from "./events.js";
-import { formatAuditFunnel, formatClock } from "./format.js";
+import type { AuditExclusions, FixPhase, TendEvent } from "./events.js";
+import { fixPhaseLabel, formatAuditFunnel, formatClock } from "./format.js";
 import type { Reporter, ReporterDeps } from "./reporter.js";
 
 type AuditData = {
@@ -20,8 +20,18 @@ type AuditData = {
   eligible?: number;
   excluded?: AuditExclusions;
 };
-type FixInfo = { loop: number; files: string[]; concurrency: number };
-type Phase = { kind: "fix"; info: FixInfo } | { kind: "done" };
+type FixInfo = { loop: number; phase: FixPhase; files: string[]; concurrency: number };
+// The ordered stream of view transitions. One channel keeps scan/fix/done sequencing exactly
+// as emitted — a loop may run two fix phases back to back (deterministic, then AI) with no
+// scan in between, so the view must not assume scan → fix alternation.
+type ControlSignal =
+  | { kind: "scan"; loop: number }
+  | { kind: "audit"; data: AuditData }
+  | { kind: "fix"; info: FixInfo }
+  | { kind: "done" };
+// Progress inside one fix phase. `complete` carries a title snapshot taken at loop-complete
+// time so a lagging redraw can't render the next phase's freshly-reset counters instead.
+type FixSignal = { kind: "tick" } | { kind: "complete"; finalTitle: string };
 type ScannerLiveStatus = "running" | ScannerStatusKind;
 type ScannerInfo = { status: ScannerLiveStatus; findings?: number; reason?: string };
 
@@ -57,11 +67,8 @@ const CLOSED = Symbol("closed");
 export class LiveReporter extends BaseReporter implements Reporter {
   private readonly env: ReporterDeps["env"];
 
-  private readonly scanStarts = new Channel<number>();
-  private readonly audits = new Channel<AuditData>();
-  private readonly phases = new Channel<Phase>();
-  private readonly fixTicks = new Channel<void>();
-  private readonly loopCompletions = new Channel<number>();
+  private readonly control = new Channel<ControlSignal>();
+  private readonly fixSignals = new Channel<FixSignal>();
 
   private closed = false;
   private resolveClosed!: () => void;
@@ -76,6 +83,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
   private fixedFindings = 0;
   private revertedFindings = 0;
   private currentLoop = 0;
+  private currentPhase: FixPhase = "ai";
   private readonly runningFiles = new Set<string>();
   private readonly fileStartTimes = new Map<string, number>();
   private currentConcurrency?: number;
@@ -98,19 +106,22 @@ export class LiveReporter extends BaseReporter implements Reporter {
   onEvent(event: TendEvent): void {
     switch (event.type) {
       case "audit":
-        this.audits.push({
-          loop: event.loop,
-          findings: event.findings,
-          files: event.files,
-          scanned: event.scanned,
-          eligible: event.eligible,
-          excluded: event.excluded,
+        this.control.push({
+          kind: "audit",
+          data: {
+            loop: event.loop,
+            findings: event.findings,
+            files: event.files,
+            scanned: event.scanned,
+            eligible: event.eligible,
+            excluded: event.excluded,
+          },
         });
         break;
       case "scan-start":
         this.currentScanLoop = event.loop;
         this.scannerStates.clear();
-        this.scanStarts.push(event.loop);
+        this.control.push({ kind: "scan", loop: event.loop });
         this.refreshScanHeader();
         break;
       case "scanner-start":
@@ -131,6 +142,7 @@ export class LiveReporter extends BaseReporter implements Reporter {
         // Reset counters here (synchronously, before any file-start for this loop) so the
         // header counts stay correct no matter how events interleave with rendering.
         this.currentLoop = event.loop;
+        this.currentPhase = event.phase;
         this.findingsTotal = event.findings;
         this.fixedFindings = 0;
         this.revertedFindings = 0;
@@ -145,9 +157,9 @@ export class LiveReporter extends BaseReporter implements Reporter {
           0,
           ...event.files.map((f) => basename(f).length),
         );
-        this.phases.push({
+        this.control.push({
           kind: "fix",
-          info: { loop: event.loop, files: event.files, concurrency: event.concurrency },
+          info: { loop: event.loop, phase: event.phase, files: event.files, concurrency: event.concurrency },
         });
         break;
       case "file-start":
@@ -171,15 +183,17 @@ export class LiveReporter extends BaseReporter implements Reporter {
         this.runningFiles.delete(event.file);
         this.fileStartTimes.delete(event.file);
         this.refreshHeader();
-        this.fixTicks.push();
+        this.fixSignals.push({ kind: "tick" });
         break;
       case "loop-complete":
+        // Snapshot the final title now, while the counters still describe THIS phase — the
+        // next phase's loop-start resets them before a lagging view may get to redraw.
         this.cumulativeCostUsd = event.estimatedCostUsd;
-        this.loopCompletions.push(event.loop);
+        this.fixSignals.push({ kind: "complete", finalTitle: this.headerTitle() });
         this.refreshHeader();
         break;
       case "done":
-        this.phases.push({ kind: "done" });
+        this.control.push({ kind: "done" });
         break;
       case "snapshot":
       case "detected":
@@ -191,17 +205,25 @@ export class LiveReporter extends BaseReporter implements Reporter {
     if (this.closed) return;
     this.closed = true;
     // Unblock anything run() may still be awaiting, and end the run cleanly.
-    this.phases.push({ kind: "done" });
+    this.control.push({ kind: "done" });
     this.resolveClosed();
   }
 
+  /**
+   * Drive the view off the control stream, one signal per step. No scan → fix alternation is
+   * assumed: a loop's deterministic and AI fix phases arrive as two consecutive fix signals,
+   * and each gets its own progress row. Buffered signals drain before close() wins a race, so
+   * a replayed (lagging) run still renders every phase.
+   */
   async run(): Promise<void> {
-    while (!this.closed) {
-      const stillRunning = await this.scanPhase();
-      if (!stillRunning) break;
-      const phase = await this.race(this.phases.take());
-      if (phase === CLOSED || phase.kind === "done") break;
-      await this.fixPhase(phase.info);
+    let carried: ControlSignal | undefined;
+    while (true) {
+      const signal = carried ?? (await this.race(this.control.take()));
+      carried = undefined;
+      if (signal === CLOSED || signal.kind === "done") break;
+      if (signal.kind === "scan") carried = await this.scanPhase(signal.loop);
+      else if (signal.kind === "fix") await this.fixPhase(signal.info);
+      // A stray audit with no scan row on screen has nothing to render against; drop it.
     }
   }
 
@@ -210,38 +232,30 @@ export class LiveReporter extends BaseReporter implements Reporter {
     return Promise.race([promise, this.closedSignal]);
   }
 
-  /** Spinner + elapsed until the next audit lands. Returns false if we were closed first. */
-  private async scanPhase(): Promise<boolean> {
-    let live = true;
+  /** Spinner + elapsed until the audit lands. Returns a non-audit signal it consumed, if any. */
+  private async scanPhase(loop: number): Promise<ControlSignal | undefined> {
+    let carry: ControlSignal | undefined;
     const list = new Listr<unknown>(
       [
         {
-          title: this.theme.dim("scanning…"),
+          title: this.scanTitle(loop),
           task: async (_ctx, task) => {
             this.scanHeader = task;
-            const loop = await this.race(this.scanStarts.take());
-            if (loop === CLOSED) {
-              live = false;
-              return;
-            }
-            task.title = this.scanTitle(loop);
-            const audit = await this.race(this.audits.take());
-            if (audit === CLOSED) {
-              live = false;
-              return;
-            }
-            task.title = this.scannedTitle(audit);
+            const next = await this.race(this.control.take());
             this.scanHeader = undefined;
+            if (next === CLOSED) return;
+            if (next.kind === "audit") task.title = this.scannedTitle(next.data);
+            else carry = next;
           },
         },
       ],
       this.listrOptions(),
     );
     await list.run();
-    return live;
+    return carry;
   }
 
-  /** The redrawing progress row for one fix loop. Counters are reset by loop-start. */
+  /** The redrawing progress row for one fix phase. Counters are reset by loop-start. */
   private async fixPhase(info: FixInfo): Promise<void> {
     const list = new Listr<unknown>(
       [
@@ -250,18 +264,14 @@ export class LiveReporter extends BaseReporter implements Reporter {
           task: async (_ctx, task) => {
             this.header = task;
             this.currentLoop = info.loop;
+            this.currentPhase = info.phase;
             this.currentConcurrency = info.concurrency;
             task.title = this.headerTitle();
             while (true) {
-              const tickOrComplete = await this.race(
-                Promise.race([
-                  this.fixTicks.take().then(() => "tick" as const),
-                  this.loopCompletions.take().then(() => "complete" as const),
-                ]),
-              );
-              if (tickOrComplete === CLOSED) return;
-              task.title = this.headerTitle();
-              if (tickOrComplete === "complete") break;
+              const signal = await this.race(this.fixSignals.take());
+              if (signal === CLOSED) return;
+              task.title = signal.kind === "complete" ? signal.finalTitle : this.headerTitle();
+              if (signal.kind === "complete") break;
             }
           },
         },
@@ -340,9 +350,10 @@ export class LiveReporter extends BaseReporter implements Reporter {
       : "";
     const currentSuffix = current ? ` ${bullet} ${current}` : "";
     const detail = this.theme.dim(`${cost}${currentSuffix}`);
-    // "eligible fixed": the denominator is the dispatched/eligible population for this pass,
-    // not the audit's in-scope total — keep that explicit so 2/2 never reads as "fixed all 11".
-    return `fix pass ${this.currentLoop} ${bullet} ${this.fixedFindings}/${this.findingsTotal} eligible fixed ${bullet} ${this.revertedFindings} reverted${detail}`;
+    // Each phase of a loop renders its own labeled row (auto-fix, then AI); the denominator is
+    // that phase's dispatched findings, not the audit's in-scope total — so the phase rows sum
+    // to the run summary's fixed count instead of leaving an unexplained gap.
+    return `fix pass ${this.currentLoop} ${bullet} ${fixPhaseLabel(this.currentPhase)} ${bullet} ${this.fixedFindings}/${this.findingsTotal} fixed ${bullet} ${this.revertedFindings} reverted${detail}`;
   }
 
   private refreshHeader(): void {

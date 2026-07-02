@@ -1,4 +1,13 @@
-import type { AuditExclusions } from "./events.js";
+import type { AuditExclusions, FixPhase } from "./events.js";
+
+/**
+ * Human label for a loop's fix phase: deterministic units are "auto-fix" (no AI session), AI
+ * units are "AI". Shared by the live and plain reporters so both views name the phases
+ * identically and the per-phase rows visibly sum to the summary's fixed count.
+ */
+export function fixPhaseLabel(phase: FixPhase): string {
+  return phase === "deterministic" ? "auto-fix" : "AI";
+}
 
 /**
  * The audit line's funnel suffix: " → 2 eligible to fix (8 in test files, 1 excluded from

@@ -244,6 +244,19 @@ function renderPlainSummary(
 }
 
 /**
+ * Reconcile the headline fixed count with the per-phase fix-pass rows: when a run mixed
+ * deterministic (auto-fix) and AI fixes, break the total down so an AI pass row like "6/6
+ * fixed" and a bigger headline number don't read as a contradiction. Empty when all fixes
+ * came from a single phase — the pass row already matches the headline then.
+ */
+function fixedBreakdownSuffix(fixed: Finding[], theme: Theme): string {
+  const auto = fixed.filter((f) => f.repairStrategy?.startsWith("deterministic-")).length;
+  const ai = fixed.length - auto;
+  if (auto === 0 || ai === 0) return "";
+  return ` ${theme.dim(`(${auto} auto-fix ${theme.glyph.bullet} ${ai} AI)`)}`;
+}
+
+/**
  * Fixed as a share of what tend actually attempted (fixed + couldn't-fix). "n/a" when nothing was
  * attempted, so an empty run never reads as 0% or 100%. Derived from the same buckets as the counts
  * below, so the rate and the numbers can never disagree.
@@ -474,7 +487,7 @@ function renderOverallTable(report: Report, b: Buckets, theme: Theme): string {
         ? ([["final integration", theme.dim(`${report.finalIntegration.findings.length} new finding${report.finalIntegration.findings.length === 1 ? "" : "s"} reported · fixes kept`)]] as string[][])
         : []),
     ["elapsed", formatDuration(report.durationMs)],
-    ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}`],
+    ["fixed", `${theme.fixed(theme.glyph.fixed)} ${b.fixed.length}${fixedBreakdownSuffix(b.fixed, theme)}`],
     // Only meaningful once something was attempted; hidden on a nothing-to-fix run.
     ...(b.fixed.length + couldntFix.length > 0 ? [["success rate", successRateLabel(b)]] : []),
     ...revertedRow("timed out/session error", b.timedOutSessionError.length),

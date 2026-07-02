@@ -92,6 +92,37 @@ describe("renderSummary", () => {
     expect(out).toContain("3m 12s"); // 192_000ms
   });
 
+  it("breaks the fixed count down by phase when a run mixed auto-fix and AI fixes", () => {
+    const builder = reportWith(
+      {
+        ...knipDeadCodeFinding("src/a.ts"),
+        status: "fixed",
+        repairStrategy: "deterministic-ts-unused-export-cleanup",
+      },
+      {
+        ...makeFinding({ tool: "sonarjs", file: "src/b.ts" }),
+        status: "fixed",
+        repairStrategy: "single-file-ai-edit",
+      },
+    );
+    const out = renderSummary(builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 }));
+
+    // The pass rows say "1/1 fixed" each; the headline shows how the 2 splits across them.
+    expect(out).toContain("✔ 2 (1 auto-fix · 1 AI)");
+  });
+
+  it("omits the fixed-count phase breakdown when all fixes came from one phase", () => {
+    const builder = reportWith({
+      ...makeFinding({ tool: "sonarjs", file: "src/a.ts" }),
+      status: "fixed",
+      repairStrategy: "single-file-ai-edit",
+    });
+    const out = renderSummary(builder.build({ loops: 1, durationMs: 1000, exitStatus: 0 }));
+
+    expect(out).toContain("✔ 1");
+    expect(out).not.toContain("auto-fix");
+  });
+
   it("renders a compact default couldn't-fix table and detailed retry table only in verbose mode", () => {
     const builder = reportWith({
       ...makeFinding({

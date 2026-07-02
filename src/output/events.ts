@@ -5,6 +5,13 @@ import type { ScannerStatusKind } from "../scanners/scanner.js";
 /** What happened to a file in the current dispatched batch. "left" = not attempted. */
 export type FileOutcome = "fixed" | "reverted" | "left";
 
+/**
+ * Which fixing phase of a loop a loop-start/loop-complete belongs to. One loop runs up to two
+ * phases back to back — deterministic (no AI) then ai — each with its own start/complete pair,
+ * so reporters need the discriminator to label and count them separately.
+ */
+export type FixPhase = "deterministic" | "ai";
+
 /** Per-reason counts of in-scope findings the fix policy excludes from dispatch. */
 export type AuditExclusions = {
   tests: number;
@@ -41,13 +48,13 @@ export type TendEvent =
     }
   // Announces the batch about to be fixed this loop. `findings` = total findings across the
   // dispatched units (the stable live-view denominator; jobs split, findings don't).
-  | { type: "loop-start"; loop: number; files: string[]; concurrency: number; findings: number }
+  | { type: "loop-start"; loop: number; phase: FixPhase; files: string[]; concurrency: number; findings: number }
   // `model` = the model string passed to `claude -p` for this job, or "deterministic".
   | { type: "file-start"; loop: number; file: string; rule?: string; model?: string }
   | { type: "file-stage"; loop: number; file: string; stage: FixStage; detail?: string }
   // `findings` = how many findings this job covered (0 for a split-parent placeholder).
   | { type: "file-result"; loop: number; file: string; outcome: FileOutcome; findings: number; reason?: string; detail?: string }
-  | { type: "loop-complete"; loop: number; fixed: number; reverted: number; remaining: number; estimatedCostUsd: number }
+  | { type: "loop-complete"; loop: number; phase: FixPhase; fixed: number; reverted: number; remaining: number; estimatedCostUsd: number }
   | { type: "done"; exitStatus: number }
   // Dev-only structured decision/diagnostic record. Carries the orchestrator's internal verdicts
   // (why a finding went terminal vs retried, which tools were skipped, why a batch split, what a
