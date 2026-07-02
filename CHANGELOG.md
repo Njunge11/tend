@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.2](https://github.com/Njunge11/tend/compare/tend-cli-v0.15.1...tend-cli-v0.15.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* **output:** render each fix phase as its own labeled progress row ([ef264dd](https://github.com/Njunge11/tend/commit/ef264dd6224955ffc2c305516974294d78b61193))
+
 ## [0.15.1](https://github.com/Njunge11/tend/compare/tend-cli-v0.15.0...tend-cli-v0.15.1) (2026-06-30)
 
 
